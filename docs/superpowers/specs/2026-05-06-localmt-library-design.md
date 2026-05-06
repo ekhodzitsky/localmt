@@ -41,6 +41,8 @@ The workspace is split into narrow crates:
 - `localmt-models`: manifest parsing, safe relative path validation, required
   language checks, typed file-role validation, and SHA-256 verification for
   model-pack files.
+- `localmt-pipeline`: composition layer that wires tokenizer encode, token
+  generation, tokenizer decode, and the existing `TranslatorEngine` trait.
 - `localmt-tokenizer`: typed token ids, non-empty bounded token sequences,
   tokenizer input/output types, tokenizer trait, and deterministic mock
   tokenizer.
@@ -64,6 +66,12 @@ localmt-owned `TokenId`, `TokenSequence`, `TokenizerInput`, and
 `TokenizerOutput` types so SentencePiece/BPE implementations can be added later
 without changing the public translation pipeline shape.
 
+The pipeline layer is the first end-to-end SDK shape. It composes a
+`TokenizerEngine` and a `TokenGenerator`, then adapts pipeline errors into
+`TranslationError` through the existing `TranslatorEngine` trait. The current
+mock generator echoes tokens; real translation will replace only that generator
+and tokenizer implementation, not the public request/translation surface.
+
 ## Model Strategy
 
 The first real benchmark candidate is M2M100 418M INT8/ORT because it supports
@@ -84,6 +92,8 @@ must carry a license warning and must not become the default bundled option.
 - Model-pack file roles are typed and duplicate roles are rejected at discovery.
 - Tokenizer input/output and token sequence invariants are represented by
   localmt-owned types with a deterministic mock tokenizer.
+- A pipeline skeleton composes tokenizer encode, token generation, and tokenizer
+  decode while implementing `TranslatorEngine`.
 - Xiaomi 17 benchmark command exists and clearly labels mock-runtime results.
 - ONNX Runtime session loading is gated behind `ort-runtime`; default builds
   can plan a session but return an explicit disabled-runtime error on load.

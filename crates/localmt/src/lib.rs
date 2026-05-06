@@ -12,6 +12,9 @@ pub use localmt_models::{
     ModelManifest, ModelPack, ModelPackError, ModelPackVersion, ModelRelativePath, ModelRuntime,
     Sha256Digest, Verified,
 };
+pub use localmt_pipeline::{
+    MockTokenGenerator, PipelineError, TokenGenerator, TokenGeneratorError, TranslationPipeline,
+};
 pub use localmt_tokenizer::{
     MAX_TOKENS, MockTokenizer, TokenId, TokenSequence, TokenizerEngine, TokenizerError,
     TokenizerInput, TokenizerOutput,

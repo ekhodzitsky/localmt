@@ -1,5 +1,5 @@
 [package]
-name = "localmt"
+name = "localmt-pipeline"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -7,17 +7,9 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-localmt-bench = { path = "../localmt-bench" }
 localmt-core = { path = "../localmt-core" }
 localmt-engine = { path = "../localmt-engine" }
-localmt-engine-ort = { path = "../localmt-engine-ort" }
-localmt-models = { path = "../localmt-models" }
-localmt-pipeline = { path = "../localmt-pipeline" }
 localmt-tokenizer = { path = "../localmt-tokenizer" }
-
-[features]
-default = []
-ort-runtime = ["localmt-engine-ort/ort-runtime"]
 
 [lints]
 workspace = true

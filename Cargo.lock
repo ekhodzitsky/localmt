@@ -93,6 +93,7 @@ dependencies = [
  "localmt-engine",
  "localmt-engine-ort",
  "localmt-models",
+ "localmt-pipeline",
  "localmt-tokenizer",
 ]
 
@@ -141,6 +142,15 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "localmt-pipeline"
+version = "0.1.0"
+dependencies = [
+ "localmt-core",
+ "localmt-engine",
+ "localmt-tokenizer",
 ]
 
 [[package]]
