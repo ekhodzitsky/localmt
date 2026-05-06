@@ -19,8 +19,10 @@ extern "C" {
 #define LOCALMT_FFI_BUFFER_TOO_SMALL 8
 #define LOCALMT_FFI_RUNTIME_DISABLED 9
 #define LOCALMT_FFI_ORT_ERROR 10
+#define LOCALMT_FFI_TOKENIZER_DISABLED 11
+#define LOCALMT_FFI_TOKENIZER_ERROR 12
 
-#define LOCALMT_FFI_ABI_VERSION 2
+#define LOCALMT_FFI_ABI_VERSION 3
 #define LOCALMT_FFI_ANDROID_ABI_ARM64_V8A 1
 #define LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK 1
 
@@ -48,6 +50,15 @@ typedef struct LocalmtFfiTranslator LocalmtFfiTranslator;
  */
 typedef struct LocalmtFfiOrtGenerator LocalmtFfiOrtGenerator;
 
+/*
+ * Opaque Rust-owned HF tokenizer preflight handle.
+ *
+ * Handles are created by localmt_ffi_hf_tokenizer_open and must be released
+ * exactly once with localmt_ffi_hf_tokenizer_close. This handle proves that a
+ * verified tokenizer.json loaded; it is not a translation API.
+ */
+typedef struct LocalmtFfiHfTokenizer LocalmtFfiHfTokenizer;
+
 /* Returns LOCALMT_FFI_ABI_VERSION. */
 uint32_t localmt_ffi_abi_version(void);
 /* Returns the number of stable language ids. */
@@ -69,6 +80,12 @@ uint16_t localmt_ffi_xiaomi17_preferred_runtime_code(void);
  * Returns 1 when localmt-ffi was built with the ort-runtime feature, otherwise 0.
  */
 uint8_t localmt_ffi_ort_runtime_enabled(void);
+
+/*
+ * Returns 1 when localmt-ffi was built with the hf-tokenizers feature,
+ * otherwise 0.
+ */
+uint8_t localmt_ffi_hf_tokenizer_enabled(void);
 
 /*
  * Opens a verified local model pack and constructs the deterministic mock
@@ -105,6 +122,28 @@ int32_t localmt_ffi_mock_translate(
     uint8_t *output_ptr,
     size_t output_capacity,
     size_t *written_len);
+
+/*
+ * Verifies a model pack and attempts to load tokenizer.json through the
+ * feature-gated Hugging Face tokenizer backend.
+ *
+ * path_ptr/path_len must be valid UTF-8 bytes for the model-pack directory.
+ * out_tokenizer must point to writable pointer storage. It is set to NULL
+ * before work and receives a non-null handle only on LOCALMT_FFI_OK.
+ *
+ * Default builds return LOCALMT_FFI_TOKENIZER_DISABLED after pack planning.
+ * hf-tokenizers builds map tokenizer load failures to
+ * LOCALMT_FFI_TOKENIZER_ERROR.
+ */
+int32_t localmt_ffi_hf_tokenizer_open(
+    const uint8_t *path_ptr,
+    size_t path_len,
+    LocalmtFfiHfTokenizer **out_tokenizer);
+
+/*
+ * Releases an HF tokenizer preflight handle. NULL is accepted as a no-op.
+ */
+void localmt_ffi_hf_tokenizer_close(LocalmtFfiHfTokenizer *tokenizer);
 
 /*
  * Verifies a model pack and attempts to load ONNX generator sessions.

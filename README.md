@@ -133,12 +133,17 @@ output buffer; Rust writes translated UTF-8 bytes without NUL termination and
 reports the required byte count when the buffer is too small. This path is still
 mock translation.
 
-`localmt_ffi_ort_runtime_enabled` and `LocalmtFfiOrtGenerator` provide the next
-runtime preflight step. Default builds report runtime disabled; `ort-runtime`
-builds can verify a model pack and attempt to load encoder/decoder ONNX
-sessions. This is a model/runtime load check, not translation. Wiring the
-feature-gated tokenizer backend and ONNX decoder execution into the FFI remains
-future work.
+`localmt_ffi_hf_tokenizer_enabled` and `LocalmtFfiHfTokenizer` provide tokenizer
+preflight. Default builds verify the model pack and report tokenizer disabled;
+`hf-tokenizers` builds verify the model pack and load the declared
+`tokenizer.json`. This proves tokenizer JSON loading through the Android ABI,
+not translation.
+
+`localmt_ffi_ort_runtime_enabled` and `LocalmtFfiOrtGenerator` provide runtime
+preflight. Default builds report runtime disabled; `ort-runtime` builds can
+verify a model pack and attempt to load encoder/decoder ONNX sessions. This is
+a model/runtime load check, not translation. Wiring tokenizer output into ONNX
+decoder execution remains future work.
 
 ## ONNX Runtime Boundary
 

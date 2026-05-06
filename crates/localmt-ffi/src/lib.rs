@@ -2,6 +2,8 @@
 
 use std::{ptr, slice, str};
 
+#[cfg(feature = "hf-tokenizers")]
+use localmt::HfTokenizer;
 use localmt::{
     DeviceProfile, Language, LanguagePair, MAX_TEXT_CHARS, MockOfflineTranslator, NonEmptyText,
     OfflineTranslatorAssets, OrtEngineError, OrtTokenGenerator, TranslateRequest,
@@ -29,9 +31,13 @@ pub const LOCALMT_FFI_BUFFER_TOO_SMALL: i32 = 8;
 pub const LOCALMT_FFI_RUNTIME_DISABLED: i32 = 9;
 /// FFI status when ONNX Runtime session loading fails.
 pub const LOCALMT_FFI_ORT_ERROR: i32 = 10;
+/// FFI status when the build does not enable the HF tokenizer backend.
+pub const LOCALMT_FFI_TOKENIZER_DISABLED: i32 = 11;
+/// FFI status when tokenizer loading fails.
+pub const LOCALMT_FFI_TOKENIZER_ERROR: i32 = 12;
 
 /// Pointer-free C ABI version.
-pub const LOCALMT_FFI_ABI_VERSION: u32 = 2;
+pub const LOCALMT_FFI_ABI_VERSION: u32 = 3;
 /// FFI code for Android arm64-v8a.
 pub const LOCALMT_FFI_ANDROID_ABI_ARM64_V8A: u16 = 1;
 /// FFI code for ONNX Runtime Mobile with XNNPACK.
@@ -62,6 +68,12 @@ pub struct LocalmtFfiTranslator {
 /// Opaque Rust-owned ORT generator preflight handle for FFI callers.
 pub struct LocalmtFfiOrtGenerator {
     _generator: OrtTokenGenerator,
+}
+
+/// Opaque Rust-owned HF tokenizer preflight handle for FFI callers.
+pub struct LocalmtFfiHfTokenizer {
+    #[cfg(feature = "hf-tokenizers")]
+    _tokenizer: HfTokenizer,
 }
 
 impl LocalmtFfiLanguageCode {
@@ -287,6 +299,73 @@ pub extern "C" fn localmt_ffi_ort_runtime_enabled() -> u8 {
     u8::from(cfg!(feature = "ort-runtime"))
 }
 
+/// { true }
+/// fn localmt_ffi_hf_tokenizer_enabled() -> u8
+/// { ret is 1 only when localmt-ffi was built with hf-tokenizers }
+#[unsafe(no_mangle)] // SAFETY: pointer-free C export.
+pub extern "C" fn localmt_ffi_hf_tokenizer_enabled() -> u8 {
+    u8::from(cfg!(feature = "hf-tokenizers"))
+}
+
+/// { path_ptr points to path_len readable bytes and out_tokenizer is writable }
+/// fn localmt_ffi_hf_tokenizer_open(path_ptr: *const u8, path_len: usize, out_tokenizer: *mut *mut LocalmtFfiHfTokenizer) -> i32
+/// { ret is OK only when out_tokenizer receives an owned non-null HF tokenizer handle }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_hf_tokenizer_open(
+    path_ptr: *const u8,
+    path_len: usize,
+    out_tokenizer: *mut *mut LocalmtFfiHfTokenizer,
+) -> i32 {
+    if out_tokenizer.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *out_tokenizer = ptr::null_mut() }; // SAFETY: non-null writable out pointer.
+
+    let path = match read_ffi_utf8(path_ptr, path_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let assets = match OfflineTranslatorAssets::from_model_pack_path(path) {
+        Ok(value) => value,
+        Err(_error) => return LOCALMT_FFI_MODEL_PACK_ERROR,
+    };
+
+    #[cfg(not(feature = "hf-tokenizers"))]
+    {
+        let _tokenizer_path = assets.plan().tokenizer().tokenizer_path();
+        LOCALMT_FFI_TOKENIZER_DISABLED
+    }
+
+    #[cfg(feature = "hf-tokenizers")]
+    {
+        match HfTokenizer::from_file(assets.plan().tokenizer().tokenizer_path()) {
+            Ok(tokenizer) => {
+                let handle = Box::new(LocalmtFfiHfTokenizer {
+                    _tokenizer: tokenizer,
+                });
+                unsafe { *out_tokenizer = Box::into_raw(handle) }; // SAFETY: non-null writable out pointer.
+                LOCALMT_FFI_OK
+            }
+            Err(_error) => LOCALMT_FFI_TOKENIZER_ERROR,
+        }
+    }
+}
+
+/// { tokenizer is null or was returned by localmt_ffi_hf_tokenizer_open }
+/// fn localmt_ffi_hf_tokenizer_close(tokenizer: *mut LocalmtFfiHfTokenizer)
+/// { tokenizer is consumed when non-null }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_hf_tokenizer_close(tokenizer: *mut LocalmtFfiHfTokenizer) {
+    if tokenizer.is_null() {
+        return;
+    }
+
+    unsafe { drop(Box::from_raw(tokenizer)) }; // SAFETY: handle came from open and closes once.
+}
+
 /// { path_ptr points to path_len readable bytes and out_generator is writable }
 /// fn localmt_ffi_ort_generator_open(path_ptr: *const u8, path_len: usize, out_generator: *mut *mut LocalmtFfiOrtGenerator) -> i32
 /// { ret is OK only when out_generator receives an owned non-null ORT generator handle }
@@ -374,17 +453,25 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(not(feature = "hf-tokenizers"))]
+    use super::LOCALMT_FFI_TOKENIZER_DISABLED;
+    #[cfg(feature = "hf-tokenizers")]
+    use super::LOCALMT_FFI_TOKENIZER_ERROR;
     use super::{
         LOCALMT_FFI_BUFFER_TOO_SMALL, LOCALMT_FFI_INVALID_LANGUAGE, LOCALMT_FFI_INVALID_PAIR,
         LOCALMT_FFI_INVALID_UTF8, LOCALMT_FFI_NULL_POINTER, LOCALMT_FFI_OK, LOCALMT_FFI_TEXT_ERROR,
-        LocalmtFfiOrtGenerator, LocalmtFfiTranslator, localmt_ffi_abi_version,
-        localmt_ffi_language_code, localmt_ffi_language_from_iso_639_1, localmt_ffi_max_text_chars,
+        LocalmtFfiHfTokenizer, LocalmtFfiOrtGenerator, LocalmtFfiTranslator,
+        localmt_ffi_abi_version, localmt_ffi_hf_tokenizer_close, localmt_ffi_hf_tokenizer_enabled,
+        localmt_ffi_hf_tokenizer_open, localmt_ffi_language_code,
+        localmt_ffi_language_from_iso_639_1, localmt_ffi_max_text_chars,
         localmt_ffi_mock_translate, localmt_ffi_mock_translator_close,
         localmt_ffi_mock_translator_open, localmt_ffi_ort_generator_open,
         localmt_ffi_ort_runtime_enabled, localmt_ffi_supported_language_count,
         localmt_ffi_validate_language_pair, localmt_ffi_xiaomi17_android_abi_code,
         localmt_ffi_xiaomi17_preferred_runtime_code, localmt_ffi_xiaomi17_ram_class_gib,
     };
+    #[cfg(feature = "hf-tokenizers")]
+    use localmt::Sha256Digest;
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
     const DECODER_SHA256: &str = "eacbeef293be61f2a85d929cadb4cbb5248c8b8a1478b3d4b3180ea365d5e687";
@@ -417,7 +504,7 @@ mod tests {
 
     #[test]
     fn ffi_reports_abi_and_xiaomi17_contract() {
-        assert_eq!(localmt_ffi_abi_version(), 2);
+        assert_eq!(localmt_ffi_abi_version(), 3);
         assert_eq!(localmt_ffi_max_text_chars(), 4096);
         assert_eq!(localmt_ffi_xiaomi17_android_abi_code(), 1);
         assert_eq!(localmt_ffi_xiaomi17_ram_class_gib(), 12);
@@ -469,6 +556,89 @@ mod tests {
             LOCALMT_FFI_INVALID_UTF8
         );
         assert!(generator.is_null());
+
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(not(feature = "hf-tokenizers"))]
+    fn ffi_hf_tokenizer_enabled_reports_default_build() {
+        assert_eq!(localmt_ffi_hf_tokenizer_enabled(), 0);
+    }
+
+    #[test]
+    #[cfg(feature = "hf-tokenizers")]
+    fn ffi_hf_tokenizer_enabled_reports_feature_build() {
+        assert_eq!(localmt_ffi_hf_tokenizer_enabled(), 1);
+    }
+
+    #[test]
+    #[cfg(not(feature = "hf-tokenizers"))]
+    fn ffi_hf_tokenizer_open_reports_feature_disabled() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut tokenizer: *mut LocalmtFfiHfTokenizer = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_hf_tokenizer_open(path.as_ptr(), path.len(), &mut tokenizer),
+            LOCALMT_FFI_TOKENIZER_DISABLED
+        );
+        assert!(tokenizer.is_null());
+
+        localmt_ffi_hf_tokenizer_close(tokenizer);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "hf-tokenizers")]
+    fn ffi_hf_tokenizer_open_loads_verified_tokenizer() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_hf_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut tokenizer: *mut LocalmtFfiHfTokenizer = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_hf_tokenizer_open(path.as_ptr(), path.len(), &mut tokenizer),
+            LOCALMT_FFI_OK
+        );
+        assert!(!tokenizer.is_null());
+
+        localmt_ffi_hf_tokenizer_close(tokenizer);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "hf-tokenizers")]
+    fn ffi_hf_tokenizer_open_maps_tokenizer_load_errors() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut tokenizer: *mut LocalmtFfiHfTokenizer = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_hf_tokenizer_open(path.as_ptr(), path.len(), &mut tokenizer),
+            LOCALMT_FFI_TOKENIZER_ERROR
+        );
+        assert!(tokenizer.is_null());
+
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_hf_tokenizer_open_rejects_nulls_and_invalid_utf8()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut tokenizer: *mut LocalmtFfiHfTokenizer = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_hf_tokenizer_open(path.as_ptr(), path.len(), ptr::null_mut()),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_hf_tokenizer_open([0xff].as_ptr(), 1, &mut tokenizer),
+            LOCALMT_FFI_INVALID_UTF8
+        );
+        assert!(tokenizer.is_null());
 
         Ok(())
     }
@@ -671,7 +841,30 @@ mod tests {
         Ok(root)
     }
 
+    #[cfg(feature = "hf-tokenizers")]
+    fn create_hf_verified_pack() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let counter = PACK_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("localmt-ffi-hf-test-{nanos}-{counter}",));
+
+        fs::create_dir_all(&root)?;
+        fs::write(root.join("encoder.onnx"), "encoder\n")?;
+        fs::write(root.join("decoder.onnx"), "decoder\n")?;
+        fs::write(root.join("tokenizer.json"), wordlevel_tokenizer_json())?;
+        let tokenizer_sha256 = Sha256Digest::from_file(root.join("tokenizer.json"))?;
+        fs::write(
+            root.join("manifest.json"),
+            manifest_json_with_tokenizer(tokenizer_sha256.as_str()),
+        )?;
+
+        Ok(root)
+    }
+
     fn manifest_json() -> String {
+        manifest_json_with_tokenizer(TOKENIZER_SHA256)
+    }
+
+    fn manifest_json_with_tokenizer(tokenizer_sha256: &str) -> String {
         format!(
             r#"{{
   "schema_version": 0,
@@ -684,9 +877,14 @@ mod tests {
   "files": [
     {{ "path": "encoder.onnx", "kind": "encoder", "sha256": "{ENCODER_SHA256}" }},
     {{ "path": "decoder.onnx", "kind": "decoder", "sha256": "{DECODER_SHA256}" }},
-    {{ "path": "tokenizer.json", "kind": "tokenizer", "sha256": "{TOKENIZER_SHA256}" }}
+    {{ "path": "tokenizer.json", "kind": "tokenizer", "sha256": "{tokenizer_sha256}" }}
   ]
 }}"#
         )
+    }
+
+    #[cfg(feature = "hf-tokenizers")]
+    fn wordlevel_tokenizer_json() -> &'static str {
+        r#"{"version":"1.0","truncation":null,"padding":null,"added_tokens":[],"normalizer":null,"pre_tokenizer":{"type":"WhitespaceSplit"},"post_processor":null,"decoder":null,"model":{"type":"WordLevel","vocab":{"[UNK]":0,"hello":1,"offline":2},"unk_token":"[UNK]"}}"#
     }
 }
