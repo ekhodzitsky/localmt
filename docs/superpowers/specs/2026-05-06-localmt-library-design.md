@@ -63,6 +63,9 @@ Model-pack `files[].kind` values are not arbitrary labels. They are parsed into
 duplicate roles so backend adapters can rely on typed role selection.
 Verified packs expose `file_path(role)` so tokenizer and inference adapters use
 one safe root-qualified role-path lookup instead of repeating manifest scans.
+`Sha256Digest::from_file` and `localmt model hash <file>` expose the same
+digest implementation used by verification so local model-pack manifests can be
+authored without separate checksum tooling.
 
 The tokenizer boundary exists before real model-specific tokenization. It uses
 localmt-owned `TokenId`, `TokenSequence`, `TokenizerInput`, and
@@ -134,6 +137,8 @@ must carry a license warning and must not become the default bundled option.
 - Model-pack file roles are typed and duplicate roles are rejected at discovery.
 - Verified model packs resolve declared file roles to root-qualified paths for
   backend adapters.
+- SHA-256 manifest digests can be computed through the public model layer and
+  development CLI.
 - Tokenizer input/output and token sequence invariants are represented by
   localmt-owned types with a deterministic mock tokenizer.
 - Tokenizer asset planning requires a verified `tokenizer` file role and

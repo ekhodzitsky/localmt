@@ -377,6 +377,13 @@ impl fmt::Display for ModelRelativePath {
 pub struct Sha256Digest(String);
 
 impl Sha256Digest {
+    /// { path points to a readable local file }
+    /// fn from_file(path: impl `AsRef<Path>`) -> Result<Self, ModelPackError>
+    /// { ret is the lowercase SHA-256 digest of the file contents }
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ModelPackError> {
+        sha256_file(path.as_ref())
+    }
+
     /// { value may be any string }
     /// fn new(value: String) -> Result<Self, ModelPackError>
     /// { ret is Ok only when value is a 64-character lowercase hex digest }
@@ -646,7 +653,7 @@ mod tests {
 
     use localmt_core::Language;
 
-    use crate::{Discovered, ModelFileRole, ModelPack, ModelPackError};
+    use crate::{Discovered, ModelFileRole, ModelPack, ModelPackError, Sha256Digest};
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
     const TOKENIZER_SHA256: &str =
@@ -696,6 +703,18 @@ mod tests {
             Some(root.join("tokenizer.json"))
         );
         assert_eq!(pack.file_path(ModelFileRole::Config), None);
+        Ok(())
+    }
+
+    #[test]
+    fn sha256_digest_hashes_local_file() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        let path = root.join("encoder.onnx");
+        fs::write(&path, "encoder\n")?;
+
+        let digest = Sha256Digest::from_file(&path)?;
+
+        assert_eq!(digest.as_str(), ENCODER_SHA256);
         Ok(())
     }
 

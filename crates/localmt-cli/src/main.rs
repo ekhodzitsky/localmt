@@ -69,6 +69,7 @@ fn run_model(mut args: impl Iterator<Item = String>) -> Result<String, CliError>
         "inspect" => inspect_model(path),
         "verify" => verify_model(path),
         "plan" => plan_model(path),
+        "hash" => hash_model_file(path),
         _ => Err(CliError::UnknownModelCommand(command)),
     }
 }
@@ -106,6 +107,15 @@ fn verify_model(path: String) -> Result<String, CliError> {
         .map_err(CliError::ModelPack)?;
 
     Ok(format!("verified: {}", pack.manifest().model_id()))
+}
+
+/// { path is a local model-pack file candidate }
+/// fn hash_model_file(path: String) -> Result<String, CliError>
+/// { ret is the manifest-ready lowercase SHA-256 digest }
+fn hash_model_file(path: String) -> Result<String, CliError> {
+    let digest = localmt::Sha256Digest::from_file(path).map_err(CliError::ModelPack)?;
+
+    Ok(format!("sha256: {digest}"))
 }
 
 /// { path is a model-pack root candidate }
@@ -410,6 +420,24 @@ mod tests {
         assert!(output.contains("decoder.onnx"));
         assert!(output.contains("generation_config: parsed"));
         assert!(output.contains("max_new_tokens: 32"));
+        Ok(())
+    }
+
+    #[test]
+    fn cli_hashes_model_pack_file_for_manifest() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        let path = root.join("encoder.onnx");
+        fs::write(&path, "encoder\n")?;
+        let args = [
+            "localmt".to_owned(),
+            "model".to_owned(),
+            "hash".to_owned(),
+            path.display().to_string(),
+        ];
+
+        let output = run(args.into_iter())?;
+
+        assert_eq!(output, format!("sha256: {ENCODER_SHA256}"));
         Ok(())
     }
 
