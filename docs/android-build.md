@@ -123,7 +123,7 @@ Use the development CLI to prepare and inspect packs locally:
 
 ```bash
 cargo run -p localmt -- model hash <file>
-cargo run -p localmt -- model write-manifest <pack-dir>
+cargo run -p localmt -- model write-manifest <pack-dir> m2m100-418m-int8 0.1.0 m2m100 onnx-runtime MIT
 cargo run -p localmt -- model verify <pack-dir>
 cargo run -p localmt -- model plan <pack-dir>
 cargo run -p localmt -- ffi smoke <pack-dir> en ru "hello offline"
