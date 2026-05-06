@@ -23,6 +23,10 @@ inference.
 - `crates/localmt-cli` - development CLI for smoke testing
 - `crates/localmt-ffi` - pointer-free C ABI for Android/JNI adapters
 
+## Docs
+
+- `docs/android-build.md` - Android/JNI build notes, feature flags, and FFI call flow
+
 ## Model Packs
 
 Model packs are local directories with a `manifest.json` file and the files it
