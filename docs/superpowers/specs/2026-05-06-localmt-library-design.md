@@ -79,6 +79,8 @@ and tokenizer implementation, not the public request/translation surface.
 `GeneratorAssetPlan` bridges verified model packs to future generator
 implementations by requiring `encoder` and `decoder` graph roles and preserving
 optional `decoder_with_past` and `generation_config` paths.
+`OrtGeneratorPlan` consumes that asset plan for ONNX Runtime and converts graph
+assets into encoder/decoder session plans before any session is loaded.
 The development CLI and benchmark command use this pipeline path so smoke tests
 exercise the same shape that real inference will fill.
 
@@ -110,6 +112,8 @@ must carry a license warning and must not become the default bundled option.
   decode while implementing `TranslatorEngine`.
 - Generator asset planning requires verified `encoder` and `decoder` file roles
   and preserves optional cached-decoder/generation-config paths.
+- ORT generator planning consumes verified generator assets and produces
+  encoder/decoder session plans without running inference.
 - Xiaomi 17 benchmark command exists and clearly labels `mock-pipeline`
   results.
 - ONNX Runtime session loading is gated behind `ort-runtime`; default builds

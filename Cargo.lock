@@ -133,6 +133,7 @@ name = "localmt-engine-ort"
 version = "0.1.0"
 dependencies = [
  "localmt-models",
+ "localmt-pipeline",
  "ort",
 ]
 

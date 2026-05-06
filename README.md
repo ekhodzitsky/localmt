@@ -76,8 +76,10 @@ cargo check -p localmt-engine-ort --features ort-runtime
 cargo check -p localmt --features ort-runtime
 ```
 
-This crate currently stops at session loading. Tokenization, decoder graph
-composition, and actual translation are intentionally still future work.
+`OrtGeneratorPlan` builds on the pipeline-owned `GeneratorAssetPlan` and turns
+verified encoder/decoder assets into ORT session plans. The crate still stops
+before actual token generation; tokenization, decoder graph execution, and
+translation are intentionally future work.
 
 ## Tokenizer Boundary
 
