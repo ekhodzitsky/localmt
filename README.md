@@ -94,7 +94,10 @@ future tokenizer implementations.
 
 `localmt-pipeline` composes a `TokenizerEngine` with a `TokenGenerator` and
 implements the existing `TranslatorEngine` trait. `MockTokenGenerator` echoes
-source tokens so the SDK can exercise the end-to-end request shape today:
+source tokens so the SDK can exercise the end-to-end request shape today.
+`GeneratorAssetPlan` builds from a verified model pack, requires `encoder` and
+`decoder` graph roles, and carries optional `decoder_with_past` and
+`generation_config` paths for future generator implementations:
 
 ```text
 TranslateRequest -> TokenizerEngine::encode -> TokenGenerator::generate -> TokenizerEngine::decode -> Translation

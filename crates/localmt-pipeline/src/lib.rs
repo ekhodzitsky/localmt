@@ -1,9 +1,11 @@
 //! Translation pipeline composition for localmt.
 
 use core::fmt;
+use std::path::{Path, PathBuf};
 
 use localmt_core::{LanguagePair, TranslateRequest, Translation};
 use localmt_engine::{TranslationError, TranslatorEngine};
+use localmt_models::{ModelFileRole, ModelPack, Verified};
 use localmt_tokenizer::{
     TokenSequence, TokenizerEngine, TokenizerError, TokenizerInput, TokenizerOutput,
 };
@@ -31,6 +33,8 @@ impl TokenGenerator for MockTokenGenerator {
 pub enum TokenGeneratorError {
     /// Generator backend is unavailable.
     BackendUnavailable(String),
+    /// Verified model pack does not declare a required generator file.
+    MissingGeneratorAsset(ModelFileRole),
     /// Generator cannot translate this pair.
     UnsupportedPair(LanguagePair),
     /// Generator rejected produced tokens before decode.
@@ -42,6 +46,9 @@ impl fmt::Display for TokenGeneratorError {
         match self {
             Self::BackendUnavailable(reason) => {
                 write!(formatter, "token generator unavailable: {reason}")
+            }
+            Self::MissingGeneratorAsset(role) => {
+                write!(formatter, "model pack is missing generator asset: {role}")
             }
             Self::UnsupportedPair(pair) => write!(
                 formatter,
@@ -57,6 +64,68 @@ impl fmt::Display for TokenGeneratorError {
 }
 
 impl std::error::Error for TokenGeneratorError {}
+
+/// Verified model-pack files required to construct a token generator.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratorAssetPlan {
+    encoder_path: PathBuf,
+    decoder_path: PathBuf,
+    decoder_with_past_path: Option<PathBuf>,
+    generation_config_path: Option<PathBuf>,
+}
+
+impl GeneratorAssetPlan {
+    /// { pack has verified manifest, files, and checksums }
+    /// fn from_pack(pack: &`ModelPack<Verified>`) -> Result<Self, TokenGeneratorError>
+    /// { ret is Ok only when pack declares encoder and decoder roles }
+    pub fn from_pack(pack: &ModelPack<Verified>) -> Result<Self, TokenGeneratorError> {
+        let encoder_path = required_file_path(pack, ModelFileRole::Encoder)?;
+        let decoder_path = required_file_path(pack, ModelFileRole::Decoder)?;
+
+        Ok(Self {
+            encoder_path,
+            decoder_path,
+            decoder_with_past_path: pack.file_path(ModelFileRole::DecoderWithPast),
+            generation_config_path: pack.file_path(ModelFileRole::GenerationConfig),
+        })
+    }
+
+    /// { true }
+    /// fn encoder_path(&self) -> &Path
+    /// { ret is the verified encoder graph path }
+    pub fn encoder_path(&self) -> &Path {
+        &self.encoder_path
+    }
+
+    /// { true }
+    /// fn decoder_path(&self) -> &Path
+    /// { ret is the verified decoder graph path }
+    pub fn decoder_path(&self) -> &Path {
+        &self.decoder_path
+    }
+
+    /// { true }
+    /// fn decoder_with_past_path(&self) -> `Option<&Path>`
+    /// { ret is Some only when the pack declares a decoder_with_past role }
+    pub fn decoder_with_past_path(&self) -> Option<&Path> {
+        self.decoder_with_past_path.as_deref()
+    }
+
+    /// { true }
+    /// fn generation_config_path(&self) -> `Option<&Path>`
+    /// { ret is Some only when the pack declares a generation_config role }
+    pub fn generation_config_path(&self) -> Option<&Path> {
+        self.generation_config_path.as_deref()
+    }
+}
+
+fn required_file_path(
+    pack: &ModelPack<Verified>,
+    role: ModelFileRole,
+) -> Result<PathBuf, TokenGeneratorError> {
+    pack.file_path(role)
+        .ok_or(TokenGeneratorError::MissingGeneratorAsset(role))
+}
 
 /// Translation pipeline over a tokenizer and token generator.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -175,13 +244,28 @@ impl std::error::Error for PipelineError {}
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use localmt_core::{Language, NonEmptyText, TranslateRequest};
     use localmt_engine::{TranslationError, TranslatorEngine};
+    use localmt_models::{Discovered, ModelFileRole, ModelPack};
     use localmt_tokenizer::{MockTokenizer, TokenId, TokenSequence, TokenizerOutput};
 
     use crate::{
-        MockTokenGenerator, PipelineError, TokenGenerator, TokenGeneratorError, TranslationPipeline,
+        GeneratorAssetPlan, MockTokenGenerator, PipelineError, TokenGenerator, TokenGeneratorError,
+        TranslationPipeline,
     };
+
+    const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
+    const DECODER_SHA256: &str = "eacbeef293be61f2a85d929cadb4cbb5248c8b8a1478b3d4b3180ea365d5e687";
+    const DECODER_WITH_PAST_SHA256: &str =
+        "ef37d12b277fe98960af949b560ded559157bf42d2eea244dcfc64ac08da666c";
+    const GENERATION_CONFIG_SHA256: &str =
+        "75f35767c145e896ca56dba402cc97c3879445dace669c745ecea5fc0c9552b6";
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn pipeline_translates_with_mock_components() -> Result<(), Box<dyn std::error::Error>> {
@@ -252,6 +336,78 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn generator_asset_plan_resolves_required_and_optional_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&[
+            ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+            ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+            (
+                "decoder-with-past.onnx",
+                "decoder_with_past",
+                DECODER_WITH_PAST_SHA256,
+                "decoder-with-past\n",
+            ),
+            (
+                "generation.json",
+                "generation_config",
+                GENERATION_CONFIG_SHA256,
+                "generation\n",
+            ),
+        ])?;
+        let decoder_with_past_path = root.join("decoder-with-past.onnx");
+        let generation_config_path = root.join("generation.json");
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+
+        let plan = GeneratorAssetPlan::from_pack(&pack)?;
+
+        assert_eq!(plan.encoder_path(), root.join("encoder.onnx").as_path());
+        assert_eq!(plan.decoder_path(), root.join("decoder.onnx").as_path());
+        assert_eq!(
+            plan.decoder_with_past_path(),
+            Some(decoder_with_past_path.as_path())
+        );
+        assert_eq!(
+            plan.generation_config_path(),
+            Some(generation_config_path.as_path())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generator_asset_plan_rejects_pack_without_encoder_role()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&[("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n")])?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+
+        let plan = GeneratorAssetPlan::from_pack(&pack);
+
+        assert!(matches!(
+            plan,
+            Err(TokenGeneratorError::MissingGeneratorAsset(
+                ModelFileRole::Encoder
+            ))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn generator_asset_plan_rejects_pack_without_decoder_role()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&[("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n")])?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+
+        let plan = GeneratorAssetPlan::from_pack(&pack);
+
+        assert!(matches!(
+            plan,
+            Err(TokenGeneratorError::MissingGeneratorAsset(
+                ModelFileRole::Decoder
+            ))
+        ));
+        Ok(())
+    }
+
     #[derive(Clone, Copy, Debug)]
     struct PairEchoGenerator;
 
@@ -289,5 +445,52 @@ mod tests {
             .collect::<Vec<_>>();
         TokenSequence::new(tokens)
             .map_err(|error| TokenGeneratorError::InvalidGeneratedTokens(error.to_string()))
+    }
+
+    fn create_pack(
+        files: &[(&str, &str, &str, &str)],
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        for (path, _role, _sha256, contents) in files {
+            fs::write(root.join(path), contents)?;
+        }
+        fs::write(root.join("manifest.json"), manifest_json(files))?;
+        Ok(root)
+    }
+
+    fn create_temp_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "localmt-pipeline-test-{}-{nanos}-{counter}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root)?;
+        Ok(root)
+    }
+
+    fn manifest_json(files: &[(&str, &str, &str, &str)]) -> String {
+        let file_json = files
+            .iter()
+            .map(|(path, kind, sha256, _contents)| {
+                format!(r#"    {{ "path": "{path}", "kind": "{kind}", "sha256": "{sha256}" }}"#)
+            })
+            .collect::<Vec<_>>()
+            .join(",\n");
+
+        format!(
+            r#"{{
+  "schema_version": 0,
+  "model_id": "m2m100-418m-int8",
+  "version": "0.1.0",
+  "architecture": "m2m100",
+  "runtime": "onnx-runtime",
+  "license": "MIT",
+  "languages": ["en", "ru", "th", "vi", "ja"],
+  "files": [
+{file_json}
+  ]
+}}"#
+        )
     }
 }

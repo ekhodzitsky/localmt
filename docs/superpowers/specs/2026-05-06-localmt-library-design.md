@@ -76,6 +76,9 @@ The pipeline layer is the first end-to-end SDK shape. It composes a
 `TranslationError` through the existing `TranslatorEngine` trait. The current
 mock generator echoes tokens; real translation will replace only that generator
 and tokenizer implementation, not the public request/translation surface.
+`GeneratorAssetPlan` bridges verified model packs to future generator
+implementations by requiring `encoder` and `decoder` graph roles and preserving
+optional `decoder_with_past` and `generation_config` paths.
 The development CLI and benchmark command use this pipeline path so smoke tests
 exercise the same shape that real inference will fill.
 
@@ -105,6 +108,8 @@ must carry a license warning and must not become the default bundled option.
   preserves optional vocabulary/config paths.
 - A pipeline skeleton composes tokenizer encode, token generation, and tokenizer
   decode while implementing `TranslatorEngine`.
+- Generator asset planning requires verified `encoder` and `decoder` file roles
+  and preserves optional cached-decoder/generation-config paths.
 - Xiaomi 17 benchmark command exists and clearly labels `mock-pipeline`
   results.
 - ONNX Runtime session loading is gated behind `ort-runtime`; default builds

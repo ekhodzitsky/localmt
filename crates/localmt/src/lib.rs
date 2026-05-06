@@ -13,7 +13,8 @@ pub use localmt_models::{
     Sha256Digest, Verified,
 };
 pub use localmt_pipeline::{
-    MockTokenGenerator, PipelineError, TokenGenerator, TokenGeneratorError, TranslationPipeline,
+    GeneratorAssetPlan, MockTokenGenerator, PipelineError, TokenGenerator, TokenGeneratorError,
+    TranslationPipeline,
 };
 pub use localmt_tokenizer::{
     MAX_TOKENS, MockTokenizer, TokenId, TokenSequence, TokenizerAssetPlan, TokenizerEngine,
