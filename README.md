@@ -105,6 +105,10 @@ parses generation config without loading runtime resources.
 `OfflineTranslatorAssets::summary` returns a structured preflight summary with
 the verified model id, tokenizer/generator paths, optional cached decoder, and
 optional generation config.
+`MockOfflineTranslator::from_model_pack_path` is the facade-level integration
+translator for app/adapter work before real inference: it requires the same
+prepared assets, then delegates translation to the deterministic mock
+tokenizer/generator pipeline.
 
 SDK preflight example:
 

@@ -150,6 +150,56 @@ impl OfflineTranslatorAssets {
     }
 }
 
+/// Facade-level mock offline translator for adapter integration before real inference.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MockOfflineTranslator {
+    assets: OfflineTranslatorAssets,
+    pipeline: TranslationPipeline<MockTokenizer, MockTokenGenerator>,
+}
+
+impl MockOfflineTranslator {
+    /// { path points to a model-pack directory candidate }
+    /// fn from_model_pack_path(path: impl `AsRef<Path>`) -> Result<Self, OfflineTranslatorAssetsError>
+    /// { ret is Ok only when assets prepare successfully and mock pipeline is constructed }
+    pub fn from_model_pack_path(
+        path: impl AsRef<Path>,
+    ) -> Result<Self, OfflineTranslatorAssetsError> {
+        let assets = OfflineTranslatorAssets::from_model_pack_path(path)?;
+
+        Ok(Self::from_assets(assets))
+    }
+
+    /// { assets were prepared successfully }
+    /// fn from_assets(assets: OfflineTranslatorAssets) -> Self
+    /// { ret owns assets and a deterministic mock translation pipeline }
+    pub const fn from_assets(assets: OfflineTranslatorAssets) -> Self {
+        Self {
+            assets,
+            pipeline: TranslationPipeline::new(MockTokenizer, MockTokenGenerator),
+        }
+    }
+
+    /// { true }
+    /// fn assets(&self) -> &OfflineTranslatorAssets
+    /// { ret is the prepared no-inference assets backing this mock translator }
+    pub const fn assets(&self) -> &OfflineTranslatorAssets {
+        &self.assets
+    }
+
+    /// { request has a valid language pair and non-empty text }
+    /// fn translate(&self, request: &TranslateRequest) -> Result<Translation, TranslationError>
+    /// { ret is delegated to the deterministic mock pipeline }
+    pub fn translate(&self, request: &TranslateRequest) -> Result<Translation, TranslationError> {
+        <Self as TranslatorEngine>::translate(self, request)
+    }
+}
+
+impl TranslatorEngine for MockOfflineTranslator {
+    fn translate(&self, request: &TranslateRequest) -> Result<Translation, TranslationError> {
+        self.pipeline.translate(request)
+    }
+}
+
 /// Owned no-inference summary of prepared offline translator assets.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OfflineTranslatorAssetsSummary {
@@ -292,9 +342,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        Discovered, Language, MockEngine, ModelFileRole, ModelPack, NonEmptyText,
-        OfflineTranslatorAssets, OfflineTranslatorPlan, OfflineTranslatorPlanError, OrtEngineError,
-        OrtModelRole, TokenGeneratorError, TokenId, TokenizerError, TranslateRequest, Translator,
+        Discovered, Language, MockEngine, MockOfflineTranslator, ModelFileRole, ModelPack,
+        NonEmptyText, OfflineTranslatorAssets, OfflineTranslatorPlan, OfflineTranslatorPlanError,
+        OrtEngineError, OrtModelRole, TokenGeneratorError, TokenId, TokenizerError,
+        TranslateRequest, Translator,
     };
     #[cfg(not(feature = "ort-runtime"))]
     use super::{LanguagePair, OrtTokenGenerator, TokenGenerator, TokenSequence, TokenizerOutput};
@@ -608,6 +659,42 @@ mod tests {
                 .map(|config| config.max_new_tokens().value()),
             Some(32)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn mock_offline_translator_prepares_assets_before_translation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&[
+            ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+            ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+            (
+                "generation.json",
+                "generation_config",
+                VALID_GENERATION_CONFIG_SHA256,
+                VALID_GENERATION_CONFIG,
+            ),
+            (
+                "tokenizer.json",
+                "tokenizer",
+                TOKENIZER_SHA256,
+                "tokenizer\n",
+            ),
+        ])?;
+        let translator = MockOfflineTranslator::from_model_pack_path(&root)?;
+        let text = NonEmptyText::new("hello")?;
+        let request = TranslateRequest::new(Language::English, Language::Japanese, text)?;
+
+        let translation = translator.translate(&request)?;
+
+        assert_eq!(
+            translator
+                .assets()
+                .generation_config()
+                .map(|config| config.max_new_tokens().value()),
+            Some(32)
+        );
+        assert_eq!(translation.text().as_str(), "hello");
         Ok(())
     }
 
