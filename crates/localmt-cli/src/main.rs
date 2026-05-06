@@ -1,9 +1,12 @@
 use core::fmt;
+use std::path::Path;
 use std::process::ExitCode;
 
 use localmt::{
-    Language, MockTokenGenerator, MockTokenizer, NonEmptyText, OfflineTranslatorAssets,
-    TranslateRequest, TranslationPipeline, Translator,
+    Language, MockTokenGenerator, MockTokenizer, ModelArchitecture, ModelFile, ModelFileRole,
+    ModelId, ModelLicense, ModelManifest, ModelPackVersion, ModelRelativePath, ModelRuntime,
+    NonEmptyText, OfflineTranslatorAssets, Sha256Digest, TranslateRequest, TranslationPipeline,
+    Translator,
 };
 use localmt_models::{Discovered, ModelPack};
 
@@ -16,6 +19,7 @@ usage:
   localmt model inspect PACK
   localmt model verify PACK
   localmt model plan PACK
+  localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE
   localmt bench --profile xiaomi17 --model-pack PACK
 ";
 
@@ -27,6 +31,7 @@ usage:
   localmt model inspect PACK
   localmt model verify PACK
   localmt model plan PACK
+  localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE
 ";
 
 const BENCH_HELP_TEXT: &str = "\
@@ -38,6 +43,16 @@ usage:
 notes:
   runtime: mock-pipeline
 ";
+
+const STANDARD_MODEL_FILES: [StandardModelFile; 7] = [
+    StandardModelFile::required("encoder.onnx", ModelFileRole::Encoder),
+    StandardModelFile::required("decoder.onnx", ModelFileRole::Decoder),
+    StandardModelFile::required("tokenizer.json", ModelFileRole::Tokenizer),
+    StandardModelFile::optional("decoder-with-past.onnx", ModelFileRole::DecoderWithPast),
+    StandardModelFile::optional("vocab.txt", ModelFileRole::Vocabulary),
+    StandardModelFile::optional("config.json", ModelFileRole::Config),
+    StandardModelFile::optional("generation.json", ModelFileRole::GenerationConfig),
+];
 
 fn main() -> ExitCode {
     match run(std::env::args()) {
@@ -105,19 +120,27 @@ fn run_model(mut args: impl Iterator<Item = String>) -> Result<String, CliError>
 
         return Ok(MODEL_HELP_TEXT.to_owned());
     }
+    match command.as_str() {
+        "inspect" => inspect_model(single_model_path(args)?),
+        "verify" => verify_model(single_model_path(args)?),
+        "plan" => plan_model(single_model_path(args)?),
+        "hash" => hash_model_file(single_model_path(args)?),
+        "write-manifest" => write_manifest(args),
+        _ => Err(CliError::UnknownModelCommand(command)),
+    }
+}
+
+/// { args contains one model path argument }
+/// fn single_model_path(args: impl Iterator<Item = String>) -> Result<String, CliError>
+/// { ret is Ok only when args contains exactly one path }
+fn single_model_path(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
     let path = args.next().ok_or(CliError::MissingArgument("MODEL_PACK"))?;
 
     if args.next().is_some() {
         return Err(CliError::TooManyArguments);
     }
 
-    match command.as_str() {
-        "inspect" => inspect_model(path),
-        "verify" => verify_model(path),
-        "plan" => plan_model(path),
-        "hash" => hash_model_file(path),
-        _ => Err(CliError::UnknownModelCommand(command)),
-    }
+    Ok(path)
 }
 
 /// { path is a model-pack root candidate }
@@ -159,9 +182,76 @@ fn verify_model(path: String) -> Result<String, CliError> {
 /// fn hash_model_file(path: String) -> Result<String, CliError>
 /// { ret is the manifest-ready lowercase SHA-256 digest }
 fn hash_model_file(path: String) -> Result<String, CliError> {
-    let digest = localmt::Sha256Digest::from_file(path).map_err(CliError::ModelPack)?;
+    let digest = Sha256Digest::from_file(path).map_err(CliError::ModelPack)?;
 
     Ok(format!("sha256: {digest}"))
+}
+
+/// { args contains write-manifest command arguments }
+/// fn write_manifest(args: impl Iterator<Item = String>) -> Result<String, CliError>
+/// { ret is Ok only when required standard files exist and manifest JSON serializes }
+fn write_manifest(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
+    let pack_path = args.next().ok_or(CliError::MissingArgument("MODEL_PACK"))?;
+    let model_id = args.next().ok_or(CliError::MissingArgument("MODEL_ID"))?;
+    let version = args.next().ok_or(CliError::MissingArgument("VERSION"))?;
+    let architecture = args
+        .next()
+        .ok_or(CliError::MissingArgument("ARCHITECTURE"))?;
+    let runtime = args.next().ok_or(CliError::MissingArgument("RUNTIME"))?;
+    let license = args.next().ok_or(CliError::MissingArgument("LICENSE"))?;
+
+    if args.next().is_some() {
+        return Err(CliError::TooManyArguments);
+    }
+
+    let manifest = ModelManifest::new_current(
+        ModelId::new(model_id).map_err(CliError::ModelPack)?,
+        ModelPackVersion::new(version).map_err(CliError::ModelPack)?,
+        ModelArchitecture::new(architecture).map_err(CliError::ModelPack)?,
+        ModelRuntime::new(runtime).map_err(CliError::ModelPack)?,
+        ModelLicense::new(license).map_err(CliError::ModelPack)?,
+        default_model_languages(),
+        standard_model_files(Path::new(&pack_path))?,
+    )
+    .map_err(CliError::ModelPack)?;
+
+    manifest
+        .to_json_string_pretty()
+        .map_err(CliError::ModelPack)
+}
+
+/// { true }
+/// fn default_model_languages() -> `Vec<Language>`
+/// { ret contains the first supported model-pack language set }
+fn default_model_languages() -> Vec<Language> {
+    vec![
+        Language::English,
+        Language::Russian,
+        Language::Thai,
+        Language::Vietnamese,
+        Language::Japanese,
+    ]
+}
+
+/// { root is a local model-pack directory candidate }
+/// fn standard_model_files(root: &Path) -> Result<`Vec<ModelFile>`, CliError>
+/// { ret contains required and present optional standard model-pack files with digests }
+fn standard_model_files(root: &Path) -> Result<Vec<ModelFile>, CliError> {
+    let mut files = Vec::new();
+    for item in STANDARD_MODEL_FILES {
+        let path = root.join(item.path);
+        if path.is_file() {
+            files.push(ModelFile::new(
+                ModelRelativePath::new(item.path.to_owned()).map_err(CliError::ModelPack)?,
+                item.role,
+                Sha256Digest::from_file(path).map_err(CliError::ModelPack)?,
+            ));
+        } else if item.required {
+            return Err(CliError::MissingStandardModelFile(item.path));
+        }
+    }
+
+    Ok(files)
 }
 
 /// { path is a model-pack root candidate }
@@ -250,6 +340,37 @@ fn is_help(value: &str) -> bool {
     matches!(value, "help" | "--help" | "-h")
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StandardModelFile {
+    path: &'static str,
+    role: ModelFileRole,
+    required: bool,
+}
+
+impl StandardModelFile {
+    /// { path is a standard model-pack relative path }
+    /// fn required(path: &'static str, role: ModelFileRole) -> Self
+    /// { ret marks path as required for write-manifest }
+    const fn required(path: &'static str, role: ModelFileRole) -> Self {
+        Self {
+            path,
+            role,
+            required: true,
+        }
+    }
+
+    /// { path is a standard model-pack relative path }
+    /// fn optional(path: &'static str, role: ModelFileRole) -> Self
+    /// { ret marks path as optional for write-manifest }
+    const fn optional(path: &'static str, role: ModelFileRole) -> Self {
+        Self {
+            path,
+            role,
+            required: false,
+        }
+    }
+}
+
 #[derive(Debug)]
 enum CliError {
     MissingArgument(&'static str),
@@ -263,6 +384,7 @@ enum CliError {
     OfflineAssets(localmt::OfflineTranslatorAssetsError),
     Benchmark(localmt_bench::BenchmarkError),
     InvalidBenchArguments(String),
+    MissingStandardModelFile(&'static str),
 }
 
 impl fmt::Display for CliError {
@@ -288,6 +410,9 @@ impl fmt::Display for CliError {
             Self::OfflineAssets(error) => write!(formatter, "{error}"),
             Self::Benchmark(error) => write!(formatter, "{error}"),
             Self::InvalidBenchArguments(message) => write!(formatter, "{message}"),
+            Self::MissingStandardModelFile(path) => {
+                write!(formatter, "missing standard model file: {path}")
+            }
         }
     }
 }
@@ -492,6 +617,43 @@ mod tests {
     }
 
     #[test]
+    fn cli_write_manifest_outputs_standard_model_files() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_standard_model_files()?;
+        let args = write_manifest_args(&root);
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains(r#""model_id": "m2m100-418m-int8""#));
+        assert!(output.contains(r#""kind": "encoder""#));
+        assert!(output.contains(r#""kind": "decoder""#));
+        assert!(output.contains(r#""kind": "tokenizer""#));
+
+        fs::write(root.join("manifest.json"), output)?;
+        let pack =
+            localmt_models::ModelPack::<localmt_models::Discovered>::discover(&root)?.verify()?;
+
+        assert_eq!(pack.manifest().model_id().as_str(), "m2m100-418m-int8");
+        Ok(())
+    }
+
+    #[test]
+    fn cli_write_manifest_rejects_missing_required_standard_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        fs::write(root.join("encoder.onnx"), "encoder\n")?;
+        fs::write(root.join("tokenizer.json"), "tokenizer\n")?;
+        let args = write_manifest_args(&root);
+
+        let result = run(args.into_iter());
+
+        assert!(matches!(
+            result,
+            Err(ref error) if error.to_string().contains("missing standard model file: decoder.onnx")
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn cli_prints_help() -> Result<(), Box<dyn std::error::Error>> {
         let args = ["localmt".to_owned(), "--help".to_owned()];
 
@@ -499,6 +661,9 @@ mod tests {
 
         assert!(output.contains("localmt FROM TO TEXT"));
         assert!(output.contains("localmt model hash FILE"));
+        assert!(output.contains(
+            "localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE"
+        ));
         assert!(output.contains("localmt bench --profile xiaomi17 --model-pack PACK"));
         Ok(())
     }
@@ -513,6 +678,9 @@ mod tests {
         assert!(output.contains("localmt model verify PACK"));
         assert!(output.contains("localmt model plan PACK"));
         assert!(output.contains("localmt model hash FILE"));
+        assert!(output.contains(
+            "localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE"
+        ));
         Ok(())
     }
 
@@ -583,6 +751,29 @@ mod tests {
             ),
         )?;
         Ok(root)
+    }
+
+    fn create_standard_model_files() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        fs::write(root.join("encoder.onnx"), "encoder\n")?;
+        fs::write(root.join("decoder.onnx"), "decoder\n")?;
+        fs::write(root.join("tokenizer.json"), "tokenizer\n")?;
+        fs::write(root.join("generation.json"), GENERATION_CONFIG)?;
+        Ok(root)
+    }
+
+    fn write_manifest_args(root: &std::path::Path) -> [String; 9] {
+        [
+            "localmt".to_owned(),
+            "model".to_owned(),
+            "write-manifest".to_owned(),
+            root.display().to_string(),
+            "m2m100-418m-int8".to_owned(),
+            "0.1.0".to_owned(),
+            "m2m100".to_owned(),
+            "onnx-runtime".to_owned(),
+            "MIT".to_owned(),
+        ]
     }
 
     fn create_temp_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {

@@ -61,6 +61,7 @@ Development CLI:
 ```bash
 localmt --help
 localmt model help
+localmt model write-manifest ./models/m2m100-418m-int8 m2m100-418m-int8 0.1.0 m2m100 onnx-runtime MIT
 localmt model hash ./models/m2m100-418m-int8/encoder.onnx
 localmt model inspect ./models/m2m100-418m-int8
 localmt model verify ./models/m2m100-418m-int8
@@ -73,6 +74,10 @@ SDK and tooling code can also build manifests without hand-written JSON:
 `ModelManifest::new_current` accepts validated model metadata, supported
 languages, safe relative file paths, typed file roles, and SHA-256 values, then
 `to_json_string_pretty` serializes the current schema for `manifest.json`.
+`model write-manifest` is the CLI path for standard local pack layouts: it
+requires `encoder.onnx`, `decoder.onnx`, and `tokenizer.json`, includes optional
+`decoder-with-past.onnx`, `vocab.txt`, `config.json`, and `generation.json`
+when present, computes SHA-256 values, and prints JSON to stdout.
 `model plan` verifies the pack, builds the facade-level
 `OfflineTranslatorPlan`, and parses an optional `generation_config`. It is a
 no-inference smoke command: it does not load ONNX Runtime sessions or execute
