@@ -96,6 +96,11 @@ pipeline `TokenGenerator` trait, but `generate` returns
 encoder/decoder tensor I/O is implemented. Real tokenization, decoder graph
 execution, and translation are intentionally future work.
 
+`OrtGeneratorPlan::parse_generation_config` parses the optional verified
+`generation_config` asset into `GenerationConfig`. Packs without that role
+return `Ok(None)`. Session loading and decoder execution still do not consume
+the config yet.
+
 ## Tokenizer Boundary
 
 `localmt-tokenizer` defines the tokenizer-side API before a real SentencePiece

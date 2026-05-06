@@ -4,7 +4,10 @@ use core::fmt;
 use std::path::{Path, PathBuf};
 
 use localmt_models::{ModelFileRole, ModelPack, Verified};
-use localmt_pipeline::{GeneratorAssetPlan, TokenGenerator, TokenGeneratorError};
+use localmt_pipeline::{
+    GenerationConfig, GenerationConfigParseError, GeneratorAssetPlan, TokenGenerator,
+    TokenGeneratorError,
+};
 use localmt_tokenizer::{TokenSequence, TokenizerOutput};
 
 const ONNX_RUNTIME: &str = "onnx-runtime";
@@ -196,6 +199,16 @@ impl OrtGeneratorPlan {
     pub fn generation_config_path(&self) -> Option<&Path> {
         self.generation_config_path.as_deref()
     }
+
+    /// { self was built from a verified ONNX Runtime model pack }
+    /// fn parse_generation_config(&self) -> `Result<Option<GenerationConfig>, OrtEngineError>`
+    /// { ret is Ok(Some) only when a declared generation_config file parses and validates }
+    pub fn parse_generation_config(&self) -> Result<Option<GenerationConfig>, OrtEngineError> {
+        self.generation_config_path()
+            .map(GenerationConfig::from_json_file)
+            .transpose()
+            .map_err(OrtEngineError::GenerationConfig)
+    }
 }
 
 /// ONNX Runtime adapter error.
@@ -207,6 +220,8 @@ pub enum OrtEngineError {
     MissingModelFile(OrtModelRole),
     /// Generator asset planning failed before ORT session planning.
     GeneratorAsset(TokenGeneratorError),
+    /// Generation config parsing failed.
+    GenerationConfig(GenerationConfigParseError),
     /// Crate was compiled without the `ort-runtime` feature.
     OrtRuntimeFeatureDisabled,
     /// ONNX Runtime failed to create a session.
@@ -221,6 +236,7 @@ impl fmt::Display for OrtEngineError {
             }
             Self::MissingModelFile(role) => write!(formatter, "missing ORT model file: {role}"),
             Self::GeneratorAsset(error) => write!(formatter, "{error}"),
+            Self::GenerationConfig(error) => write!(formatter, "{error}"),
             Self::OrtRuntimeFeatureDisabled => {
                 formatter.write_str("ort-runtime feature is not enabled")
             }
@@ -386,6 +402,7 @@ mod tests {
 
     use localmt_models::{Discovered, ModelFileRole, ModelPack};
     use localmt_pipeline::TokenGeneratorError;
+    use localmt_tokenizer::TokenId;
 
     #[cfg(not(feature = "ort-runtime"))]
     use crate::{OrtEngine, OrtTokenGenerator};
@@ -397,6 +414,20 @@ mod tests {
         "ef37d12b277fe98960af949b560ded559157bf42d2eea244dcfc64ac08da666c";
     const GENERATION_CONFIG_SHA256: &str =
         "75f35767c145e896ca56dba402cc97c3879445dace669c745ecea5fc0c9552b6";
+    const VALID_GENERATION_CONFIG_SHA256: &str =
+        "a8a99326d564beb1fc16cb59526dd5ed7b5fd673f969591f47845e17fbed401d";
+    const VALID_GENERATION_CONFIG: &str = r#"{
+  "max_new_tokens": 32,
+  "bos_token_id": 0,
+  "eos_token_id": 1,
+  "language_token_ids": {
+    "en": 10,
+    "ru": 11,
+    "th": 12,
+    "vi": 13,
+    "ja": 14
+  }
+}"#;
     const TOKENIZER_SHA256: &str =
         "38395078aa8c0af1657b8fc788f358d57e5f5fea99c8cdc004198e3c6fffbe71";
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -544,6 +575,56 @@ mod tests {
                 TokenGeneratorError::MissingGeneratorAsset(ModelFileRole::Decoder)
             ))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn generator_plan_parses_optional_generation_config() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_pack_with_files(
+            "onnx-runtime",
+            &[
+                ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+                ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+                (
+                    "generation.json",
+                    "generation_config",
+                    VALID_GENERATION_CONFIG_SHA256,
+                    VALID_GENERATION_CONFIG,
+                ),
+            ],
+        )?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+        let plan = OrtGeneratorPlan::from_pack(&pack)?;
+
+        let config = plan.parse_generation_config()?;
+
+        assert!(matches!(
+            config,
+            Some(item)
+                if item.max_new_tokens().value() == 32
+                    && item.bos_token_id() == TokenId::new(0)
+                    && item.eos_token_id() == TokenId::new(1)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn generator_plan_returns_none_without_generation_config()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack_with_files(
+            "onnx-runtime",
+            &[
+                ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+                ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+            ],
+        )?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+        let plan = OrtGeneratorPlan::from_pack(&pack)?;
+
+        let config = plan.parse_generation_config()?;
+
+        assert_eq!(config, None);
         Ok(())
     }
 

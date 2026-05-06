@@ -92,6 +92,9 @@ language set. It validates duplicate or colliding token roles before any decoder
 loop consumes those values. The pipeline crate parses the local
 `generation_config` JSON schema into that type; `max_new_tokens` is optional and
 defaults to `DEFAULT_MAX_NEW_TOKENS`.
+`OrtGeneratorPlan::parse_generation_config` bridges the verified optional
+`generation_config` model-pack asset into this typed config while keeping ORT
+session loading and decoder execution separate.
 `OfflineTranslatorPlan` is the facade-level planning object for SDK users. It
 combines `TokenizerAssetPlan` and `OrtGeneratorPlan` from one verified model
 pack without parsing tokenizer files, loading ORT sessions, or running
@@ -136,6 +139,8 @@ must carry a license warning and must not become the default bundled option.
 - Typed generation config captures max-new-token limits, BOS/EOS ids, and
   target-language token ids, with parser support for the local
   `generation_config` JSON schema.
+- ORT generator plans can parse optional verified generation config assets
+  without loading sessions or running decoder inference.
 - Facade-level offline translator planning combines tokenizer and ORT generator
   plans from one verified model pack without loading runtime resources.
 - Xiaomi 17 benchmark command exists and clearly labels `mock-pipeline`
