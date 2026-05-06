@@ -63,6 +63,17 @@ impl OfflineTranslatorPlan {
     pub const fn generator(&self) -> &OrtGeneratorPlan {
         &self.generator
     }
+
+    /// { self was built from a verified model pack }
+    /// fn parse_generation_config(&self) -> `Result<Option<GenerationConfig>, OfflineTranslatorPlanError>`
+    /// { ret is Ok(Some) only when a declared generation_config parses and validates }
+    pub fn parse_generation_config(
+        &self,
+    ) -> Result<Option<GenerationConfig>, OfflineTranslatorPlanError> {
+        self.generator
+            .parse_generation_config()
+            .map_err(OfflineTranslatorPlanError::Generator)
+    }
 }
 
 /// Facade-level translator planning error.
@@ -127,12 +138,10 @@ mod tests {
     use super::{
         Discovered, Language, MockEngine, ModelFileRole, ModelPack, NonEmptyText,
         OfflineTranslatorPlan, OfflineTranslatorPlanError, OrtEngineError, OrtModelRole,
-        TokenGeneratorError, TokenizerError, TranslateRequest, Translator,
+        TokenGeneratorError, TokenId, TokenizerError, TranslateRequest, Translator,
     };
     #[cfg(not(feature = "ort-runtime"))]
-    use super::{
-        LanguagePair, OrtTokenGenerator, TokenGenerator, TokenId, TokenSequence, TokenizerOutput,
-    };
+    use super::{LanguagePair, OrtTokenGenerator, TokenGenerator, TokenSequence, TokenizerOutput};
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
     const DECODER_SHA256: &str = "eacbeef293be61f2a85d929cadb4cbb5248c8b8a1478b3d4b3180ea365d5e687";
@@ -140,11 +149,25 @@ mod tests {
         "ef37d12b277fe98960af949b560ded559157bf42d2eea244dcfc64ac08da666c";
     const GENERATION_CONFIG_SHA256: &str =
         "75f35767c145e896ca56dba402cc97c3879445dace669c745ecea5fc0c9552b6";
+    const VALID_GENERATION_CONFIG_SHA256: &str =
+        "a8a99326d564beb1fc16cb59526dd5ed7b5fd673f969591f47845e17fbed401d";
     const TOKENIZER_SHA256: &str =
         "38395078aa8c0af1657b8fc788f358d57e5f5fea99c8cdc004198e3c6fffbe71";
     const VOCABULARY_SHA256: &str =
         "9e5e90102c699455e9039ff903284e0689394dd345bb11456706f087984d2eb7";
     const CONFIG_SHA256: &str = "f612b89bcdbc401379f644d7e48572e3470f77dcd4c39416405d80952ad7089e";
+    const VALID_GENERATION_CONFIG: &str = r#"{
+  "max_new_tokens": 32,
+  "bos_token_id": 0,
+  "eos_token_id": 1,
+  "language_token_ids": {
+    "en": 10,
+    "ru": 11,
+    "th": 12,
+    "vi": 13,
+    "ja": 14
+  }
+}"#;
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
@@ -272,6 +295,45 @@ mod tests {
                 ))
             ))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn offline_translator_plan_parses_generation_config() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_pack(&[
+            ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+            ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+            (
+                "generation.json",
+                "generation_config",
+                VALID_GENERATION_CONFIG_SHA256,
+                VALID_GENERATION_CONFIG,
+            ),
+            (
+                "tokenizer.json",
+                "tokenizer",
+                TOKENIZER_SHA256,
+                "tokenizer\n",
+            ),
+        ])?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+        let plan = OfflineTranslatorPlan::from_pack(&pack)?;
+
+        let config = plan.parse_generation_config()?.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "generation config should be present",
+            )
+        })?;
+
+        assert_eq!(config.max_new_tokens().value(), 32);
+        assert_eq!(config.bos_token_id(), TokenId::new(0));
+        assert_eq!(config.eos_token_id(), TokenId::new(1));
+        assert_eq!(
+            config.target_language_token(Language::Japanese),
+            TokenId::new(14)
+        );
         Ok(())
     }
 

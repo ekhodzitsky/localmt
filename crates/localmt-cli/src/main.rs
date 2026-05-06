@@ -117,9 +117,8 @@ fn plan_model(path: String) -> Result<String, CliError> {
         .map_err(CliError::ModelPack)?;
     let plan = OfflineTranslatorPlan::from_pack(&pack).map_err(CliError::OfflinePlan)?;
     let generation_config = plan
-        .generator()
         .parse_generation_config()
-        .map_err(CliError::OrtPlan)?;
+        .map_err(CliError::OfflinePlan)?;
 
     let decoder_with_past = plan
         .generator()
@@ -205,7 +204,6 @@ enum CliError {
     UnknownModelCommand(String),
     ModelPack(localmt_models::ModelPackError),
     OfflinePlan(localmt::OfflineTranslatorPlanError),
-    OrtPlan(localmt::OrtEngineError),
     Benchmark(localmt_bench::BenchmarkError),
     InvalidBenchArguments(String),
 }
@@ -231,7 +229,6 @@ impl fmt::Display for CliError {
             }
             Self::ModelPack(error) => write!(formatter, "{error}"),
             Self::OfflinePlan(error) => write!(formatter, "{error}"),
-            Self::OrtPlan(error) => write!(formatter, "{error}"),
             Self::Benchmark(error) => write!(formatter, "{error}"),
             Self::InvalidBenchArguments(message) => write!(formatter, "{message}"),
         }

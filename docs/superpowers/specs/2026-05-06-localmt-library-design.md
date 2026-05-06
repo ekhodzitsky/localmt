@@ -99,6 +99,9 @@ session loading and decoder execution separate.
 combines `TokenizerAssetPlan` and `OrtGeneratorPlan` from one verified model
 pack without parsing tokenizer files, loading ORT sessions, or running
 translation.
+It also exposes facade-level `parse_generation_config` so SDK adapters do not
+need to reach into ORT-specific plan internals just to validate decoder-loop
+settings.
 The development CLI and benchmark command use this pipeline path so smoke tests
 exercise the same shape that real inference will fill.
 `localmt model plan <pack>` is the no-inference CLI smoke path for verified
@@ -146,6 +149,8 @@ must carry a license warning and must not become the default bundled option.
   without loading sessions or running decoder inference.
 - Facade-level offline translator planning combines tokenizer and ORT generator
   plans from one verified model pack without loading runtime resources.
+- Facade-level offline translator plans can parse optional generation config
+  without exposing ORT-specific generator internals to adapters.
 - Development CLI can run `localmt model plan <pack>` to smoke verified facade
   planning and generation-config parsing without inference.
 - Xiaomi 17 benchmark command exists and clearly labels `mock-pipeline`

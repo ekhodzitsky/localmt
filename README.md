@@ -79,6 +79,9 @@ generation-config paths.
 
 This object is still a load plan. It does not parse tokenizer files, load ONNX
 Runtime sessions, or run translation.
+`OfflineTranslatorPlan::parse_generation_config` exposes facade-level parsing
+for the optional generation config while still avoiding tokenizer parsing,
+session loading, and decoder execution.
 
 ## ONNX Runtime Boundary
 
