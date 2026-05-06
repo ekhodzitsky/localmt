@@ -229,6 +229,82 @@ impl fmt::Display for OrtEngineError {
 
 impl std::error::Error for OrtEngineError {}
 
+/// ONNX Runtime token generator handle.
+#[cfg(not(feature = "ort-runtime"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OrtTokenGenerator;
+
+#[cfg(not(feature = "ort-runtime"))]
+impl OrtTokenGenerator {
+    /// { plan was built from a verified ONNX Runtime model pack }
+    /// fn load(plan: OrtGeneratorPlan) -> Result<Self, OrtEngineError>
+    /// { ret is Err when compiled without ort-runtime }
+    pub fn load(_plan: OrtGeneratorPlan) -> Result<Self, OrtEngineError> {
+        Err(OrtEngineError::OrtRuntimeFeatureDisabled)
+    }
+}
+
+/// ONNX Runtime token generator handle.
+#[cfg(feature = "ort-runtime")]
+#[derive(Debug)]
+pub struct OrtTokenGenerator {
+    plan: OrtGeneratorPlan,
+    encoder: OrtEngine,
+    decoder: OrtEngine,
+    decoder_with_past: Option<OrtEngine>,
+}
+
+#[cfg(feature = "ort-runtime")]
+impl OrtTokenGenerator {
+    /// { plan was built from a verified ONNX Runtime model pack }
+    /// fn load(plan: OrtGeneratorPlan) -> Result<Self, OrtEngineError>
+    /// { ret is Ok only when ONNX Runtime loads required generator sessions }
+    pub fn load(plan: OrtGeneratorPlan) -> Result<Self, OrtEngineError> {
+        let encoder = OrtEngine::load(plan.encoder().clone())?;
+        let decoder = OrtEngine::load(plan.decoder().clone())?;
+        let decoder_with_past = plan
+            .decoder_with_past()
+            .cloned()
+            .map(OrtEngine::load)
+            .transpose()?;
+
+        Ok(Self {
+            plan,
+            encoder,
+            decoder,
+            decoder_with_past,
+        })
+    }
+
+    /// { self was loaded successfully }
+    /// fn plan(&self) -> &OrtGeneratorPlan
+    /// { ret is the verified generator plan used for loading }
+    pub const fn plan(&self) -> &OrtGeneratorPlan {
+        &self.plan
+    }
+
+    /// { self was loaded successfully }
+    /// fn encoder(&self) -> &OrtEngine
+    /// { ret is the loaded encoder session wrapper }
+    pub const fn encoder(&self) -> &OrtEngine {
+        &self.encoder
+    }
+
+    /// { self was loaded successfully }
+    /// fn decoder(&self) -> &OrtEngine
+    /// { ret is the loaded decoder session wrapper }
+    pub const fn decoder(&self) -> &OrtEngine {
+        &self.decoder
+    }
+
+    /// { self was loaded successfully }
+    /// fn decoder_with_past(&self) -> `Option<&OrtEngine>`
+    /// { ret is Some only when the cached decoder session was loaded }
+    pub const fn decoder_with_past(&self) -> Option<&OrtEngine> {
+        self.decoder_with_past.as_ref()
+    }
+}
+
 /// ONNX Runtime engine handle.
 #[cfg(not(feature = "ort-runtime"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -299,7 +375,7 @@ mod tests {
     use localmt_pipeline::TokenGeneratorError;
 
     #[cfg(not(feature = "ort-runtime"))]
-    use crate::OrtEngine;
+    use crate::{OrtEngine, OrtTokenGenerator};
     use crate::{OrtEngineError, OrtGeneratorPlan, OrtModelRole, OrtSessionPlan};
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
@@ -454,6 +530,29 @@ mod tests {
             Err(OrtEngineError::GeneratorAsset(
                 TokenGeneratorError::MissingGeneratorAsset(ModelFileRole::Decoder)
             ))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(not(feature = "ort-runtime"))]
+    fn token_generator_load_returns_feature_disabled_without_ort_runtime()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack_with_files(
+            "onnx-runtime",
+            &[
+                ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+                ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+            ],
+        )?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+        let plan = OrtGeneratorPlan::from_pack(&pack)?;
+
+        let error = OrtTokenGenerator::load(plan);
+
+        assert!(matches!(
+            error,
+            Err(OrtEngineError::OrtRuntimeFeatureDisabled)
         ));
         Ok(())
     }

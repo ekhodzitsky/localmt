@@ -7,7 +7,7 @@ pub use localmt_core::{
 };
 pub use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
 pub use localmt_engine_ort::{
-    OrtEngine, OrtEngineError, OrtGeneratorPlan, OrtModelRole, OrtSessionPlan,
+    OrtEngine, OrtEngineError, OrtGeneratorPlan, OrtModelRole, OrtSessionPlan, OrtTokenGenerator,
 };
 pub use localmt_models::{
     Discovered, ModelArchitecture, ModelFile, ModelFileKind, ModelFileRole, ModelId, ModelLicense,

@@ -77,9 +77,11 @@ cargo check -p localmt --features ort-runtime
 ```
 
 `OrtGeneratorPlan` builds on the pipeline-owned `GeneratorAssetPlan` and turns
-verified encoder/decoder assets into ORT session plans. The crate still stops
-before actual token generation; tokenization, decoder graph execution, and
-translation are intentionally future work.
+verified encoder/decoder assets into ORT session plans. `OrtTokenGenerator`
+loads the required ORT sessions only when `ort-runtime` is enabled; the default
+build returns `OrtRuntimeFeatureDisabled`. The crate still stops before actual
+token generation; tokenization, decoder graph execution, and translation are
+intentionally future work.
 
 ## Tokenizer Boundary
 

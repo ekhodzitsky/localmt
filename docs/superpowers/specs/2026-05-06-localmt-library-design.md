@@ -81,6 +81,8 @@ implementations by requiring `encoder` and `decoder` graph roles and preserving
 optional `decoder_with_past` and `generation_config` paths.
 `OrtGeneratorPlan` consumes that asset plan for ONNX Runtime and converts graph
 assets into encoder/decoder session plans before any session is loaded.
+`OrtTokenGenerator::load` loads those sessions behind `ort-runtime`; default
+builds still return an explicit disabled-runtime error.
 The development CLI and benchmark command use this pipeline path so smoke tests
 exercise the same shape that real inference will fill.
 
@@ -114,6 +116,8 @@ must carry a license warning and must not become the default bundled option.
   and preserves optional cached-decoder/generation-config paths.
 - ORT generator planning consumes verified generator assets and produces
   encoder/decoder session plans without running inference.
+- ORT token-generator loading is feature-gated and default builds return an
+  explicit disabled-runtime error.
 - Xiaomi 17 benchmark command exists and clearly labels `mock-pipeline`
   results.
 - ONNX Runtime session loading is gated behind `ort-runtime`; default builds
