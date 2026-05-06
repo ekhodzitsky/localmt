@@ -26,6 +26,9 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
     if first == "model" {
         return run_model(args);
     }
+    if first == "bench" {
+        return run_bench(args);
+    }
 
     let source = parse_language_code(first)?;
     let target = parse_language(args.next(), "TO")?;
@@ -101,6 +104,30 @@ fn verify_model(path: String) -> Result<String, CliError> {
     Ok(format!("verified: {}", pack.manifest().model_id()))
 }
 
+/// { args contains benchmark command arguments }
+/// fn run_bench(args: impl Iterator<Item = String>) -> Result<String, CliError>
+/// { ret is Ok only when profile and model-pack arguments are valid }
+fn run_bench(args: impl Iterator<Item = String>) -> Result<String, CliError> {
+    let options = BenchOptions::parse(args)?;
+    let pack = ModelPack::<Discovered>::discover(options.model_pack_path)
+        .and_then(ModelPack::verify)
+        .map_err(CliError::ModelPack)?;
+    let report = localmt_bench::MockBenchmarkRunner::new(options.profile)
+        .run(&pack)
+        .map_err(CliError::Benchmark)?;
+
+    Ok(format!(
+        "profile: {}\nruntime: {}\nmodel_id: {}\nscenarios: {}\ntranslations: {}\ntotal_ms: {}\nwarm_translate_ms: {}",
+        report.profile().as_str(),
+        report.runtime(),
+        report.model_id(),
+        report.scenario_count(),
+        report.translation_count(),
+        report.total_ms(),
+        report.warm_translate_ms()
+    ))
+}
+
 /// { value is an optional language code }
 /// fn parse_language(value: `Option<String>`, name: &'static str) -> Result<Language, CliError>
 /// { ret is Ok only when value is a supported ISO 639-1 code }
@@ -127,6 +154,8 @@ enum CliError {
     Translate(localmt::TranslationError),
     UnknownModelCommand(String),
     ModelPack(localmt_models::ModelPackError),
+    Benchmark(localmt_bench::BenchmarkError),
+    InvalidBenchArguments(String),
 }
 
 impl fmt::Display for CliError {
@@ -149,11 +178,54 @@ impl fmt::Display for CliError {
                 write!(formatter, "unknown model command: {command}")
             }
             Self::ModelPack(error) => write!(formatter, "{error}"),
+            Self::Benchmark(error) => write!(formatter, "{error}"),
+            Self::InvalidBenchArguments(message) => write!(formatter, "{message}"),
         }
     }
 }
 
 impl std::error::Error for CliError {}
+
+struct BenchOptions {
+    profile: localmt_bench::DeviceProfile,
+    model_pack_path: String,
+}
+
+impl BenchOptions {
+    /// { args contains benchmark CLI arguments }
+    /// fn parse(args: impl Iterator<Item = String>) -> Result<Self, CliError>
+    /// { ret is Ok only when --profile and --model-pack are both present once }
+    fn parse(args: impl Iterator<Item = String>) -> Result<Self, CliError> {
+        let mut profile = None;
+        let mut model_pack_path = None;
+        let mut args = args;
+
+        while let Some(flag) = args.next() {
+            match flag.as_str() {
+                "--profile" => {
+                    let value = args.next().ok_or(CliError::MissingArgument("PROFILE"))?;
+                    profile = Some(
+                        localmt_bench::DeviceProfile::parse(&value).map_err(CliError::Benchmark)?,
+                    );
+                }
+                "--model-pack" => {
+                    model_pack_path =
+                        Some(args.next().ok_or(CliError::MissingArgument("MODEL_PACK"))?);
+                }
+                _ => {
+                    return Err(CliError::InvalidBenchArguments(format!(
+                        "unknown bench argument: {flag}"
+                    )));
+                }
+            }
+        }
+
+        Ok(Self {
+            profile: profile.ok_or(CliError::MissingArgument("PROFILE"))?,
+            model_pack_path: model_pack_path.ok_or(CliError::MissingArgument("MODEL_PACK"))?,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -229,6 +301,27 @@ mod tests {
         let output = run(args.into_iter())?;
 
         assert_eq!(output, "verified: m2m100-418m-int8");
+        Ok(())
+    }
+
+    #[test]
+    fn cli_runs_mock_benchmark_for_verified_pack() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "bench".to_owned(),
+            "--profile".to_owned(),
+            "xiaomi17".to_owned(),
+            "--model-pack".to_owned(),
+            root.display().to_string(),
+        ];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("profile: xiaomi17"));
+        assert!(output.contains("runtime: mock"));
+        assert!(output.contains("model_id: m2m100-418m-int8"));
+        assert!(output.contains("scenarios: 10"));
         Ok(())
     }
 

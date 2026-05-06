@@ -1,5 +1,6 @@
 //! Public facade for the localmt translation library.
 
+pub use localmt_bench::{BenchReport, BenchmarkError, DeviceProfile, MockBenchmarkRunner};
 pub use localmt_core::{
     Language, LanguageCodeError, LanguagePair, LanguagePairError, MAX_TEXT_CHARS, NonEmptyText,
     TextError, TranslateRequest, Translation,

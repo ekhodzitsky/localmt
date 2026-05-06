@@ -72,6 +72,16 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 name = "localmt"
 version = "0.1.0"
 dependencies = [
+ "localmt-bench",
+ "localmt-core",
+ "localmt-engine",
+ "localmt-models",
+]
+
+[[package]]
+name = "localmt-bench"
+version = "0.1.0"
+dependencies = [
  "localmt-core",
  "localmt-engine",
  "localmt-models",
@@ -82,6 +92,7 @@ name = "localmt-cli"
 version = "0.1.0"
 dependencies = [
  "localmt",
+ "localmt-bench",
  "localmt-models",
 ]
 

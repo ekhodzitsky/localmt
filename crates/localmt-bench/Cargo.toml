@@ -1,5 +1,5 @@
 [package]
-name = "localmt"
+name = "localmt-bench"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -7,7 +7,6 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-localmt-bench = { path = "../localmt-bench" }
 localmt-core = { path = "../localmt-core" }
 localmt-engine = { path = "../localmt-engine" }
 localmt-models = { path = "../localmt-models" }

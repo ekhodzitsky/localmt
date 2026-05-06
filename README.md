@@ -13,6 +13,7 @@ layer so API and asset-loading contracts can be tested before real inference.
 - `crates/localmt-core` - language, text, request, and invariant types
 - `crates/localmt-engine` - engine trait and mock engine
 - `crates/localmt-models` - model-pack manifest parsing and checksum verification
+- `crates/localmt-bench` - benchmark profiles and mock benchmark skeleton
 - `crates/localmt` - public facade crate
 - `crates/localmt-cli` - development CLI for smoke testing
 
@@ -49,6 +50,17 @@ Development CLI:
 ```bash
 localmt model inspect ./models/m2m100-418m-int8
 localmt model verify ./models/m2m100-418m-int8
+```
+
+## Benchmark Skeleton
+
+The current benchmark command verifies a model pack, then runs 10 fixed language
+pair scenarios through the mock engine. It is intentionally labeled
+`runtime: mock`; real ONNX latency and memory metrics will be added with the
+`localmt-engine-ort` backend.
+
+```bash
+localmt bench --profile xiaomi17 --model-pack ./models/m2m100-418m-int8
 ```
 
 ## Verify

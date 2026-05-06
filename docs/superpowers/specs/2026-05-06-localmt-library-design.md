@@ -38,6 +38,8 @@ The workspace is split into narrow crates:
 - `localmt-engine`: `TranslatorEngine` trait plus a deterministic mock engine.
 - `localmt-models`: manifest parsing, safe relative path validation, required
   language checks, and SHA-256 verification for model-pack files.
+- `localmt-bench`: device profiles and benchmark report types. The first
+  implementation runs fixed smoke scenarios against the mock engine.
 - `localmt`: facade crate that re-exports stable public API and owns
   `Translator<E>`.
 - `localmt-cli`: development-only smoke CLI.
@@ -62,5 +64,6 @@ must carry a license warning and must not become the default bundled option.
   - unsupported language codes
 - The mock translator returns deterministic non-empty output.
 - Model packs can be inspected and verified before real inference loads them.
+- Xiaomi 17 benchmark command exists and clearly labels mock-runtime results.
 - `cargo fmt --check`, `cargo test`, `cargo clippy --all-targets --all-features
   -- -D warnings`, and `cargo doc --no-deps` pass.

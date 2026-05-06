@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/localmt",
+    "crates/localmt-bench",
     "crates/localmt-cli",
     "crates/localmt-core",
     "crates/localmt-engine",

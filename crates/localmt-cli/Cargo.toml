@@ -13,6 +13,7 @@ doc = false
 
 [dependencies]
 localmt = { path = "../localmt" }
+localmt-bench = { path = "../localmt-bench" }
 localmt-models = { path = "../localmt-models" }
 
 [lints]
