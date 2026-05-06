@@ -69,6 +69,10 @@ localmt bench --help
 ```
 
 `model hash` computes the lowercase SHA-256 digest used in `manifest.json`.
+SDK and tooling code can also build manifests without hand-written JSON:
+`ModelManifest::new_current` accepts validated model metadata, supported
+languages, safe relative file paths, typed file roles, and SHA-256 values, then
+`to_json_string_pretty` serializes the current schema for `manifest.json`.
 `model plan` verifies the pack, builds the facade-level
 `OfflineTranslatorPlan`, and parses an optional `generation_config`. It is a
 no-inference smoke command: it does not load ONNX Runtime sessions or execute

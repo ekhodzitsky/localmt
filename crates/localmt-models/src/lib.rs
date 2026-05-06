@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use localmt_core::Language;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const MANIFEST_FILE_NAME: &str = "manifest.json";
@@ -144,6 +144,33 @@ pub struct ModelManifest {
 }
 
 impl ModelManifest {
+    /// { fields are validated model-pack manifest fields for the current schema }
+    /// fn new_current(model_id: ModelId, version: ModelPackVersion, architecture: ModelArchitecture, runtime: ModelRuntime, license: ModelLicense, languages: `Vec<Language>`, files: `Vec<ModelFile>`) -> Result<Self, ModelPackError>
+    /// { ret is Ok only when languages and files satisfy manifest uniqueness invariants }
+    pub fn new_current(
+        model_id: ModelId,
+        version: ModelPackVersion,
+        architecture: ModelArchitecture,
+        runtime: ModelRuntime,
+        license: ModelLicense,
+        languages: Vec<Language>,
+        files: Vec<ModelFile>,
+    ) -> Result<Self, ModelPackError> {
+        ensure_distinct_languages(&languages)?;
+        ensure_valid_files(&files)?;
+
+        Ok(Self {
+            schema_version: SCHEMA_VERSION,
+            model_id,
+            version,
+            architecture,
+            runtime,
+            license,
+            languages,
+            files,
+        })
+    }
+
     fn from_raw(raw: RawManifest) -> Result<Self, ModelPackError> {
         if raw.schema_version != SCHEMA_VERSION {
             return Err(ModelPackError::UnsupportedSchema(raw.schema_version));
@@ -225,6 +252,28 @@ impl ModelManifest {
     /// { ret is true only when language is in self.languages() }
     pub fn supports(&self, language: Language) -> bool {
         self.languages.contains(&language)
+    }
+
+    /// { self contains validated manifest fields }
+    /// fn to_json_string_pretty(&self) -> Result<String, ModelPackError>
+    /// { ret is a pretty JSON manifest document that can be parsed by ModelPack::discover }
+    pub fn to_json_string_pretty(&self) -> Result<String, ModelPackError> {
+        let manifest = SerializableManifest {
+            schema_version: self.schema_version,
+            model_id: self.model_id.as_str(),
+            version: self.version.as_str(),
+            architecture: self.architecture.as_str(),
+            runtime: self.runtime.as_str(),
+            license: self.license.as_str(),
+            languages: self
+                .languages
+                .iter()
+                .map(|language| language.iso_639_1())
+                .collect(),
+            files: self.files.iter().map(serializable_file).collect(),
+        };
+
+        serde_json::to_string_pretty(&manifest).map_err(ModelPackError::SerializeManifest)
     }
 }
 
@@ -466,6 +515,8 @@ pub enum ModelPackError {
     },
     /// Manifest JSON could not be parsed.
     ParseManifest(serde_json::Error),
+    /// Manifest JSON could not be serialized.
+    SerializeManifest(serde_json::Error),
     /// Manifest schema is not supported.
     UnsupportedSchema(u16),
     /// Required string field is empty.
@@ -511,6 +562,9 @@ impl fmt::Display for ModelPackError {
                 write!(formatter, "failed to read {}: {source}", path.display())
             }
             Self::ParseManifest(source) => write!(formatter, "failed to parse manifest: {source}"),
+            Self::SerializeManifest(source) => {
+                write!(formatter, "failed to serialize manifest: {source}")
+            }
             Self::UnsupportedSchema(version) => write!(formatter, "unsupported schema: {version}"),
             Self::EmptyField(field) => write!(formatter, "manifest field is empty: {field}"),
             Self::InvalidLanguage(error) => write!(formatter, "{error}"),
@@ -543,7 +597,25 @@ impl fmt::Display for ModelPackError {
     }
 }
 
-impl std::error::Error for ModelPackError {}
+impl std::error::Error for ModelPackError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ReadManifest { source, .. } | Self::ReadModelFile { source, .. } => Some(source),
+            Self::ParseManifest(source) | Self::SerializeManifest(source) => Some(source),
+            Self::InvalidLanguage(error) => Some(error),
+            Self::UnsupportedSchema(_)
+            | Self::EmptyField(_)
+            | Self::DuplicateLanguage(_)
+            | Self::EmptyFileList
+            | Self::UnsupportedFileRole(_)
+            | Self::DuplicateFileRole(_)
+            | Self::InvalidRelativePath(_)
+            | Self::InvalidSha256(_)
+            | Self::MissingRequiredLanguage(_)
+            | Self::ChecksumMismatch { .. } => None,
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct RawManifest {
@@ -564,36 +636,78 @@ struct RawModelFile {
     sha256: String,
 }
 
+#[derive(Serialize)]
+struct SerializableManifest<'a> {
+    schema_version: u16,
+    model_id: &'a str,
+    version: &'a str,
+    architecture: &'a str,
+    runtime: &'a str,
+    license: &'a str,
+    languages: Vec<&'static str>,
+    files: Vec<SerializableModelFile<'a>>,
+}
+
+#[derive(Serialize)]
+struct SerializableModelFile<'a> {
+    path: String,
+    kind: &'static str,
+    sha256: &'a str,
+}
+
+fn serializable_file(file: &ModelFile) -> SerializableModelFile<'_> {
+    SerializableModelFile {
+        path: file.path().to_string(),
+        kind: file.role().as_str(),
+        sha256: file.sha256().as_str(),
+    }
+}
+
 fn parse_languages(values: Vec<String>) -> Result<Vec<Language>, ModelPackError> {
-    let mut seen = BTreeSet::new();
     let mut languages = Vec::with_capacity(values.len());
     for value in values {
         let language = Language::from_iso_639_1(&value).map_err(ModelPackError::InvalidLanguage)?;
-        if !seen.insert(language) {
-            return Err(ModelPackError::DuplicateLanguage(language));
-        }
         languages.push(language);
     }
+    ensure_distinct_languages(&languages)?;
 
     Ok(languages)
 }
 
 fn parse_files(values: Vec<RawModelFile>) -> Result<Vec<ModelFile>, ModelPackError> {
+    let mut files = Vec::with_capacity(values.len());
+    for value in values {
+        files.push(parse_file(value)?);
+    }
+    ensure_valid_files(&files)?;
+
+    Ok(files)
+}
+
+fn ensure_distinct_languages(values: &[Language]) -> Result<(), ModelPackError> {
+    let mut seen = BTreeSet::new();
+    for language in values {
+        if !seen.insert(*language) {
+            return Err(ModelPackError::DuplicateLanguage(*language));
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_valid_files(values: &[ModelFile]) -> Result<(), ModelPackError> {
     if values.is_empty() {
         return Err(ModelPackError::EmptyFileList);
     }
 
     let mut seen = BTreeSet::new();
-    let mut files = Vec::with_capacity(values.len());
-    for value in values {
-        let file = parse_file(value)?;
+    for file in values {
         if !seen.insert(file.role()) {
             return Err(ModelPackError::DuplicateFileRole(file.role()));
         }
-        files.push(file);
     }
 
-    Ok(files)
+    Ok(())
 }
 
 fn parse_file(value: RawModelFile) -> Result<ModelFile, ModelPackError> {
@@ -653,7 +767,11 @@ mod tests {
 
     use localmt_core::Language;
 
-    use crate::{Discovered, ModelFileRole, ModelPack, ModelPackError, Sha256Digest};
+    use crate::{
+        Discovered, ModelArchitecture, ModelFile, ModelFileRole, ModelId, ModelLicense,
+        ModelManifest, ModelPack, ModelPackError, ModelPackVersion, ModelRelativePath,
+        ModelRuntime, Sha256Digest,
+    };
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
     const TOKENIZER_SHA256: &str =
@@ -715,6 +833,95 @@ mod tests {
         let digest = Sha256Digest::from_file(&path)?;
 
         assert_eq!(digest.as_str(), ENCODER_SHA256);
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_authoring_round_trips_through_discovery() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_temp_dir()?;
+        let encoder_path = root.join("encoder.onnx");
+        let tokenizer_path = root.join("tokenizer.json");
+        fs::write(&encoder_path, "encoder\n")?;
+        fs::write(&tokenizer_path, "tokenizer\n")?;
+        let manifest = authored_manifest(
+            required_languages(),
+            vec![
+                ModelFile::new(
+                    ModelRelativePath::new("encoder.onnx".to_owned())?,
+                    ModelFileRole::Encoder,
+                    Sha256Digest::from_file(&encoder_path)?,
+                ),
+                ModelFile::new(
+                    ModelRelativePath::new("tokenizer.json".to_owned())?,
+                    ModelFileRole::Tokenizer,
+                    Sha256Digest::from_file(&tokenizer_path)?,
+                ),
+            ],
+        )?;
+        let manifest_json = manifest.to_json_string_pretty()?;
+
+        assert!(manifest_json.contains(r#""model_id": "m2m100-418m-int8""#));
+        assert!(manifest_json.contains(r#""kind": "encoder""#));
+
+        fs::write(root.join("manifest.json"), manifest_json)?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+
+        assert_eq!(
+            pack.file_path(ModelFileRole::Encoder),
+            Some(root.join("encoder.onnx"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_authoring_rejects_duplicate_file_roles() -> Result<(), Box<dyn std::error::Error>> {
+        let digest = Sha256Digest::new(ENCODER_SHA256.to_owned())?;
+        let error = authored_manifest(
+            required_languages(),
+            vec![
+                ModelFile::new(
+                    ModelRelativePath::new("encoder.onnx".to_owned())?,
+                    ModelFileRole::Encoder,
+                    digest.clone(),
+                ),
+                ModelFile::new(
+                    ModelRelativePath::new("encoder-copy.onnx".to_owned())?,
+                    ModelFileRole::Encoder,
+                    digest,
+                ),
+            ],
+        );
+
+        assert!(matches!(
+            error,
+            Err(ModelPackError::DuplicateFileRole(ModelFileRole::Encoder))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_authoring_rejects_duplicate_languages() -> Result<(), Box<dyn std::error::Error>> {
+        let error = authored_manifest(
+            vec![
+                Language::English,
+                Language::English,
+                Language::Russian,
+                Language::Thai,
+                Language::Vietnamese,
+                Language::Japanese,
+            ],
+            vec![ModelFile::new(
+                ModelRelativePath::new("encoder.onnx".to_owned())?,
+                ModelFileRole::Encoder,
+                Sha256Digest::new(ENCODER_SHA256.to_owned())?,
+            )],
+        );
+
+        assert!(matches!(
+            error,
+            Err(ModelPackError::DuplicateLanguage(Language::English))
+        ));
         Ok(())
     }
 
@@ -837,6 +1044,31 @@ mod tests {
         ));
         fs::create_dir_all(&root)?;
         Ok(root)
+    }
+
+    fn authored_manifest(
+        languages: Vec<Language>,
+        files: Vec<ModelFile>,
+    ) -> Result<ModelManifest, ModelPackError> {
+        ModelManifest::new_current(
+            ModelId::new("m2m100-418m-int8".to_owned())?,
+            ModelPackVersion::new("0.1.0".to_owned())?,
+            ModelArchitecture::new("m2m100".to_owned())?,
+            ModelRuntime::new("onnx-runtime".to_owned())?,
+            ModelLicense::new("MIT".to_owned())?,
+            languages,
+            files,
+        )
+    }
+
+    fn required_languages() -> Vec<Language> {
+        vec![
+            Language::English,
+            Language::Russian,
+            Language::Thai,
+            Language::Vietnamese,
+            Language::Japanese,
+        ]
     }
 
     fn manifest_json(languages: &[&str], encoder_path: &str, encoder_sha256: &str) -> String {
