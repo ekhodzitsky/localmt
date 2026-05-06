@@ -124,6 +124,15 @@ Real translation still requires replacing `MockTokenGenerator` with an
 ONNX-backed generator and replacing `MockTokenizer` with a model-specific
 tokenizer.
 
+## Generation Config
+
+`GenerationConfig` captures decoder-loop settings as typed values before the
+loop exists. It owns a bounded `MaxNewTokens`, required BOS/EOS token ids, and
+target-language token ids for `en`, `ru`, `th`, `vi`, and `ja`.
+`GenerationConfig::with_default_limit` uses `DEFAULT_MAX_NEW_TOKENS` and rejects
+duplicate or colliding token roles. Parsing `generation_config` files and using
+these values inside ONNX decoder execution are still future work.
+
 ## Benchmark Skeleton
 
 The current benchmark command verifies a model pack, then runs 10 fixed language

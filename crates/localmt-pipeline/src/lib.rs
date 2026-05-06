@@ -3,12 +3,16 @@
 use core::fmt;
 use std::path::{Path, PathBuf};
 
-use localmt_core::{LanguagePair, TranslateRequest, Translation};
+use localmt_core::{Language, LanguagePair, TranslateRequest, Translation};
 use localmt_engine::{TranslationError, TranslatorEngine};
 use localmt_models::{ModelFileRole, ModelPack, Verified};
 use localmt_tokenizer::{
-    TokenSequence, TokenizerEngine, TokenizerError, TokenizerInput, TokenizerOutput,
+    MAX_TOKENS, TokenId, TokenSequence, TokenizerEngine, TokenizerError, TokenizerInput,
+    TokenizerOutput,
 };
+
+/// Default upper bound for newly generated target tokens.
+pub const DEFAULT_MAX_NEW_TOKENS: usize = 128;
 
 /// Backend contract for generating target-language tokens from encoded input.
 pub trait TokenGenerator {
@@ -64,6 +68,364 @@ impl fmt::Display for TokenGeneratorError {
 }
 
 impl std::error::Error for TokenGeneratorError {}
+
+/// Positive bounded count of tokens a generator may append.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct MaxNewTokens(usize);
+
+impl MaxNewTokens {
+    /// { value may be any usize }
+    /// fn new(value: usize) -> Result<Self, GenerationConfigError>
+    /// { ret is Ok only when 0 < value <= MAX_TOKENS }
+    pub const fn new(value: usize) -> Result<Self, GenerationConfigError> {
+        if value == 0 {
+            return Err(GenerationConfigError::EmptyMaxNewTokens);
+        }
+
+        if value > MAX_TOKENS {
+            return Err(GenerationConfigError::MaxNewTokensTooLarge {
+                actual_tokens: value,
+                max_tokens: MAX_TOKENS,
+            });
+        }
+
+        Ok(Self(value))
+    }
+
+    /// { true }
+    /// fn value(self) -> usize
+    /// { ret is the positive bounded max-new-token count }
+    pub const fn value(self) -> usize {
+        self.0
+    }
+}
+
+impl Default for MaxNewTokens {
+    fn default() -> Self {
+        Self(DEFAULT_MAX_NEW_TOKENS)
+    }
+}
+
+/// Required decoder special tokens.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GenerationSpecialTokens {
+    bos_token_id: TokenId,
+    eos_token_id: TokenId,
+}
+
+impl GenerationSpecialTokens {
+    /// { bos_token_id and eos_token_id are model vocabulary ids }
+    /// fn new(bos_token_id: TokenId, eos_token_id: TokenId) -> Result<Self, GenerationConfigError>
+    /// { ret is Ok only when BOS and EOS are distinct }
+    pub const fn new(
+        bos_token_id: TokenId,
+        eos_token_id: TokenId,
+    ) -> Result<Self, GenerationConfigError> {
+        if bos_token_id.value() == eos_token_id.value() {
+            return Err(GenerationConfigError::DuplicateSpecialToken {
+                token: bos_token_id,
+            });
+        }
+
+        Ok(Self {
+            bos_token_id,
+            eos_token_id,
+        })
+    }
+
+    /// { true }
+    /// fn bos_token_id(self) -> TokenId
+    /// { ret is the beginning-of-sequence token id }
+    pub const fn bos_token_id(self) -> TokenId {
+        self.bos_token_id
+    }
+
+    /// { true }
+    /// fn eos_token_id(self) -> TokenId
+    /// { ret is the end-of-sequence token id }
+    pub const fn eos_token_id(self) -> TokenId {
+        self.eos_token_id
+    }
+}
+
+/// Required target-language token ids for the first supported language set.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LanguageTokenIds {
+    english: TokenId,
+    russian: TokenId,
+    thai: TokenId,
+    vietnamese: TokenId,
+    japanese: TokenId,
+}
+
+impl LanguageTokenIds {
+    /// { token ids may be any model vocabulary ids }
+    /// fn new(english: TokenId, russian: TokenId, thai: TokenId, vietnamese: TokenId, japanese: TokenId) -> Result<Self, GenerationConfigError>
+    /// { ret is Ok only when language token ids are distinct }
+    pub fn new(
+        english: TokenId,
+        russian: TokenId,
+        thai: TokenId,
+        vietnamese: TokenId,
+        japanese: TokenId,
+    ) -> Result<Self, GenerationConfigError> {
+        let ids = [
+            (Language::English, english),
+            (Language::Russian, russian),
+            (Language::Thai, thai),
+            (Language::Vietnamese, vietnamese),
+            (Language::Japanese, japanese),
+        ];
+        ensure_distinct_language_tokens(&ids)?;
+
+        Ok(Self {
+            english,
+            russian,
+            thai,
+            vietnamese,
+            japanese,
+        })
+    }
+
+    /// { true }
+    /// fn token_for(self, language: Language) -> TokenId
+    /// { ret is the configured token id for language }
+    pub const fn token_for(self, language: Language) -> TokenId {
+        match language {
+            Language::English => self.english,
+            Language::Russian => self.russian,
+            Language::Thai => self.thai,
+            Language::Vietnamese => self.vietnamese,
+            Language::Japanese => self.japanese,
+        }
+    }
+}
+
+/// Typed decoder generation configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GenerationConfig {
+    max_new_tokens: MaxNewTokens,
+    special_tokens: GenerationSpecialTokens,
+    language_tokens: LanguageTokenIds,
+}
+
+impl GenerationConfig {
+    /// { special_tokens and language_tokens were validated }
+    /// fn with_default_limit(special_tokens: GenerationSpecialTokens, language_tokens: LanguageTokenIds) -> Result<Self, GenerationConfigError>
+    /// { ret is Ok only when language tokens do not collide with BOS/EOS }
+    pub fn with_default_limit(
+        special_tokens: GenerationSpecialTokens,
+        language_tokens: LanguageTokenIds,
+    ) -> Result<Self, GenerationConfigError> {
+        Self::new(MaxNewTokens::default(), special_tokens, language_tokens)
+    }
+
+    /// { max_new_tokens, special_tokens, and language_tokens were validated }
+    /// fn new(max_new_tokens: MaxNewTokens, special_tokens: GenerationSpecialTokens, language_tokens: LanguageTokenIds) -> Result<Self, GenerationConfigError>
+    /// { ret is Ok only when language tokens do not collide with BOS/EOS }
+    pub fn new(
+        max_new_tokens: MaxNewTokens,
+        special_tokens: GenerationSpecialTokens,
+        language_tokens: LanguageTokenIds,
+    ) -> Result<Self, GenerationConfigError> {
+        ensure_language_tokens_do_not_collide_with_specials(special_tokens, language_tokens)?;
+
+        Ok(Self {
+            max_new_tokens,
+            special_tokens,
+            language_tokens,
+        })
+    }
+
+    /// { true }
+    /// fn max_new_tokens(&self) -> MaxNewTokens
+    /// { ret is the max-new-token generation limit }
+    pub const fn max_new_tokens(&self) -> MaxNewTokens {
+        self.max_new_tokens
+    }
+
+    /// { true }
+    /// fn bos_token_id(&self) -> TokenId
+    /// { ret is the configured beginning-of-sequence token id }
+    pub const fn bos_token_id(&self) -> TokenId {
+        self.special_tokens.bos_token_id()
+    }
+
+    /// { true }
+    /// fn eos_token_id(&self) -> TokenId
+    /// { ret is the configured end-of-sequence token id }
+    pub const fn eos_token_id(&self) -> TokenId {
+        self.special_tokens.eos_token_id()
+    }
+
+    /// { true }
+    /// fn target_language_token(&self, language: Language) -> TokenId
+    /// { ret is the configured target-language token id }
+    pub const fn target_language_token(&self, language: Language) -> TokenId {
+        self.language_tokens.token_for(language)
+    }
+}
+
+/// Generation configuration validation error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenerationConfigError {
+    /// Max-new-token count must be positive.
+    EmptyMaxNewTokens,
+    /// Max-new-token count exceeds token boundary.
+    MaxNewTokensTooLarge {
+        /// Requested generated-token count.
+        actual_tokens: usize,
+        /// Maximum accepted generated-token count.
+        max_tokens: usize,
+    },
+    /// BOS and EOS token ids are equal.
+    DuplicateSpecialToken {
+        /// Duplicated special token id.
+        token: TokenId,
+    },
+    /// Two language roles use the same token id.
+    DuplicateLanguageToken {
+        /// First language role.
+        first: Language,
+        /// Second language role.
+        second: Language,
+        /// Duplicated language token id.
+        token: TokenId,
+    },
+    /// A language token reuses a special token id.
+    LanguageTokenCollidesWithSpecialToken {
+        /// Language role with the colliding token.
+        language: Language,
+        /// Special token role.
+        special: GenerationSpecialTokenRole,
+        /// Colliding token id.
+        token: TokenId,
+    },
+}
+
+impl fmt::Display for GenerationConfigError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyMaxNewTokens => formatter.write_str("max_new_tokens must be positive"),
+            Self::MaxNewTokensTooLarge {
+                actual_tokens,
+                max_tokens,
+            } => write!(
+                formatter,
+                "max_new_tokens has {actual_tokens} tokens, maximum is {max_tokens}"
+            ),
+            Self::DuplicateSpecialToken { token } => {
+                write!(formatter, "BOS and EOS token ids must be distinct: {token}")
+            }
+            Self::DuplicateLanguageToken {
+                first,
+                second,
+                token,
+            } => write!(
+                formatter,
+                "language token ids must be distinct: {first} and {second} both use {token}"
+            ),
+            Self::LanguageTokenCollidesWithSpecialToken {
+                language,
+                special,
+                token,
+            } => write!(
+                formatter,
+                "language token id for {language} collides with {special}: {token}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for GenerationConfigError {}
+
+/// Special token role used in generation-config validation errors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GenerationSpecialTokenRole {
+    /// Beginning-of-sequence token role.
+    Bos,
+    /// End-of-sequence token role.
+    Eos,
+}
+
+impl fmt::Display for GenerationSpecialTokenRole {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bos => formatter.write_str("BOS"),
+            Self::Eos => formatter.write_str("EOS"),
+        }
+    }
+}
+
+fn ensure_distinct_language_tokens(
+    ids: &[(Language, TokenId); 5],
+) -> Result<(), GenerationConfigError> {
+    for (index, (first_language, first_token)) in ids.iter().enumerate() {
+        for (second_language, second_token) in &ids[index + 1..] {
+            if first_token.value() == second_token.value() {
+                return Err(GenerationConfigError::DuplicateLanguageToken {
+                    first: *first_language,
+                    second: *second_language,
+                    token: *first_token,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_language_tokens_do_not_collide_with_specials(
+    special_tokens: GenerationSpecialTokens,
+    language_tokens: LanguageTokenIds,
+) -> Result<(), GenerationConfigError> {
+    for language in [
+        Language::English,
+        Language::Russian,
+        Language::Thai,
+        Language::Vietnamese,
+        Language::Japanese,
+    ] {
+        let token = language_tokens.token_for(language);
+        ensure_not_special_token(
+            language,
+            token,
+            GenerationSpecialTokenRole::Bos,
+            special_tokens,
+        )?;
+        ensure_not_special_token(
+            language,
+            token,
+            GenerationSpecialTokenRole::Eos,
+            special_tokens,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn ensure_not_special_token(
+    language: Language,
+    token: TokenId,
+    special: GenerationSpecialTokenRole,
+    special_tokens: GenerationSpecialTokens,
+) -> Result<(), GenerationConfigError> {
+    let special_token = match special {
+        GenerationSpecialTokenRole::Bos => special_tokens.bos_token_id(),
+        GenerationSpecialTokenRole::Eos => special_tokens.eos_token_id(),
+    };
+    if token.value() == special_token.value() {
+        return Err(
+            GenerationConfigError::LanguageTokenCollidesWithSpecialToken {
+                language,
+                special,
+                token,
+            },
+        );
+    }
+
+    Ok(())
+}
 
 /// Verified model-pack files required to construct a token generator.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -252,10 +614,12 @@ mod tests {
     use localmt_core::{Language, NonEmptyText, TranslateRequest};
     use localmt_engine::{TranslationError, TranslatorEngine};
     use localmt_models::{Discovered, ModelFileRole, ModelPack};
-    use localmt_tokenizer::{MockTokenizer, TokenId, TokenSequence, TokenizerOutput};
+    use localmt_tokenizer::{MAX_TOKENS, MockTokenizer, TokenId, TokenSequence, TokenizerOutput};
 
     use crate::{
-        GeneratorAssetPlan, MockTokenGenerator, PipelineError, TokenGenerator, TokenGeneratorError,
+        DEFAULT_MAX_NEW_TOKENS, GenerationConfig, GenerationConfigError,
+        GenerationSpecialTokenRole, GenerationSpecialTokens, GeneratorAssetPlan, LanguageTokenIds,
+        MaxNewTokens, MockTokenGenerator, PipelineError, TokenGenerator, TokenGeneratorError,
         TranslationPipeline,
     };
 
@@ -404,6 +768,105 @@ mod tests {
             Err(TokenGeneratorError::MissingGeneratorAsset(
                 ModelFileRole::Decoder
             ))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn generation_config_uses_default_limit_and_language_tokens()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let special_tokens = GenerationSpecialTokens::new(TokenId::new(0), TokenId::new(1))?;
+        let language_tokens = LanguageTokenIds::new(
+            TokenId::new(10),
+            TokenId::new(11),
+            TokenId::new(12),
+            TokenId::new(13),
+            TokenId::new(14),
+        )?;
+
+        let config = GenerationConfig::with_default_limit(special_tokens, language_tokens)?;
+
+        assert_eq!(config.max_new_tokens().value(), DEFAULT_MAX_NEW_TOKENS);
+        assert_eq!(config.bos_token_id(), TokenId::new(0));
+        assert_eq!(config.eos_token_id(), TokenId::new(1));
+        assert_eq!(
+            config.target_language_token(Language::Japanese),
+            TokenId::new(14)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generation_config_rejects_empty_and_oversized_limits() {
+        let empty = MaxNewTokens::new(0);
+        let oversized = MaxNewTokens::new(MAX_TOKENS + 1);
+
+        assert!(matches!(
+            empty,
+            Err(GenerationConfigError::EmptyMaxNewTokens)
+        ));
+        assert!(matches!(
+            oversized,
+            Err(GenerationConfigError::MaxNewTokensTooLarge {
+                actual_tokens,
+                max_tokens: MAX_TOKENS
+            }) if actual_tokens == MAX_TOKENS + 1
+        ));
+    }
+
+    #[test]
+    fn generation_config_rejects_duplicate_special_tokens() {
+        let tokens = GenerationSpecialTokens::new(TokenId::new(2), TokenId::new(2));
+
+        assert!(matches!(
+            tokens,
+            Err(GenerationConfigError::DuplicateSpecialToken {
+                token
+            }) if token == TokenId::new(2)
+        ));
+    }
+
+    #[test]
+    fn generation_config_rejects_duplicate_language_tokens() {
+        let tokens = LanguageTokenIds::new(
+            TokenId::new(10),
+            TokenId::new(10),
+            TokenId::new(12),
+            TokenId::new(13),
+            TokenId::new(14),
+        );
+
+        assert!(matches!(
+            tokens,
+            Err(GenerationConfigError::DuplicateLanguageToken {
+                first: Language::English,
+                second: Language::Russian,
+                token
+            }) if token == TokenId::new(10)
+        ));
+    }
+
+    #[test]
+    fn generation_config_rejects_language_tokens_colliding_with_special_tokens()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let special_tokens = GenerationSpecialTokens::new(TokenId::new(0), TokenId::new(1))?;
+        let language_tokens = LanguageTokenIds::new(
+            TokenId::new(10),
+            TokenId::new(11),
+            TokenId::new(1),
+            TokenId::new(13),
+            TokenId::new(14),
+        )?;
+
+        let config = GenerationConfig::with_default_limit(special_tokens, language_tokens);
+
+        assert!(matches!(
+            config,
+            Err(GenerationConfigError::LanguageTokenCollidesWithSpecialToken {
+                language: Language::Thai,
+                special: GenerationSpecialTokenRole::Eos,
+                token
+            }) if token == TokenId::new(1)
         ));
         Ok(())
     }
