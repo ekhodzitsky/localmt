@@ -5,9 +5,10 @@ Offline-first Rust translation library for high-end mobile devices.
 The first target profile is Xiaomi 17 on Android arm64-v8a. The library keeps
 translation API, language routing, and model-pack validation independent from
 the concrete inference backend. ONNX Runtime Mobile is the first intended real
-backend; the current workspace has a verified model-pack layer plus a
-pipeline-backed mock translation path so API, asset-loading, and text/token
-contracts can be tested before real inference.
+backend; the current workspace has a verified model-pack layer, a feature-gated
+Hugging Face tokenizer JSON loader, and a pipeline-backed mock translation path
+so API, asset-loading, and text/token contracts can be tested before real
+inference.
 
 ## Workspace
 
@@ -16,7 +17,7 @@ contracts can be tested before real inference.
 - `crates/localmt-engine-ort` - ONNX Runtime session planning and gated loading
 - `crates/localmt-models` - model-pack manifest parsing and checksum verification
 - `crates/localmt-pipeline` - tokenizer/generator translation pipeline skeleton
-- `crates/localmt-tokenizer` - tokenizer trait, token invariants, and mock tokenizer
+- `crates/localmt-tokenizer` - tokenizer trait, token invariants, mock tokenizer, and gated HF tokenizer
 - `crates/localmt-bench` - benchmark profiles and mock benchmark skeleton
 - `crates/localmt` - public facade crate
 - `crates/localmt-cli` - development CLI for smoke testing
@@ -135,8 +136,9 @@ mock translation.
 `localmt_ffi_ort_runtime_enabled` and `LocalmtFfiOrtGenerator` provide the next
 runtime preflight step. Default builds report runtime disabled; `ort-runtime`
 builds can verify a model pack and attempt to load encoder/decoder ONNX
-sessions. This is a model/runtime load check, not translation. Real tokenizer
-parsing and ONNX decoder execution remain future work.
+sessions. This is a model/runtime load check, not translation. Wiring the
+feature-gated tokenizer backend and ONNX decoder execution into the FFI remains
+future work.
 
 ## ONNX Runtime Boundary
 
@@ -167,14 +169,22 @@ the config yet.
 
 ## Tokenizer Boundary
 
-`localmt-tokenizer` defines the tokenizer-side API before a real SentencePiece
-or BPE implementation is selected. It owns `TokenId`, non-empty bounded
-`TokenSequence`, `TokenizerInput`, `TokenizerOutput`, and the `TokenizerEngine`
-trait. `MockTokenizer` performs deterministic UTF-8 byte roundtrips so the
-future translation pipeline can be tested without model-specific tokenizer
-dependencies. `TokenizerAssetPlan` builds from a verified model pack, requires a
-declared `tokenizer` role, and carries optional `vocab` and `config` paths for
-future tokenizer implementations.
+`localmt-tokenizer` defines the tokenizer-side API. It owns `TokenId`,
+non-empty bounded `TokenSequence`, `TokenizerInput`, `TokenizerOutput`, and the
+`TokenizerEngine` trait. `MockTokenizer` performs deterministic UTF-8 byte
+roundtrips so the future translation pipeline can be tested without
+model-specific tokenizer dependencies. `HfTokenizer` is available behind the
+`hf-tokenizers` feature and loads Hugging Face `tokenizer.json` files through
+the `tokenizers` crate with default features disabled and pure-Rust
+`fancy-regex` enabled. The `localmt` facade forwards the same feature.
+`TokenizerAssetPlan` builds from a verified model pack, requires a declared
+`tokenizer` role, and carries optional `vocab` and `config` paths for tokenizer
+implementations.
+
+```bash
+cargo test -p localmt-tokenizer --features hf-tokenizers hf_tokenizer
+cargo check -p localmt --features hf-tokenizers
+```
 
 ## Pipeline Skeleton
 
@@ -189,9 +199,9 @@ source tokens so the SDK can exercise the end-to-end request shape today.
 TranslateRequest -> TokenizerEngine::encode -> TokenGenerator::generate -> TokenizerEngine::decode -> Translation
 ```
 
-Real translation still requires replacing `MockTokenGenerator` with an
-ONNX-backed generator and replacing `MockTokenizer` with a model-specific
-tokenizer.
+Real translation still requires an ONNX-backed generator that consumes tokenizer
+ids and executes the decoder loop; `HfTokenizer` only proves tokenizer JSON
+loading, encoding, and decoding.
 
 ## Generation Config
 

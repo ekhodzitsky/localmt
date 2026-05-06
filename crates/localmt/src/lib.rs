@@ -23,6 +23,8 @@ pub use localmt_pipeline::{
     MaxNewTokens, MockTokenGenerator, PipelineError, TokenGenerator, TokenGeneratorError,
     TranslationPipeline,
 };
+#[cfg(feature = "hf-tokenizers")]
+pub use localmt_tokenizer::HfTokenizer;
 pub use localmt_tokenizer::{
     MAX_TOKENS, MockTokenizer, TokenId, TokenSequence, TokenizerAssetPlan, TokenizerEngine,
     TokenizerError, TokenizerInput, TokenizerOutput,

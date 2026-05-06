@@ -9,6 +9,13 @@ version.workspace = true
 [dependencies]
 localmt-core = { path = "../localmt-core" }
 localmt-models = { path = "../localmt-models" }
+tokenizers = { version = "0.21.4", optional = true, default-features = false, features = [
+    "fancy-regex",
+] }
+
+[features]
+default = []
+hf-tokenizers = ["dep:tokenizers"]
 
 [lints]
 workspace = true

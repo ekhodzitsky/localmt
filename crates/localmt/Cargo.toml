@@ -17,6 +17,7 @@ localmt-tokenizer = { path = "../localmt-tokenizer" }
 
 [features]
 default = []
+hf-tokenizers = ["localmt-tokenizer/hf-tokenizers"]
 ort-runtime = ["localmt-engine-ort/ort-runtime"]
 
 [lints]

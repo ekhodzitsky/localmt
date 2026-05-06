@@ -283,6 +283,68 @@ impl TokenizerEngine for MockTokenizer {
     }
 }
 
+/// Hugging Face tokenizer.json backend.
+#[cfg(feature = "hf-tokenizers")]
+#[derive(Debug)]
+pub struct HfTokenizer {
+    tokenizer: tokenizers::Tokenizer,
+}
+
+#[cfg(feature = "hf-tokenizers")]
+impl HfTokenizer {
+    /// { path points to a Hugging Face tokenizer JSON candidate }
+    /// fn from_file(path: impl `AsRef<Path>`) -> Result<Self, TokenizerError>
+    /// { ret is Ok only when tokenizers loads path successfully }
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, TokenizerError> {
+        let path = path.as_ref();
+        let tokenizer = tokenizers::Tokenizer::from_file(path).map_err(|source| {
+            TokenizerError::TokenizerLoad {
+                path: path.to_path_buf(),
+                reason: source.to_string(),
+            }
+        })?;
+
+        Ok(Self { tokenizer })
+    }
+}
+
+#[cfg(feature = "hf-tokenizers")]
+impl TokenizerEngine for HfTokenizer {
+    fn encode(&self, input: &TokenizerInput) -> Result<TokenizerOutput, TokenizerError> {
+        let encoding = self
+            .tokenizer
+            .encode(input.text().as_str(), true)
+            .map_err(|source| TokenizerError::TokenizerEncode(source.to_string()))?;
+        let tokens = encoding
+            .get_ids()
+            .iter()
+            .copied()
+            .map(TokenId::new)
+            .collect::<Vec<_>>();
+        let sequence = TokenSequence::new(tokens)?;
+
+        Ok(TokenizerOutput::new(input.pair(), sequence))
+    }
+
+    fn decode(
+        &self,
+        _target: Language,
+        tokens: &TokenSequence,
+    ) -> Result<NonEmptyText, TokenizerError> {
+        let ids = tokens
+            .as_slice()
+            .iter()
+            .map(|token| token.value())
+            .collect::<Vec<_>>();
+        let text = self
+            .tokenizer
+            .decode(&ids, true)
+            .map_err(|source| TokenizerError::TokenizerDecode(source.to_string()))?;
+
+        NonEmptyText::new(text).map_err(TokenizerError::InvalidText)
+    }
+}
+
 /// Tokenizer boundary error.
 #[derive(Debug)]
 pub enum TokenizerError {
@@ -303,6 +365,17 @@ pub enum TokenizerError {
     InvalidMockToken(TokenId),
     /// Mock tokenizer bytes are not valid UTF-8.
     InvalidUtf8(std::string::FromUtf8Error),
+    /// Hugging Face tokenizer file could not be loaded.
+    TokenizerLoad {
+        /// Path passed to the tokenizer loader.
+        path: PathBuf,
+        /// Backend error message.
+        reason: String,
+    },
+    /// Hugging Face tokenizer could not encode text.
+    TokenizerEncode(String),
+    /// Hugging Face tokenizer could not decode ids.
+    TokenizerDecode(String),
     /// Decoded text violated text invariants.
     InvalidText(TextError),
 }
@@ -326,6 +399,15 @@ impl fmt::Display for TokenizerError {
                 write!(formatter, "mock token is not a byte: {token}")
             }
             Self::InvalidUtf8(error) => write!(formatter, "invalid UTF-8 token bytes: {error}"),
+            Self::TokenizerLoad { path, reason } => {
+                write!(
+                    formatter,
+                    "failed to load tokenizer {}: {reason}",
+                    path.display()
+                )
+            }
+            Self::TokenizerEncode(reason) => write!(formatter, "tokenizer encode failed: {reason}"),
+            Self::TokenizerDecode(reason) => write!(formatter, "tokenizer decode failed: {reason}"),
             Self::InvalidText(error) => write!(formatter, "{error}"),
         }
     }
@@ -347,6 +429,8 @@ fn mock_bytes(tokens: &TokenSequence) -> Result<Vec<u8>, TokenizerError> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    #[cfg(feature = "hf-tokenizers")]
+    use std::path::Path;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -475,6 +559,78 @@ mod tests {
         let plan = TokenizerAssetPlan::from_pack(&pack);
 
         assert!(matches!(plan, Err(TokenizerError::MissingTokenizerAsset)));
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "hf-tokenizers")]
+    fn hf_tokenizer_loads_tokenizer_json_and_round_trips_words()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        let tokenizer_path = root.join("tokenizer.json");
+        write_wordlevel_tokenizer(&tokenizer_path)?;
+
+        let tokenizer = super::HfTokenizer::from_file(&tokenizer_path)?;
+        let text = NonEmptyText::new("hello offline")?;
+        let input = TokenizerInput::new(Language::English, Language::Russian, text)?;
+        let encoded = tokenizer.encode(&input)?;
+
+        assert_eq!(
+            encoded
+                .tokens()
+                .as_slice()
+                .iter()
+                .map(|token| token.value())
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        let decoded = tokenizer.decode(Language::Russian, encoded.tokens())?;
+        assert_eq!(decoded.as_str(), "hello offline");
+
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "hf-tokenizers")]
+    fn hf_tokenizer_reports_load_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        let missing_path = root.join("missing-tokenizer.json");
+
+        let tokenizer = super::HfTokenizer::from_file(&missing_path);
+
+        assert!(matches!(
+            tokenizer,
+            Err(TokenizerError::TokenizerLoad { ref path, .. }) if path == &missing_path
+        ));
+
+        Ok(())
+    }
+
+    #[cfg(feature = "hf-tokenizers")]
+    fn write_wordlevel_tokenizer(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        use tokenizers::Tokenizer;
+        use tokenizers::models::wordlevel::WordLevel;
+        use tokenizers::pre_tokenizers::whitespace::WhitespaceSplit;
+
+        let vocab = [
+            ("[UNK]".to_owned(), 0),
+            ("hello".to_owned(), 1),
+            ("offline".to_owned(), 2),
+        ]
+        .into_iter()
+        .collect();
+        let model = WordLevel::builder()
+            .vocab(vocab)
+            .unk_token("[UNK]".to_owned())
+            .build()
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let mut tokenizer = Tokenizer::new(model);
+        tokenizer.with_pre_tokenizer(Some(WhitespaceSplit));
+        tokenizer
+            .save(path, false)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+
         Ok(())
     }
 
