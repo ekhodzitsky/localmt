@@ -22,7 +22,7 @@ extern "C" {
 #define LOCALMT_FFI_TOKENIZER_DISABLED 11
 #define LOCALMT_FFI_TOKENIZER_ERROR 12
 
-#define LOCALMT_FFI_ABI_VERSION 4
+#define LOCALMT_FFI_ABI_VERSION 5
 #define LOCALMT_FFI_ANDROID_ABI_ARM64_V8A 1
 #define LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK 1
 
@@ -85,6 +85,26 @@ size_t localmt_ffi_max_text_chars(void);
 uint16_t localmt_ffi_xiaomi17_android_abi_code(void);
 uint16_t localmt_ffi_xiaomi17_ram_class_gib(void);
 uint16_t localmt_ffi_xiaomi17_preferred_runtime_code(void);
+
+/*
+ * Verifies and plans a model pack, then writes a stable UTF-8 newline summary.
+ *
+ * This does not load tokenizer backends or ONNX Runtime sessions. It only
+ * performs model-pack discovery, checksum verification, asset planning, and
+ * optional generation_config parsing through the Rust facade.
+ *
+ * path_ptr/path_len must be valid UTF-8 bytes for the model-pack directory.
+ * output_ptr/output_capacity is caller-owned byte storage and is not NUL
+ * terminated by Rust. written_len must point to writable size_t storage. On
+ * LOCALMT_FFI_BUFFER_TOO_SMALL, written_len contains the required byte count
+ * and output is not written.
+ */
+int32_t localmt_ffi_model_pack_summary(
+    const uint8_t *path_ptr,
+    size_t path_len,
+    uint8_t *output_ptr,
+    size_t output_capacity,
+    size_t *written_len);
 
 /*
  * Returns 1 when localmt-ffi was built with the ort-runtime feature, otherwise 0.

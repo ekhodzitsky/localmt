@@ -37,7 +37,7 @@ pub const LOCALMT_FFI_TOKENIZER_DISABLED: i32 = 11;
 pub const LOCALMT_FFI_TOKENIZER_ERROR: i32 = 12;
 
 /// Pointer-free C ABI version.
-pub const LOCALMT_FFI_ABI_VERSION: u32 = 4;
+pub const LOCALMT_FFI_ABI_VERSION: u32 = 5;
 /// FFI code for Android arm64-v8a.
 pub const LOCALMT_FFI_ANDROID_ABI_ARM64_V8A: u16 = 1;
 /// FFI code for ONNX Runtime Mobile with XNNPACK.
@@ -190,6 +190,49 @@ pub extern "C" fn localmt_ffi_xiaomi17_preferred_runtime_code() -> u16 {
         "onnx-runtime-mobile-xnnpack" => LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK,
         _ => 0,
     }
+}
+
+/// { path_ptr points to path_len readable bytes and output/written pointers follow the header contract }
+/// fn localmt_ffi_model_pack_summary(path_ptr: *const u8, path_len: usize, output_ptr: *mut u8, output_capacity: usize, written_len: *mut usize) -> i32
+/// { ret is OK only when output receives written_len UTF-8 summary bytes }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_model_pack_summary(
+    path_ptr: *const u8,
+    path_len: usize,
+    output_ptr: *mut u8,
+    output_capacity: usize,
+    written_len: *mut usize,
+) -> i32 {
+    if written_len.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *written_len = 0 }; // SAFETY: non-null writable length pointer.
+
+    let path = match read_ffi_utf8(path_ptr, path_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let assets = match OfflineTranslatorAssets::from_model_pack_path(path) {
+        Ok(value) => value,
+        Err(_error) => return LOCALMT_FFI_MODEL_PACK_ERROR,
+    };
+    let summary = format_assets_summary(&assets);
+    let output = summary.as_bytes();
+
+    unsafe { *written_len = output.len() }; // SAFETY: non-null writable length pointer.
+
+    if output_capacity < output.len() {
+        return LOCALMT_FFI_BUFFER_TOO_SMALL;
+    }
+    if output_ptr.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, output.len()) }; // SAFETY: output buffer capacity was checked.
+
+    LOCALMT_FFI_OK
 }
 
 /// { path_ptr points to path_len readable bytes and out_translator is writable }
@@ -589,6 +632,37 @@ fn read_ffi_utf8<'a>(ptr: *const u8, len: usize) -> Result<&'a str, i32> {
     str::from_utf8(bytes).map_err(|_error| LOCALMT_FFI_INVALID_UTF8)
 }
 
+/// { assets were prepared successfully }
+/// fn format_assets_summary(assets: &OfflineTranslatorAssets) -> String
+/// { ret is the stable newline summary exposed through CLI and FFI }
+fn format_assets_summary(assets: &OfflineTranslatorAssets) -> String {
+    let summary = assets.summary();
+    let decoder_with_past = summary
+        .decoder_with_past_path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "absent".to_owned());
+    let mut lines = vec![
+        format!("planned: {}", summary.model_id()),
+        format!("tokenizer: {}", summary.tokenizer_path().display()),
+        format!("encoder: {}", summary.encoder_path().display()),
+        format!("decoder: {}", summary.decoder_path().display()),
+        format!("decoder_with_past: {decoder_with_past}"),
+    ];
+
+    match summary.generation_config() {
+        Some(config) => {
+            lines.push("generation_config: parsed".to_owned());
+            lines.push(format!(
+                "max_new_tokens: {}",
+                config.max_new_tokens().value()
+            ));
+        }
+        None => lines.push("generation_config: absent".to_owned()),
+    }
+
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -602,18 +676,19 @@ mod tests {
     use super::LOCALMT_FFI_TOKENIZER_ERROR;
     use super::{
         LOCALMT_FFI_BUFFER_TOO_SMALL, LOCALMT_FFI_INVALID_LANGUAGE, LOCALMT_FFI_INVALID_PAIR,
-        LOCALMT_FFI_INVALID_UTF8, LOCALMT_FFI_NULL_POINTER, LOCALMT_FFI_OK, LOCALMT_FFI_TEXT_ERROR,
-        LocalmtFfiHfMockTranslator, LocalmtFfiHfTokenizer, LocalmtFfiOrtGenerator,
-        LocalmtFfiTranslator, localmt_ffi_abi_version, localmt_ffi_hf_mock_translate,
-        localmt_ffi_hf_mock_translator_close, localmt_ffi_hf_mock_translator_open,
-        localmt_ffi_hf_tokenizer_close, localmt_ffi_hf_tokenizer_enabled,
-        localmt_ffi_hf_tokenizer_open, localmt_ffi_language_code,
+        LOCALMT_FFI_INVALID_UTF8, LOCALMT_FFI_MODEL_PACK_ERROR, LOCALMT_FFI_NULL_POINTER,
+        LOCALMT_FFI_OK, LOCALMT_FFI_TEXT_ERROR, LocalmtFfiHfMockTranslator, LocalmtFfiHfTokenizer,
+        LocalmtFfiOrtGenerator, LocalmtFfiTranslator, localmt_ffi_abi_version,
+        localmt_ffi_hf_mock_translate, localmt_ffi_hf_mock_translator_close,
+        localmt_ffi_hf_mock_translator_open, localmt_ffi_hf_tokenizer_close,
+        localmt_ffi_hf_tokenizer_enabled, localmt_ffi_hf_tokenizer_open, localmt_ffi_language_code,
         localmt_ffi_language_from_iso_639_1, localmt_ffi_max_text_chars,
         localmt_ffi_mock_translate, localmt_ffi_mock_translator_close,
-        localmt_ffi_mock_translator_open, localmt_ffi_ort_generator_open,
-        localmt_ffi_ort_runtime_enabled, localmt_ffi_supported_language_count,
-        localmt_ffi_validate_language_pair, localmt_ffi_xiaomi17_android_abi_code,
-        localmt_ffi_xiaomi17_preferred_runtime_code, localmt_ffi_xiaomi17_ram_class_gib,
+        localmt_ffi_mock_translator_open, localmt_ffi_model_pack_summary,
+        localmt_ffi_ort_generator_open, localmt_ffi_ort_runtime_enabled,
+        localmt_ffi_supported_language_count, localmt_ffi_validate_language_pair,
+        localmt_ffi_xiaomi17_android_abi_code, localmt_ffi_xiaomi17_preferred_runtime_code,
+        localmt_ffi_xiaomi17_ram_class_gib,
     };
     #[cfg(feature = "hf-tokenizers")]
     use localmt::Sha256Digest;
@@ -649,11 +724,140 @@ mod tests {
 
     #[test]
     fn ffi_reports_abi_and_xiaomi17_contract() {
-        assert_eq!(localmt_ffi_abi_version(), 4);
+        assert_eq!(localmt_ffi_abi_version(), 5);
         assert_eq!(localmt_ffi_max_text_chars(), 4096);
         assert_eq!(localmt_ffi_xiaomi17_android_abi_code(), 1);
         assert_eq!(localmt_ffi_xiaomi17_ram_class_gib(), 12);
         assert_eq!(localmt_ffi_xiaomi17_preferred_runtime_code(), 1);
+    }
+
+    #[test]
+    fn ffi_model_pack_summary_reports_verified_assets() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut output = [0_u8; 512];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_model_pack_summary(
+                path.as_ptr(),
+                path.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_OK
+        );
+
+        let summary = std::str::from_utf8(&output[..written_len])?;
+        assert!(summary.contains("planned: m2m100-418m-int8"));
+        assert!(summary.contains("tokenizer:"));
+        assert!(summary.contains("encoder:"));
+        assert!(summary.contains("decoder:"));
+        assert!(summary.contains("decoder_with_past: absent"));
+        assert!(summary.contains("generation_config: absent"));
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_model_pack_summary_reports_required_buffer_len() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut output = [0_u8; 3];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_model_pack_summary(
+                path.as_ptr(),
+                path.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_BUFFER_TOO_SMALL
+        );
+        assert!(written_len > output.len());
+
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_model_pack_summary_rejects_nulls_and_invalid_utf8()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut output = [0_u8; 512];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_model_pack_summary(
+                path.as_ptr(),
+                path.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                ptr::null_mut(),
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_model_pack_summary(
+                ptr::null(),
+                0,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_model_pack_summary(
+                [0xff].as_ptr(),
+                1,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_INVALID_UTF8
+        );
+        assert_eq!(
+            localmt_ffi_model_pack_summary(
+                path.as_ptr(),
+                path.len(),
+                ptr::null_mut(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_model_pack_summary_maps_model_pack_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let counter = PACK_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let missing_root = std::env::temp_dir().join(format!(
+            "localmt-ffi-missing-summary-test-{nanos}-{counter}",
+        ));
+        let path = path_bytes(&missing_root)?;
+        let mut output = [0_u8; 512];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_model_pack_summary(
+                path.as_ptr(),
+                path.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_MODEL_PACK_ERROR
+        );
+        assert_eq!(written_len, 0);
+
+        Ok(())
     }
 
     #[test]

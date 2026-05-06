@@ -131,6 +131,12 @@ primitive ABI is pointer-free: callers can query the ABI version, supported
 language ids, two-byte ISO language codes, language-pair validation,
 `MAX_TEXT_CHARS`, and the Xiaomi 17 target metadata.
 
+`localmt_ffi_model_pack_summary` lets Android/JNI adapters verify and plan a
+local model pack through the Rust facade, then read the same stable newline
+summary as `localmt model plan`. This does checksum verification, asset
+planning, and optional `generation_config` parsing, but does not load tokenizer
+backends or ONNX Runtime sessions.
+
 For Android smoke integration, `localmt-ffi` also exposes a Rust-owned opaque
 `LocalmtFfiTranslator` handle around `MockOfflineTranslator`. Callers open it
 from a verified local model-pack path, pass UTF-8 input bytes, and provide the
