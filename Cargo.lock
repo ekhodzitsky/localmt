@@ -338,6 +338,7 @@ version = "0.1.0"
 dependencies = [
  "localmt",
  "localmt-bench",
+ "localmt-ffi",
  "localmt-models",
 ]
 

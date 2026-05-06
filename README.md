@@ -127,6 +127,17 @@ SDK preflight example:
 cargo run -p localmt --example model_pack_preflight -- ./models/m2m100-418m-int8
 ```
 
+CLI smoke checks:
+
+```bash
+cargo run -p localmt -- model plan ./models/m2m100-418m-int8
+cargo run -p localmt -- ffi smoke ./models/m2m100-418m-int8 en ru "hello offline"
+```
+
+`localmt ffi smoke` runs the host-side equivalent of the default JNI call flow:
+ABI query, model-pack summary, mock translator open, mock translate, status
+message mapping on errors, and handle close.
+
 ## Android FFI Boundary
 
 `localmt-ffi` builds as `cdylib`, `staticlib`, and `rlib` so Android/JNI

@@ -14,6 +14,7 @@ doc = false
 [dependencies]
 localmt = { path = "../localmt" }
 localmt-bench = { path = "../localmt-bench" }
+localmt-ffi = { path = "../localmt-ffi" }
 localmt-models = { path = "../localmt-models" }
 
 [features]

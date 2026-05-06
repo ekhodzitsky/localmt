@@ -1,6 +1,7 @@
 use core::fmt;
 use std::path::Path;
 use std::process::ExitCode;
+use std::ptr;
 
 #[cfg(feature = "hf-tokenizers")]
 use localmt::{HfTokenizer, TokenizerEngine, TokenizerInput};
@@ -23,7 +24,15 @@ usage:
   localmt model plan PACK
   localmt model tokenize PACK FROM TO TEXT
   localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE
+  localmt ffi smoke PACK FROM TO TEXT
   localmt bench --profile xiaomi17 --model-pack PACK
+";
+
+const FFI_HELP_TEXT: &str = "\
+localmt ffi commands
+
+usage:
+  localmt ffi smoke PACK FROM TO TEXT
 ";
 
 const MODEL_HELP_TEXT: &str = "\
@@ -90,6 +99,9 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
     if first == "bench" {
         return run_bench(args);
     }
+    if first == "ffi" {
+        return run_ffi(args);
+    }
 
     let source = parse_language_code(first)?;
     let target = parse_language(args.next(), "TO")?;
@@ -132,6 +144,27 @@ fn run_model(mut args: impl Iterator<Item = String>) -> Result<String, CliError>
         "hash" => hash_model_file(single_model_path(args)?),
         "write-manifest" => write_manifest(args),
         _ => Err(CliError::UnknownModelCommand(command)),
+    }
+}
+
+/// { args contains FFI subcommand arguments }
+/// fn run_ffi(args: impl Iterator<Item = String>) -> Result<String, CliError>
+/// { ret is Ok only when the FFI command and arguments are valid }
+fn run_ffi(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
+    let command = args
+        .next()
+        .ok_or(CliError::MissingArgument("FFI_COMMAND"))?;
+    if is_help(&command) {
+        if args.next().is_some() {
+            return Err(CliError::TooManyArguments);
+        }
+
+        return Ok(FFI_HELP_TEXT.to_owned());
+    }
+
+    match command.as_str() {
+        "smoke" => run_ffi_smoke(args),
+        _ => Err(CliError::UnknownFfiCommand(command)),
     }
 }
 
@@ -318,6 +351,129 @@ fn tokenize_model(mut args: impl Iterator<Item = String>) -> Result<String, CliE
     }
 }
 
+/// { args contains FFI smoke command arguments }
+/// fn run_ffi_smoke(args: impl Iterator<Item = String>) -> Result<String, CliError>
+/// { ret is Ok only when model-pack summary and mock translation succeed through FFI }
+fn run_ffi_smoke(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
+    let path = args.next().ok_or(CliError::MissingArgument("MODEL_PACK"))?;
+    let source = parse_language(args.next(), "FROM")?;
+    let target = parse_language(args.next(), "TO")?;
+    let text = args.next().ok_or(CliError::MissingArgument("TEXT"))?;
+
+    if args.next().is_some() {
+        return Err(CliError::TooManyArguments);
+    }
+
+    let path_bytes = path.as_bytes();
+    let _summary = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_model_pack_summary(
+            path_bytes.as_ptr(),
+            path_bytes.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
+    })?;
+    let source_id = ffi_language_id(source)?;
+    let target_id = ffi_language_id(target)?;
+
+    let mut translator: *mut localmt_ffi::LocalmtFfiTranslator = ptr::null_mut();
+    ffi_ok(localmt_ffi::localmt_ffi_mock_translator_open(
+        path_bytes.as_ptr(),
+        path_bytes.len(),
+        &mut translator,
+    ))?;
+
+    let input = text.as_bytes();
+    let translation = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_mock_translate(
+            translator,
+            source_id,
+            target_id,
+            input.as_ptr(),
+            input.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
+    });
+    localmt_ffi::localmt_ffi_mock_translator_close(translator);
+    let translation = String::from_utf8(translation?).map_err(CliError::FfiOutputUtf8)?;
+
+    Ok(format!(
+        "ffi_abi: {}\nmodel_pack_summary: ok\nmock_translator_open: ok\nmock_translate: ok\ntranslation: {translation}",
+        localmt_ffi::localmt_ffi_abi_version()
+    ))
+}
+
+/// { language is supported by localmt }
+/// fn ffi_language_id(language: Language) -> Result<u8, CliError>
+/// { ret is the stable FFI language id for language }
+fn ffi_language_id(language: Language) -> Result<u8, CliError> {
+    let bytes = language.iso_639_1().as_bytes();
+    let id = localmt_ffi::localmt_ffi_language_from_iso_639_1(bytes[0], bytes[1]);
+    if id < 0 {
+        return Err(CliError::FfiStatus {
+            status: localmt_ffi::LOCALMT_FFI_INVALID_LANGUAGE,
+            message: ffi_status_text(localmt_ffi::LOCALMT_FFI_INVALID_LANGUAGE),
+        });
+    }
+
+    u8::try_from(id).map_err(|_error| CliError::FfiStatus {
+        status: localmt_ffi::LOCALMT_FFI_INVALID_LANGUAGE,
+        message: ffi_status_text(localmt_ffi::LOCALMT_FFI_INVALID_LANGUAGE),
+    })
+}
+
+/// { call writes through the standard FFI byte-buffer contract }
+/// fn ffi_bytes(call: impl FnMut(*mut u8, usize, *mut usize) -> i32) -> Result<Vec<u8>, CliError>
+/// { ret contains the bytes written by a successful FFI call }
+fn ffi_bytes(mut call: impl FnMut(*mut u8, usize, *mut usize) -> i32) -> Result<Vec<u8>, CliError> {
+    let mut written_len = 0_usize;
+    let status = call(ptr::null_mut(), 0, &mut written_len);
+    if status != localmt_ffi::LOCALMT_FFI_BUFFER_TOO_SMALL && status != localmt_ffi::LOCALMT_FFI_OK
+    {
+        return Err(CliError::FfiStatus {
+            status,
+            message: ffi_status_text(status),
+        });
+    }
+
+    let mut output = vec![0_u8; written_len];
+    let status = call(output.as_mut_ptr(), output.len(), &mut written_len);
+    ffi_ok(status)?;
+    output.truncate(written_len);
+
+    Ok(output)
+}
+
+/// { status is an FFI status code }
+/// fn ffi_ok(status: i32) -> Result<(), CliError>
+/// { ret is Ok only when status is LOCALMT_FFI_OK }
+fn ffi_ok(status: i32) -> Result<(), CliError> {
+    if status == localmt_ffi::LOCALMT_FFI_OK {
+        return Ok(());
+    }
+
+    Err(CliError::FfiStatus {
+        status,
+        message: ffi_status_text(status),
+    })
+}
+
+/// { status may be any FFI status code }
+/// fn ffi_status_text(status: i32) -> String
+/// { ret is the stable FFI status message when the message lookup succeeds }
+fn ffi_status_text(status: i32) -> String {
+    let Ok(bytes) = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_status_message(status, output_ptr, output_capacity, written_len)
+    }) else {
+        return "status message unavailable".to_owned();
+    };
+
+    String::from_utf8(bytes).unwrap_or_else(|_error| "status message invalid utf-8".to_owned())
+}
+
 /// { args contains benchmark command arguments }
 /// fn run_bench(args: impl Iterator<Item = String>) -> Result<String, CliError>
 /// { ret is Ok only when profile and model-pack arguments are valid }
@@ -413,11 +569,17 @@ enum CliError {
     InvalidText(localmt::TextError),
     Translate(localmt::TranslationError),
     UnknownModelCommand(String),
+    UnknownFfiCommand(String),
     ModelPack(localmt_models::ModelPackError),
     OfflineAssets(localmt::OfflineTranslatorAssetsError),
     Benchmark(localmt_bench::BenchmarkError),
     InvalidBenchArguments(String),
     MissingStandardModelFile(&'static str),
+    FfiStatus {
+        status: i32,
+        message: String,
+    },
+    FfiOutputUtf8(std::string::FromUtf8Error),
     #[cfg(not(feature = "hf-tokenizers"))]
     TokenizerFeatureDisabled,
     #[cfg(feature = "hf-tokenizers")]
@@ -443,6 +605,7 @@ impl fmt::Display for CliError {
             Self::UnknownModelCommand(command) => {
                 write!(formatter, "unknown model command: {command}")
             }
+            Self::UnknownFfiCommand(command) => write!(formatter, "unknown ffi command: {command}"),
             Self::ModelPack(error) => write!(formatter, "{error}"),
             Self::OfflineAssets(error) => write!(formatter, "{error}"),
             Self::Benchmark(error) => write!(formatter, "{error}"),
@@ -450,6 +613,10 @@ impl fmt::Display for CliError {
             Self::MissingStandardModelFile(path) => {
                 write!(formatter, "missing standard model file: {path}")
             }
+            Self::FfiStatus { status, message } => {
+                write!(formatter, "ffi status {status}: {message}")
+            }
+            Self::FfiOutputUtf8(error) => write!(formatter, "ffi output is not UTF-8: {error}"),
             #[cfg(not(feature = "hf-tokenizers"))]
             Self::TokenizerFeatureDisabled => {
                 formatter.write_str("hf-tokenizers feature is not enabled")
@@ -647,6 +814,29 @@ mod tests {
     }
 
     #[test]
+    fn cli_runs_ffi_smoke_for_verified_pack() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_plannable_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "ffi".to_owned(),
+            "smoke".to_owned(),
+            root.display().to_string(),
+            "en".to_owned(),
+            "ru".to_owned(),
+            "hello offline".to_owned(),
+        ];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("ffi_abi: 6"));
+        assert!(output.contains("model_pack_summary: ok"));
+        assert!(output.contains("mock_translator_open: ok"));
+        assert!(output.contains("mock_translate: ok"));
+        assert!(output.contains("translation: hello offline"));
+        Ok(())
+    }
+
+    #[test]
     #[cfg(not(feature = "hf-tokenizers"))]
     fn cli_model_tokenizer_smoke_reports_feature_disabled_after_pack_planning()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -782,6 +972,7 @@ mod tests {
         assert!(output.contains(
             "localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE"
         ));
+        assert!(output.contains("localmt ffi smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt bench --profile xiaomi17 --model-pack PACK"));
         Ok(())
     }
