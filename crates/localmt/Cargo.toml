@@ -12,6 +12,7 @@ localmt-core = { path = "../localmt-core" }
 localmt-engine = { path = "../localmt-engine" }
 localmt-engine-ort = { path = "../localmt-engine-ort" }
 localmt-models = { path = "../localmt-models" }
+localmt-tokenizer = { path = "../localmt-tokenizer" }
 
 [features]
 default = []

@@ -41,6 +41,9 @@ The workspace is split into narrow crates:
 - `localmt-models`: manifest parsing, safe relative path validation, required
   language checks, typed file-role validation, and SHA-256 verification for
   model-pack files.
+- `localmt-tokenizer`: typed token ids, non-empty bounded token sequences,
+  tokenizer input/output types, tokenizer trait, and deterministic mock
+  tokenizer.
 - `localmt-bench`: device profiles and benchmark report types. The first
   implementation runs fixed smoke scenarios against the mock engine.
 - `localmt`: facade crate that re-exports stable public API and owns
@@ -55,6 +58,11 @@ Model-pack `files[].kind` values are not arbitrary labels. They are parsed into
 `ModelFileRole` values: `encoder`, `decoder`, `decoder_with_past`, `tokenizer`,
 `vocab`, `config`, and `generation_config`. The parser rejects unknown and
 duplicate roles so backend adapters can rely on typed role selection.
+
+The tokenizer boundary exists before real model-specific tokenization. It uses
+localmt-owned `TokenId`, `TokenSequence`, `TokenizerInput`, and
+`TokenizerOutput` types so SentencePiece/BPE implementations can be added later
+without changing the public translation pipeline shape.
 
 ## Model Strategy
 
@@ -74,6 +82,8 @@ must carry a license warning and must not become the default bundled option.
 - The mock translator returns deterministic non-empty output.
 - Model packs can be inspected and verified before real inference loads them.
 - Model-pack file roles are typed and duplicate roles are rejected at discovery.
+- Tokenizer input/output and token sequence invariants are represented by
+  localmt-owned types with a deterministic mock tokenizer.
 - Xiaomi 17 benchmark command exists and clearly labels mock-runtime results.
 - ONNX Runtime session loading is gated behind `ort-runtime`; default builds
   can plan a session but return an explicit disabled-runtime error on load.

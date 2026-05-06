@@ -6,7 +6,8 @@ The first target profile is Xiaomi 17 on Android arm64-v8a. The library keeps
 translation API, language routing, and model-pack validation independent from
 the concrete inference backend. ONNX Runtime Mobile is the first intended real
 backend; the current workspace has a mock engine plus a verified model-pack
-layer so API and asset-loading contracts can be tested before real inference.
+layer plus a tokenizer boundary so API, asset-loading, and text/token contracts
+can be tested before real inference.
 
 ## Workspace
 
@@ -14,6 +15,7 @@ layer so API and asset-loading contracts can be tested before real inference.
 - `crates/localmt-engine` - engine trait and mock engine
 - `crates/localmt-engine-ort` - ONNX Runtime session planning and gated loading
 - `crates/localmt-models` - model-pack manifest parsing and checksum verification
+- `crates/localmt-tokenizer` - tokenizer trait, token invariants, and mock tokenizer
 - `crates/localmt-bench` - benchmark profiles and mock benchmark skeleton
 - `crates/localmt` - public facade crate
 - `crates/localmt-cli` - development CLI for smoke testing
@@ -73,6 +75,15 @@ cargo check -p localmt --features ort-runtime
 
 This crate currently stops at session loading. Tokenization, decoder graph
 composition, and actual translation are intentionally still future work.
+
+## Tokenizer Boundary
+
+`localmt-tokenizer` defines the tokenizer-side API before a real SentencePiece
+or BPE implementation is selected. It owns `TokenId`, non-empty bounded
+`TokenSequence`, `TokenizerInput`, `TokenizerOutput`, and the `TokenizerEngine`
+trait. `MockTokenizer` performs deterministic UTF-8 byte roundtrips so the
+future translation pipeline can be tested without model-specific tokenizer
+dependencies.
 
 ## Benchmark Skeleton
 
