@@ -4,9 +4,11 @@ use core::fmt;
 use std::path::{Path, PathBuf};
 
 use localmt_models::{ModelFileRole, ModelPack, Verified};
-use localmt_pipeline::{GeneratorAssetPlan, TokenGeneratorError};
+use localmt_pipeline::{GeneratorAssetPlan, TokenGenerator, TokenGeneratorError};
+use localmt_tokenizer::{TokenSequence, TokenizerOutput};
 
 const ONNX_RUNTIME: &str = "onnx-runtime";
+const GENERATION_LOOP_UNIMPLEMENTED: &str = "ONNX token generation loop is not implemented";
 
 /// ONNX model role selected from a verified model pack.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -302,6 +304,17 @@ impl OrtTokenGenerator {
     /// { ret is Some only when the cached decoder session was loaded }
     pub const fn decoder_with_past(&self) -> Option<&OrtEngine> {
         self.decoder_with_past.as_ref()
+    }
+}
+
+impl TokenGenerator for OrtTokenGenerator {
+    /// { input contains validated source tokens and target language }
+    /// fn generate(&self, input: &TokenizerOutput) -> Result<TokenSequence, TokenGeneratorError>
+    /// { ret is Err until ONNX encoder/decoder token generation is implemented }
+    fn generate(&self, _input: &TokenizerOutput) -> Result<TokenSequence, TokenGeneratorError> {
+        Err(TokenGeneratorError::BackendUnavailable(
+            GENERATION_LOOP_UNIMPLEMENTED.to_owned(),
+        ))
     }
 }
 

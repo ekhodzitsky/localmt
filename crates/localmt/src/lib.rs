@@ -127,6 +127,10 @@ mod tests {
         OfflineTranslatorPlan, OfflineTranslatorPlanError, OrtEngineError, OrtModelRole,
         TokenGeneratorError, TokenizerError, TranslateRequest, Translator,
     };
+    #[cfg(not(feature = "ort-runtime"))]
+    use super::{
+        LanguagePair, OrtTokenGenerator, TokenGenerator, TokenId, TokenSequence, TokenizerOutput,
+    };
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
     const DECODER_SHA256: &str = "eacbeef293be61f2a85d929cadb4cbb5248c8b8a1478b3d4b3180ea365d5e687";
@@ -265,6 +269,24 @@ mod tests {
                     ModelFileRole::Decoder
                 ))
             ))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(not(feature = "ort-runtime"))]
+    fn ort_token_generator_generate_reports_unimplemented_backend()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pair = LanguagePair::new(Language::English, Language::Japanese)?;
+        let tokens = TokenSequence::new(vec![TokenId::new(7)])?;
+        let input = TokenizerOutput::new(pair, tokens);
+
+        let generated = TokenGenerator::generate(&OrtTokenGenerator, &input);
+
+        assert!(matches!(
+            generated,
+            Err(TokenGeneratorError::BackendUnavailable(ref reason))
+                if reason == "ONNX token generation loop is not implemented"
         ));
         Ok(())
     }

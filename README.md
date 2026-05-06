@@ -90,9 +90,11 @@ cargo check -p localmt --features ort-runtime
 `OrtGeneratorPlan` builds on the pipeline-owned `GeneratorAssetPlan` and turns
 verified encoder/decoder assets into ORT session plans. `OrtTokenGenerator`
 loads the required ORT sessions only when `ort-runtime` is enabled; the default
-build returns `OrtRuntimeFeatureDisabled`. The crate still stops before actual
-token generation; tokenization, decoder graph execution, and translation are
-intentionally future work.
+build returns `OrtRuntimeFeatureDisabled`. `OrtTokenGenerator` now satisfies the
+pipeline `TokenGenerator` trait, but `generate` returns
+`BackendUnavailable("ONNX token generation loop is not implemented")` until
+encoder/decoder tensor I/O is implemented. Real tokenization, decoder graph
+execution, and translation are intentionally future work.
 
 ## Tokenizer Boundary
 
