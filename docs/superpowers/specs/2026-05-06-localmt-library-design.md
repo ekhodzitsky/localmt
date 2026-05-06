@@ -67,7 +67,9 @@ one safe root-qualified role-path lookup instead of repeating manifest scans.
 The tokenizer boundary exists before real model-specific tokenization. It uses
 localmt-owned `TokenId`, `TokenSequence`, `TokenizerInput`, and
 `TokenizerOutput` types so SentencePiece/BPE implementations can be added later
-without changing the public translation pipeline shape.
+without changing the public translation pipeline shape. `TokenizerAssetPlan`
+bridges verified model packs to future tokenizer implementations by requiring a
+`tokenizer` role and preserving optional `vocab` and `config` paths.
 
 The pipeline layer is the first end-to-end SDK shape. It composes a
 `TokenizerEngine` and a `TokenGenerator`, then adapts pipeline errors into
@@ -99,6 +101,8 @@ must carry a license warning and must not become the default bundled option.
   backend adapters.
 - Tokenizer input/output and token sequence invariants are represented by
   localmt-owned types with a deterministic mock tokenizer.
+- Tokenizer asset planning requires a verified `tokenizer` file role and
+  preserves optional vocabulary/config paths.
 - A pipeline skeleton composes tokenizer encode, token generation, and tokenizer
   decode while implementing `TranslatorEngine`.
 - Xiaomi 17 benchmark command exists and clearly labels `mock-pipeline`

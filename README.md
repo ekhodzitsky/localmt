@@ -86,7 +86,9 @@ or BPE implementation is selected. It owns `TokenId`, non-empty bounded
 `TokenSequence`, `TokenizerInput`, `TokenizerOutput`, and the `TokenizerEngine`
 trait. `MockTokenizer` performs deterministic UTF-8 byte roundtrips so the
 future translation pipeline can be tested without model-specific tokenizer
-dependencies.
+dependencies. `TokenizerAssetPlan` builds from a verified model pack, requires a
+declared `tokenizer` role, and carries optional `vocab` and `config` paths for
+future tokenizer implementations.
 
 ## Pipeline Skeleton
 

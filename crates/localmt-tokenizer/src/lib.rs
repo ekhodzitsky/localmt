@@ -1,11 +1,13 @@
 //! Tokenizer boundary for localmt.
 
 use core::fmt;
+use std::path::{Path, PathBuf};
 
 use localmt_core::{
     Language, LanguagePair, LanguagePairError, MAX_TEXT_CHARS, NonEmptyText, TextError,
     TranslateRequest,
 };
+use localmt_models::{ModelFileRole, ModelPack, Verified};
 
 /// Maximum token count accepted by the tokenizer boundary.
 pub const MAX_TOKENS: usize = MAX_TEXT_CHARS * 4;
@@ -205,6 +207,52 @@ pub trait TokenizerEngine {
     ) -> Result<NonEmptyText, TokenizerError>;
 }
 
+/// Verified model-pack files required to construct a real tokenizer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenizerAssetPlan {
+    tokenizer_path: PathBuf,
+    vocabulary_path: Option<PathBuf>,
+    config_path: Option<PathBuf>,
+}
+
+impl TokenizerAssetPlan {
+    /// { pack has verified manifest, files, and checksums }
+    /// fn from_pack(pack: &`ModelPack<Verified>`) -> Result<Self, TokenizerError>
+    /// { ret is Ok only when pack declares a tokenizer role }
+    pub fn from_pack(pack: &ModelPack<Verified>) -> Result<Self, TokenizerError> {
+        let tokenizer_path = pack
+            .file_path(ModelFileRole::Tokenizer)
+            .ok_or(TokenizerError::MissingTokenizerAsset)?;
+
+        Ok(Self {
+            tokenizer_path,
+            vocabulary_path: pack.file_path(ModelFileRole::Vocabulary),
+            config_path: pack.file_path(ModelFileRole::Config),
+        })
+    }
+
+    /// { true }
+    /// fn tokenizer_path(&self) -> &Path
+    /// { ret is the verified tokenizer asset path }
+    pub fn tokenizer_path(&self) -> &Path {
+        &self.tokenizer_path
+    }
+
+    /// { true }
+    /// fn vocabulary_path(&self) -> `Option<&Path>`
+    /// { ret is Some only when the pack declares a vocabulary role }
+    pub fn vocabulary_path(&self) -> Option<&Path> {
+        self.vocabulary_path.as_deref()
+    }
+
+    /// { true }
+    /// fn config_path(&self) -> `Option<&Path>`
+    /// { ret is Some only when the pack declares a config role }
+    pub fn config_path(&self) -> Option<&Path> {
+        self.config_path.as_deref()
+    }
+}
+
 /// Deterministic UTF-8 byte tokenizer used until a real tokenizer is wired.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MockTokenizer;
@@ -240,6 +288,8 @@ impl TokenizerEngine for MockTokenizer {
 pub enum TokenizerError {
     /// Source and target languages violate pair invariants.
     InvalidPair(LanguagePairError),
+    /// Verified model pack does not declare a tokenizer file.
+    MissingTokenizerAsset,
     /// Token sequence is empty.
     EmptyTokenSequence,
     /// Token sequence exceeds the accepted bound.
@@ -261,6 +311,9 @@ impl fmt::Display for TokenizerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPair(error) => write!(formatter, "{error}"),
+            Self::MissingTokenizerAsset => {
+                formatter.write_str("model pack is missing tokenizer asset")
+            }
             Self::EmptyTokenSequence => formatter.write_str("token sequence must not be empty"),
             Self::TokenSequenceTooLong {
                 actual_tokens,
@@ -293,12 +346,26 @@ fn mock_bytes(tokens: &TokenSequence) -> Result<Vec<u8>, TokenizerError> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use localmt_core::{Language, NonEmptyText, TranslateRequest};
+    use localmt_models::{Discovered, ModelPack};
 
     use crate::{
-        MAX_TOKENS, MockTokenizer, TokenId, TokenSequence, TokenizerEngine, TokenizerError,
-        TokenizerInput,
+        MAX_TOKENS, MockTokenizer, TokenId, TokenSequence, TokenizerAssetPlan, TokenizerEngine,
+        TokenizerError, TokenizerInput,
     };
+
+    const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
+    const TOKENIZER_SHA256: &str =
+        "38395078aa8c0af1657b8fc788f358d57e5f5fea99c8cdc004198e3c6fffbe71";
+    const VOCABULARY_SHA256: &str =
+        "9e5e90102c699455e9039ff903284e0689394dd345bb11456706f087984d2eb7";
+    const CONFIG_SHA256: &str = "f612b89bcdbc401379f644d7e48572e3470f77dcd4c39416405d80952ad7089e";
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn tokenizer_input_preserves_request_invariants() -> Result<(), Box<dyn std::error::Error>> {
@@ -371,5 +438,90 @@ mod tests {
 
         assert!(matches!(decoded, Err(TokenizerError::InvalidUtf8(_))));
         Ok(())
+    }
+
+    #[test]
+    fn tokenizer_asset_plan_resolves_required_and_optional_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&[
+            ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+            (
+                "tokenizer.json",
+                "tokenizer",
+                TOKENIZER_SHA256,
+                "tokenizer\n",
+            ),
+            ("vocab.txt", "vocab", VOCABULARY_SHA256, "vocab\n"),
+            ("config.json", "config", CONFIG_SHA256, "config\n"),
+        ])?;
+        let vocabulary_path = root.join("vocab.txt");
+        let config_path = root.join("config.json");
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+
+        let plan = TokenizerAssetPlan::from_pack(&pack)?;
+
+        assert_eq!(plan.tokenizer_path(), root.join("tokenizer.json").as_path());
+        assert_eq!(plan.vocabulary_path(), Some(vocabulary_path.as_path()));
+        assert_eq!(plan.config_path(), Some(config_path.as_path()));
+        Ok(())
+    }
+
+    #[test]
+    fn tokenizer_asset_plan_rejects_pack_without_tokenizer_role()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&[("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n")])?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+
+        let plan = TokenizerAssetPlan::from_pack(&pack);
+
+        assert!(matches!(plan, Err(TokenizerError::MissingTokenizerAsset)));
+        Ok(())
+    }
+
+    fn create_pack(
+        files: &[(&str, &str, &str, &str)],
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        for (path, _role, _sha256, contents) in files {
+            fs::write(root.join(path), contents)?;
+        }
+        fs::write(root.join("manifest.json"), manifest_json(files))?;
+        Ok(root)
+    }
+
+    fn create_temp_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "localmt-tokenizer-test-{}-{nanos}-{counter}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root)?;
+        Ok(root)
+    }
+
+    fn manifest_json(files: &[(&str, &str, &str, &str)]) -> String {
+        let file_json = files
+            .iter()
+            .map(|(path, kind, sha256, _contents)| {
+                format!(r#"    {{ "path": "{path}", "kind": "{kind}", "sha256": "{sha256}" }}"#)
+            })
+            .collect::<Vec<_>>()
+            .join(",\n");
+
+        format!(
+            r#"{{
+  "schema_version": 0,
+  "model_id": "m2m100-418m-int8",
+  "version": "0.1.0",
+  "architecture": "m2m100",
+  "runtime": "onnx-runtime",
+  "license": "MIT",
+  "languages": ["en", "ru", "th", "vi", "ja"],
+  "files": [
+{file_json}
+  ]
+}}"#
+        )
     }
 }

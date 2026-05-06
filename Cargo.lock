@@ -160,6 +160,7 @@ name = "localmt-tokenizer"
 version = "0.1.0"
 dependencies = [
  "localmt-core",
+ "localmt-models",
 ]
 
 [[package]]

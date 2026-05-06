@@ -8,6 +8,7 @@ version.workspace = true
 
 [dependencies]
 localmt-core = { path = "../localmt-core" }
+localmt-models = { path = "../localmt-models" }
 
 [lints]
 workspace = true
