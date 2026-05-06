@@ -156,6 +156,8 @@ dependencies = [
  "localmt-engine",
  "localmt-models",
  "localmt-tokenizer",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

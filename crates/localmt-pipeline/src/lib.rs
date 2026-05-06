@@ -1,6 +1,7 @@
 //! Translation pipeline composition for localmt.
 
 use core::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use localmt_core::{Language, LanguagePair, TranslateRequest, Translation};
@@ -10,6 +11,7 @@ use localmt_tokenizer::{
     MAX_TOKENS, TokenId, TokenSequence, TokenizerEngine, TokenizerError, TokenizerInput,
     TokenizerOutput,
 };
+use serde::Deserialize;
 
 /// Default upper bound for newly generated target tokens.
 pub const DEFAULT_MAX_NEW_TOKENS: usize = 128;
@@ -210,6 +212,32 @@ pub struct GenerationConfig {
 }
 
 impl GenerationConfig {
+    /// { path points to a readable JSON generation config file }
+    /// fn from_json_file(path: &Path) -> Result<Self, GenerationConfigParseError>
+    /// { ret is Ok only when file contents parse and validate as GenerationConfig }
+    pub fn from_json_file(path: &Path) -> Result<Self, GenerationConfigParseError> {
+        let contents =
+            fs::read_to_string(path).map_err(|source| GenerationConfigParseError::ReadFile {
+                path: path.to_path_buf(),
+                reason: source.to_string(),
+            })?;
+
+        Self::from_json_str(&contents)
+    }
+
+    /// { contents is a JSON generation config document }
+    /// fn from_json_str(contents: &str) -> Result<Self, GenerationConfigParseError>
+    /// { ret is Ok only when contents parse and validate as GenerationConfig }
+    pub fn from_json_str(contents: &str) -> Result<Self, GenerationConfigParseError> {
+        let raw = serde_json::from_str::<RawGenerationConfig>(contents).map_err(|source| {
+            GenerationConfigParseError::ParseJson {
+                reason: source.to_string(),
+            }
+        })?;
+
+        raw.try_into_config()
+    }
+
     /// { special_tokens and language_tokens were validated }
     /// fn with_default_limit(special_tokens: GenerationSpecialTokens, language_tokens: LanguageTokenIds) -> Result<Self, GenerationConfigError>
     /// { ret is Ok only when language tokens do not collide with BOS/EOS }
@@ -338,6 +366,95 @@ impl fmt::Display for GenerationConfigError {
 }
 
 impl std::error::Error for GenerationConfigError {}
+
+/// Generation config JSON parsing error.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GenerationConfigParseError {
+    /// Config file could not be read.
+    ReadFile {
+        /// Path attempted.
+        path: PathBuf,
+        /// Filesystem error message.
+        reason: String,
+    },
+    /// Config JSON could not be decoded.
+    ParseJson {
+        /// Parser error message.
+        reason: String,
+    },
+    /// Config JSON decoded but failed semantic validation.
+    InvalidConfig(GenerationConfigError),
+}
+
+impl fmt::Display for GenerationConfigParseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ReadFile { path, reason } => {
+                write!(
+                    formatter,
+                    "failed to read generation config {}: {reason}",
+                    path.display()
+                )
+            }
+            Self::ParseJson { reason } => {
+                write!(formatter, "invalid generation config JSON: {reason}")
+            }
+            Self::InvalidConfig(error) => write!(formatter, "invalid generation config: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for GenerationConfigParseError {}
+
+#[derive(Deserialize)]
+struct RawGenerationConfig {
+    max_new_tokens: Option<usize>,
+    bos_token_id: u32,
+    eos_token_id: u32,
+    language_token_ids: RawLanguageTokenIds,
+}
+
+impl RawGenerationConfig {
+    fn try_into_config(self) -> Result<GenerationConfig, GenerationConfigParseError> {
+        let max_new_tokens = match self.max_new_tokens {
+            Some(value) => {
+                MaxNewTokens::new(value).map_err(GenerationConfigParseError::InvalidConfig)?
+            }
+            None => MaxNewTokens::default(),
+        };
+        let special_tokens = GenerationSpecialTokens::new(
+            TokenId::new(self.bos_token_id),
+            TokenId::new(self.eos_token_id),
+        )
+        .map_err(GenerationConfigParseError::InvalidConfig)?;
+        let language_tokens = self.language_token_ids.try_into_tokens()?;
+
+        GenerationConfig::new(max_new_tokens, special_tokens, language_tokens)
+            .map_err(GenerationConfigParseError::InvalidConfig)
+    }
+}
+
+#[derive(Deserialize)]
+struct RawLanguageTokenIds {
+    en: u32,
+    ru: u32,
+    th: u32,
+    vi: u32,
+    ja: u32,
+}
+
+impl RawLanguageTokenIds {
+    fn try_into_tokens(self) -> Result<LanguageTokenIds, GenerationConfigParseError> {
+        LanguageTokenIds::new(
+            TokenId::new(self.en),
+            TokenId::new(self.ru),
+            TokenId::new(self.th),
+            TokenId::new(self.vi),
+            TokenId::new(self.ja),
+        )
+        .map_err(GenerationConfigParseError::InvalidConfig)
+    }
+}
 
 /// Special token role used in generation-config validation errors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -618,9 +735,9 @@ mod tests {
 
     use crate::{
         DEFAULT_MAX_NEW_TOKENS, GenerationConfig, GenerationConfigError,
-        GenerationSpecialTokenRole, GenerationSpecialTokens, GeneratorAssetPlan, LanguageTokenIds,
-        MaxNewTokens, MockTokenGenerator, PipelineError, TokenGenerator, TokenGeneratorError,
-        TranslationPipeline,
+        GenerationConfigParseError, GenerationSpecialTokenRole, GenerationSpecialTokens,
+        GeneratorAssetPlan, LanguageTokenIds, MaxNewTokens, MockTokenGenerator, PipelineError,
+        TokenGenerator, TokenGeneratorError, TranslationPipeline,
     };
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
@@ -867,6 +984,118 @@ mod tests {
                 special: GenerationSpecialTokenRole::Eos,
                 token
             }) if token == TokenId::new(1)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn generation_config_parses_json_file() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        let path = root.join("generation.json");
+        fs::write(
+            &path,
+            r#"{
+  "max_new_tokens": 64,
+  "bos_token_id": 0,
+  "eos_token_id": 1,
+  "language_token_ids": {
+    "en": 10,
+    "ru": 11,
+    "th": 12,
+    "vi": 13,
+    "ja": 14
+  }
+}"#,
+        )?;
+
+        let config = GenerationConfig::from_json_file(&path)?;
+
+        assert_eq!(config.max_new_tokens().value(), 64);
+        assert_eq!(config.bos_token_id(), TokenId::new(0));
+        assert_eq!(config.eos_token_id(), TokenId::new(1));
+        assert_eq!(
+            config.target_language_token(Language::Japanese),
+            TokenId::new(14)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generation_config_parses_default_limit_from_json_str()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = GenerationConfig::from_json_str(
+            r#"{
+  "bos_token_id": 0,
+  "eos_token_id": 1,
+  "language_token_ids": {
+    "en": 10,
+    "ru": 11,
+    "th": 12,
+    "vi": 13,
+    "ja": 14
+  }
+}"#,
+        )?;
+
+        assert_eq!(config.max_new_tokens().value(), DEFAULT_MAX_NEW_TOKENS);
+        Ok(())
+    }
+
+    #[test]
+    fn generation_config_reports_malformed_json() {
+        let config = GenerationConfig::from_json_str("{");
+
+        assert!(matches!(
+            config,
+            Err(GenerationConfigParseError::ParseJson { .. })
+        ));
+    }
+
+    #[test]
+    fn generation_config_reports_missing_language_token() {
+        let config = GenerationConfig::from_json_str(
+            r#"{
+  "bos_token_id": 0,
+  "eos_token_id": 1,
+  "language_token_ids": {
+    "en": 10,
+    "ru": 11,
+    "th": 12,
+    "vi": 13
+  }
+}"#,
+        );
+
+        assert!(matches!(
+            config,
+            Err(GenerationConfigParseError::ParseJson { ref reason })
+                if reason.contains("missing field `ja`")
+        ));
+    }
+
+    #[test]
+    fn generation_config_reports_validation_errors_from_json()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = GenerationConfig::from_json_str(
+            r#"{
+  "max_new_tokens": 0,
+  "bos_token_id": 0,
+  "eos_token_id": 1,
+  "language_token_ids": {
+    "en": 10,
+    "ru": 11,
+    "th": 12,
+    "vi": 13,
+    "ja": 14
+  }
+}"#,
+        );
+
+        assert!(matches!(
+            config,
+            Err(GenerationConfigParseError::InvalidConfig(
+                GenerationConfigError::EmptyMaxNewTokens
+            ))
         ));
         Ok(())
     }

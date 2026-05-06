@@ -131,7 +131,29 @@ loop exists. It owns a bounded `MaxNewTokens`, required BOS/EOS token ids, and
 target-language token ids for `en`, `ru`, `th`, `vi`, and `ja`.
 `GenerationConfig::with_default_limit` uses `DEFAULT_MAX_NEW_TOKENS` and rejects
 duplicate or colliding token roles. Parsing `generation_config` files and using
-these values inside ONNX decoder execution are still future work.
+these values inside ONNX decoder execution are separate steps.
+
+Accepted local `generation_config` JSON shape:
+
+```json
+{
+  "max_new_tokens": 64,
+  "bos_token_id": 0,
+  "eos_token_id": 1,
+  "language_token_ids": {
+    "en": 10,
+    "ru": 11,
+    "th": 12,
+    "vi": 13,
+    "ja": 14
+  }
+}
+```
+
+`max_new_tokens` is optional; omitted configs use `DEFAULT_MAX_NEW_TOKENS`.
+`GenerationConfig::from_json_file` and `GenerationConfig::from_json_str` parse
+this schema and then run the same token-role validation. Decoder execution still
+does not consume this config yet.
 
 ## Benchmark Skeleton
 

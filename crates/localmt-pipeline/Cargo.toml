@@ -11,6 +11,8 @@ localmt-core = { path = "../localmt-core" }
 localmt-engine = { path = "../localmt-engine" }
 localmt-models = { path = "../localmt-models" }
 localmt-tokenizer = { path = "../localmt-tokenizer" }
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -89,7 +89,9 @@ tensor I/O and decoding semantics are implemented.
 `GenerationConfig` provides typed generation-loop settings: bounded
 `max_new_tokens`, BOS/EOS token ids, and target-language token ids for the first
 language set. It validates duplicate or colliding token roles before any decoder
-loop consumes those values.
+loop consumes those values. The pipeline crate parses the local
+`generation_config` JSON schema into that type; `max_new_tokens` is optional and
+defaults to `DEFAULT_MAX_NEW_TOKENS`.
 `OfflineTranslatorPlan` is the facade-level planning object for SDK users. It
 combines `TokenizerAssetPlan` and `OrtGeneratorPlan` from one verified model
 pack without parsing tokenizer files, loading ORT sessions, or running
@@ -132,7 +134,8 @@ must carry a license warning and must not become the default bundled option.
 - ORT token generator satisfies the pipeline trait while returning an explicit
   unavailable-backend error for the unimplemented generation loop.
 - Typed generation config captures max-new-token limits, BOS/EOS ids, and
-  target-language token ids without parsing config files yet.
+  target-language token ids, with parser support for the local
+  `generation_config` JSON schema.
 - Facade-level offline translator planning combines tokenizer and ORT generator
   plans from one verified model pack without loading runtime resources.
 - Xiaomi 17 benchmark command exists and clearly labels `mock-pipeline`
