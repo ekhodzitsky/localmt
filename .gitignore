@@ -1,0 +1,12 @@
+target/
+.kimi/
+kimi-score.svg
+/.idea/
+/.vscode/
+*.log
+models/
+*.onnx
+*.ort
+*.safetensors
+*.bin
+*.sha256

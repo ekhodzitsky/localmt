@@ -1,0 +1,18 @@
+[package]
+name = "localmt-cli"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "localmt"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+localmt = { path = "../localmt" }
+
+[lints]
+workspace = true
