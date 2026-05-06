@@ -202,6 +202,94 @@ impl TranslatorEngine for MockOfflineTranslator {
     }
 }
 
+/// Facade-level translator that uses a real HF tokenizer and mock generation.
+#[cfg(feature = "hf-tokenizers")]
+pub struct HfMockOfflineTranslator {
+    assets: OfflineTranslatorAssets,
+    pipeline: TranslationPipeline<HfTokenizer, MockTokenGenerator>,
+}
+
+#[cfg(feature = "hf-tokenizers")]
+impl HfMockOfflineTranslator {
+    /// { path points to a model-pack directory candidate }
+    /// fn from_model_pack_path(path: impl `AsRef<Path>`) -> Result<Self, HfMockOfflineTranslatorError>
+    /// { ret is Ok only when assets prepare and tokenizer JSON loads successfully }
+    pub fn from_model_pack_path(
+        path: impl AsRef<Path>,
+    ) -> Result<Self, HfMockOfflineTranslatorError> {
+        let assets = OfflineTranslatorAssets::from_model_pack_path(path)
+            .map_err(HfMockOfflineTranslatorError::Assets)?;
+
+        Self::from_assets(assets)
+    }
+
+    /// { assets were prepared from a verified model pack }
+    /// fn from_assets(assets: OfflineTranslatorAssets) -> Result<Self, HfMockOfflineTranslatorError>
+    /// { ret is Ok only when HfTokenizer loads from the verified tokenizer path }
+    pub fn from_assets(
+        assets: OfflineTranslatorAssets,
+    ) -> Result<Self, HfMockOfflineTranslatorError> {
+        let tokenizer = HfTokenizer::from_file(assets.plan().tokenizer().tokenizer_path())
+            .map_err(HfMockOfflineTranslatorError::Tokenizer)?;
+
+        Ok(Self {
+            assets,
+            pipeline: TranslationPipeline::new(tokenizer, MockTokenGenerator),
+        })
+    }
+
+    /// { true }
+    /// fn assets(&self) -> &OfflineTranslatorAssets
+    /// { ret is the prepared assets backing this tokenizer smoke translator }
+    pub const fn assets(&self) -> &OfflineTranslatorAssets {
+        &self.assets
+    }
+
+    /// { request has a valid language pair and non-empty text }
+    /// fn translate(&self, request: &TranslateRequest) -> Result<Translation, TranslationError>
+    /// { ret is delegated to the HF-tokenizer plus mock-generator pipeline }
+    pub fn translate(&self, request: &TranslateRequest) -> Result<Translation, TranslationError> {
+        <Self as TranslatorEngine>::translate(self, request)
+    }
+}
+
+#[cfg(feature = "hf-tokenizers")]
+impl TranslatorEngine for HfMockOfflineTranslator {
+    fn translate(&self, request: &TranslateRequest) -> Result<Translation, TranslationError> {
+        self.pipeline.translate(request)
+    }
+}
+
+/// Facade-level HF tokenizer smoke translator loading error.
+#[cfg(feature = "hf-tokenizers")]
+#[derive(Debug)]
+pub enum HfMockOfflineTranslatorError {
+    /// Prepared asset loading failed.
+    Assets(OfflineTranslatorAssetsError),
+    /// Hugging Face tokenizer loading failed.
+    Tokenizer(TokenizerError),
+}
+
+#[cfg(feature = "hf-tokenizers")]
+impl fmt::Display for HfMockOfflineTranslatorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Assets(error) => write!(formatter, "{error}"),
+            Self::Tokenizer(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+#[cfg(feature = "hf-tokenizers")]
+impl std::error::Error for HfMockOfflineTranslatorError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Assets(error) => Some(error),
+            Self::Tokenizer(error) => Some(error),
+        }
+    }
+}
+
 /// Owned no-inference summary of prepared offline translator assets.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OfflineTranslatorAssetsSummary {
@@ -349,6 +437,8 @@ mod tests {
         OrtEngineError, OrtModelRole, TokenGeneratorError, TokenId, TokenizerError,
         TranslateRequest, Translator,
     };
+    #[cfg(feature = "hf-tokenizers")]
+    use super::{HfMockOfflineTranslator, HfMockOfflineTranslatorError, Sha256Digest};
     #[cfg(not(feature = "ort-runtime"))]
     use super::{LanguagePair, OrtTokenGenerator, TokenGenerator, TokenSequence, TokenizerOutput};
 
@@ -701,6 +791,51 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hf-tokenizers")]
+    fn hf_mock_offline_translator_loads_tokenizer_and_round_trips()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_hf_pack()?;
+        let translator = HfMockOfflineTranslator::from_model_pack_path(&root)?;
+        let text = NonEmptyText::new("hello offline")?;
+        let request = TranslateRequest::new(Language::English, Language::Russian, text)?;
+
+        let translation = translator.translate(&request)?;
+
+        assert_eq!(
+            translator.assets().plan().tokenizer().tokenizer_path(),
+            root.join("tokenizer.json").as_path()
+        );
+        assert_eq!(translation.text().as_str(), "hello offline");
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "hf-tokenizers")]
+    fn hf_mock_offline_translator_reports_tokenizer_load_errors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&[
+            ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+            ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+            (
+                "tokenizer.json",
+                "tokenizer",
+                TOKENIZER_SHA256,
+                "tokenizer\n",
+            ),
+        ])?;
+
+        let translator = HfMockOfflineTranslator::from_model_pack_path(&root);
+
+        assert!(matches!(
+            translator,
+            Err(HfMockOfflineTranslatorError::Tokenizer(
+                TokenizerError::TokenizerLoad { .. }
+            ))
+        ));
+        Ok(())
+    }
+
+    #[test]
     #[cfg(not(feature = "ort-runtime"))]
     fn ort_token_generator_generate_reports_unimplemented_backend()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -726,6 +861,29 @@ mod tests {
             fs::write(root.join(path), contents)?;
         }
         fs::write(root.join("manifest.json"), manifest_json(files))?;
+        Ok(root)
+    }
+
+    #[cfg(feature = "hf-tokenizers")]
+    fn create_hf_pack() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        fs::write(root.join("encoder.onnx"), "encoder\n")?;
+        fs::write(root.join("decoder.onnx"), "decoder\n")?;
+        fs::write(root.join("tokenizer.json"), wordlevel_tokenizer_json())?;
+        let tokenizer_sha256 = Sha256Digest::from_file(root.join("tokenizer.json"))?;
+        fs::write(
+            root.join("manifest.json"),
+            manifest_json(&[
+                ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+                ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+                (
+                    "tokenizer.json",
+                    "tokenizer",
+                    tokenizer_sha256.as_str(),
+                    wordlevel_tokenizer_json(),
+                ),
+            ]),
+        )?;
         Ok(root)
     }
 
@@ -763,5 +921,10 @@ mod tests {
   ]
 }}"#
         )
+    }
+
+    #[cfg(feature = "hf-tokenizers")]
+    fn wordlevel_tokenizer_json() -> &'static str {
+        r#"{"version":"1.0","truncation":null,"padding":null,"added_tokens":[],"normalizer":null,"pre_tokenizer":{"type":"WhitespaceSplit"},"post_processor":null,"decoder":null,"model":{"type":"WordLevel","vocab":{"[UNK]":0,"hello":1,"offline":2},"unk_token":"[UNK]"}}"#
     }
 }

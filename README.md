@@ -112,6 +112,10 @@ optional generation config.
 translator for app/adapter work before real inference: it requires the same
 prepared assets, then delegates translation to the deterministic mock
 tokenizer/generator pipeline.
+`HfMockOfflineTranslator` is available behind `hf-tokenizers` for a stronger
+tokenizer integration smoke path: it loads the verified Hugging Face
+`tokenizer.json` and still uses `MockTokenGenerator`, so it proves tokenizer
+loading and pipeline wiring but does not perform real translation.
 
 SDK preflight example:
 
