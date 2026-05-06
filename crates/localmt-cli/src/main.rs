@@ -2,8 +2,8 @@ use core::fmt;
 use std::process::ExitCode;
 
 use localmt::{
-    Language, MockTokenGenerator, MockTokenizer, NonEmptyText, TranslateRequest,
-    TranslationPipeline, Translator,
+    Language, MockTokenGenerator, MockTokenizer, NonEmptyText, OfflineTranslatorPlan,
+    TranslateRequest, TranslationPipeline, Translator,
 };
 use localmt_models::{Discovered, ModelPack};
 
@@ -68,6 +68,7 @@ fn run_model(mut args: impl Iterator<Item = String>) -> Result<String, CliError>
     match command.as_str() {
         "inspect" => inspect_model(path),
         "verify" => verify_model(path),
+        "plan" => plan_model(path),
         _ => Err(CliError::UnknownModelCommand(command)),
     }
 }
@@ -105,6 +106,52 @@ fn verify_model(path: String) -> Result<String, CliError> {
         .map_err(CliError::ModelPack)?;
 
     Ok(format!("verified: {}", pack.manifest().model_id()))
+}
+
+/// { path is a model-pack root candidate }
+/// fn plan_model(path: String) -> Result<String, CliError>
+/// { ret summarizes verified SDK asset planning without loading inference sessions }
+fn plan_model(path: String) -> Result<String, CliError> {
+    let pack = ModelPack::<Discovered>::discover(path)
+        .and_then(ModelPack::verify)
+        .map_err(CliError::ModelPack)?;
+    let plan = OfflineTranslatorPlan::from_pack(&pack).map_err(CliError::OfflinePlan)?;
+    let generation_config = plan
+        .generator()
+        .parse_generation_config()
+        .map_err(CliError::OrtPlan)?;
+
+    let decoder_with_past = plan
+        .generator()
+        .decoder_with_past()
+        .map(|session| session.model_path().display().to_string())
+        .unwrap_or_else(|| "absent".to_owned());
+    let mut lines = vec![
+        format!("planned: {}", pack.manifest().model_id()),
+        format!("tokenizer: {}", plan.tokenizer().tokenizer_path().display()),
+        format!(
+            "encoder: {}",
+            plan.generator().encoder().model_path().display()
+        ),
+        format!(
+            "decoder: {}",
+            plan.generator().decoder().model_path().display()
+        ),
+        format!("decoder_with_past: {decoder_with_past}"),
+    ];
+
+    match generation_config {
+        Some(config) => {
+            lines.push("generation_config: parsed".to_owned());
+            lines.push(format!(
+                "max_new_tokens: {}",
+                config.max_new_tokens().value()
+            ));
+        }
+        None => lines.push("generation_config: absent".to_owned()),
+    }
+
+    Ok(lines.join("\n"))
 }
 
 /// { args contains benchmark command arguments }
@@ -157,6 +204,8 @@ enum CliError {
     Translate(localmt::TranslationError),
     UnknownModelCommand(String),
     ModelPack(localmt_models::ModelPackError),
+    OfflinePlan(localmt::OfflineTranslatorPlanError),
+    OrtPlan(localmt::OrtEngineError),
     Benchmark(localmt_bench::BenchmarkError),
     InvalidBenchArguments(String),
 }
@@ -181,6 +230,8 @@ impl fmt::Display for CliError {
                 write!(formatter, "unknown model command: {command}")
             }
             Self::ModelPack(error) => write!(formatter, "{error}"),
+            Self::OfflinePlan(error) => write!(formatter, "{error}"),
+            Self::OrtPlan(error) => write!(formatter, "{error}"),
             Self::Benchmark(error) => write!(formatter, "{error}"),
             Self::InvalidBenchArguments(message) => write!(formatter, "{message}"),
         }
@@ -240,8 +291,23 @@ mod tests {
     use super::run;
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
+    const DECODER_SHA256: &str = "eacbeef293be61f2a85d929cadb4cbb5248c8b8a1478b3d4b3180ea365d5e687";
+    const GENERATION_CONFIG_SHA256: &str =
+        "a8a99326d564beb1fc16cb59526dd5ed7b5fd673f969591f47845e17fbed401d";
     const TOKENIZER_SHA256: &str =
         "38395078aa8c0af1657b8fc788f358d57e5f5fea99c8cdc004198e3c6fffbe71";
+    const GENERATION_CONFIG: &str = r#"{
+  "max_new_tokens": 32,
+  "bos_token_id": 0,
+  "eos_token_id": 1,
+  "language_token_ids": {
+    "en": 10,
+    "ru": 11,
+    "th": 12,
+    "vi": 13,
+    "ja": 14
+  }
+}"#;
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
@@ -329,14 +395,32 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn cli_plans_verified_model_pack_assets() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_plannable_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "model".to_owned(),
+            "plan".to_owned(),
+            root.display().to_string(),
+        ];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("planned: m2m100-418m-int8"));
+        assert!(output.contains("tokenizer:"));
+        assert!(output.contains("tokenizer.json"));
+        assert!(output.contains("encoder:"));
+        assert!(output.contains("encoder.onnx"));
+        assert!(output.contains("decoder:"));
+        assert!(output.contains("decoder.onnx"));
+        assert!(output.contains("generation_config: parsed"));
+        assert!(output.contains("max_new_tokens: 32"));
+        Ok(())
+    }
+
     fn create_pack() -> Result<PathBuf, Box<dyn std::error::Error>> {
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "localmt-cli-test-{}-{nanos}-{counter}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root)?;
+        let root = create_temp_dir()?;
         fs::write(root.join("encoder.onnx"), "encoder\n")?;
         fs::write(root.join("tokenizer.json"), "tokenizer\n")?;
         fs::write(
@@ -357,6 +441,46 @@ mod tests {
 }}"#
             ),
         )?;
+        Ok(root)
+    }
+
+    fn create_plannable_pack() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        fs::write(root.join("encoder.onnx"), "encoder\n")?;
+        fs::write(root.join("decoder.onnx"), "decoder\n")?;
+        fs::write(root.join("tokenizer.json"), "tokenizer\n")?;
+        fs::write(root.join("generation.json"), GENERATION_CONFIG)?;
+        fs::write(
+            root.join("manifest.json"),
+            format!(
+                r#"{{
+  "schema_version": 0,
+  "model_id": "m2m100-418m-int8",
+  "version": "0.1.0",
+  "architecture": "m2m100",
+  "runtime": "onnx-runtime",
+  "license": "MIT",
+  "languages": ["en", "ru", "th", "vi", "ja"],
+  "files": [
+    {{ "path": "encoder.onnx", "kind": "encoder", "sha256": "{ENCODER_SHA256}" }},
+    {{ "path": "decoder.onnx", "kind": "decoder", "sha256": "{DECODER_SHA256}" }},
+    {{ "path": "tokenizer.json", "kind": "tokenizer", "sha256": "{TOKENIZER_SHA256}" }},
+    {{ "path": "generation.json", "kind": "generation_config", "sha256": "{GENERATION_CONFIG_SHA256}" }}
+  ]
+}}"#
+            ),
+        )?;
+        Ok(root)
+    }
+
+    fn create_temp_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "localmt-cli-test-{}-{nanos}-{counter}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root)?;
         Ok(root)
     }
 }

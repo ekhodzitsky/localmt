@@ -61,7 +61,13 @@ Development CLI:
 ```bash
 localmt model inspect ./models/m2m100-418m-int8
 localmt model verify ./models/m2m100-418m-int8
+localmt model plan ./models/m2m100-418m-int8
 ```
+
+`model plan` verifies the pack, builds the facade-level
+`OfflineTranslatorPlan`, and parses an optional `generation_config`. It is a
+no-inference smoke command: it does not load ONNX Runtime sessions or execute
+decoder graphs.
 
 ## Facade Planning
 

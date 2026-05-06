@@ -101,6 +101,9 @@ pack without parsing tokenizer files, loading ORT sessions, or running
 translation.
 The development CLI and benchmark command use this pipeline path so smoke tests
 exercise the same shape that real inference will fill.
+`localmt model plan <pack>` is the no-inference CLI smoke path for verified
+asset planning: it verifies the pack, builds `OfflineTranslatorPlan`, parses
+optional generation config, and avoids ONNX Runtime session loading.
 
 ## Model Strategy
 
@@ -143,6 +146,8 @@ must carry a license warning and must not become the default bundled option.
   without loading sessions or running decoder inference.
 - Facade-level offline translator planning combines tokenizer and ORT generator
   plans from one verified model pack without loading runtime resources.
+- Development CLI can run `localmt model plan <pack>` to smoke verified facade
+  planning and generation-config parsing without inference.
 - Xiaomi 17 benchmark command exists and clearly labels `mock-pipeline`
   results.
 - ONNX Runtime session loading is gated behind `ort-runtime`; default builds
