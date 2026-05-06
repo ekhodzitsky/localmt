@@ -130,6 +130,9 @@ adapters can link the Rust contract before real model execution is wired. The
 primitive ABI is pointer-free: callers can query the ABI version, supported
 language ids, two-byte ISO language codes, language-pair validation,
 `MAX_TEXT_CHARS`, and the Xiaomi 17 target metadata.
+`localmt_ffi_status_message` maps stable status codes to stable UTF-8 messages
+through the same output-buffer contract; unknown input status values return the
+message `unknown status`.
 
 `localmt_ffi_model_pack_summary` lets Android/JNI adapters verify and plan a
 local model pack through the Rust facade, then read the same stable newline

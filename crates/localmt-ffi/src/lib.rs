@@ -37,7 +37,7 @@ pub const LOCALMT_FFI_TOKENIZER_DISABLED: i32 = 11;
 pub const LOCALMT_FFI_TOKENIZER_ERROR: i32 = 12;
 
 /// Pointer-free C ABI version.
-pub const LOCALMT_FFI_ABI_VERSION: u32 = 5;
+pub const LOCALMT_FFI_ABI_VERSION: u32 = 6;
 /// FFI code for Android arm64-v8a.
 pub const LOCALMT_FFI_ANDROID_ABI_ARM64_V8A: u16 = 1;
 /// FFI code for ONNX Runtime Mobile with XNNPACK.
@@ -160,6 +160,58 @@ pub extern "C" fn localmt_ffi_validate_language_pair(source_id: u8, target_id: u
 #[unsafe(no_mangle)] // SAFETY: pointer-free C export.
 pub extern "C" fn localmt_ffi_max_text_chars() -> usize {
     MAX_TEXT_CHARS
+}
+
+/// { status may be any i32 }
+/// fn ffi_status_message(status: i32) -> &'static str
+/// { ret is a stable short message for known status codes, otherwise unknown status }
+const fn ffi_status_message(status: i32) -> &'static str {
+    match status {
+        LOCALMT_FFI_OK => "ok",
+        LOCALMT_FFI_INVALID_LANGUAGE => "invalid language",
+        LOCALMT_FFI_INVALID_PAIR => "invalid language pair",
+        LOCALMT_FFI_NULL_POINTER => "null pointer",
+        LOCALMT_FFI_INVALID_UTF8 => "invalid utf-8",
+        LOCALMT_FFI_MODEL_PACK_ERROR => "model pack error",
+        LOCALMT_FFI_TEXT_ERROR => "text error",
+        LOCALMT_FFI_TRANSLATION_ERROR => "translation error",
+        LOCALMT_FFI_BUFFER_TOO_SMALL => "buffer too small",
+        LOCALMT_FFI_RUNTIME_DISABLED => "runtime disabled",
+        LOCALMT_FFI_ORT_ERROR => "onnx runtime error",
+        LOCALMT_FFI_TOKENIZER_DISABLED => "tokenizer disabled",
+        LOCALMT_FFI_TOKENIZER_ERROR => "tokenizer error",
+        _ => "unknown status",
+    }
+}
+
+/// { output/written pointers follow the header contract }
+/// fn localmt_ffi_status_message(status: i32, output_ptr: *mut u8, output_capacity: usize, written_len: *mut usize) -> i32
+/// { ret is OK only when output receives written_len UTF-8 message bytes }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_status_message(
+    status: i32,
+    output_ptr: *mut u8,
+    output_capacity: usize,
+    written_len: *mut usize,
+) -> i32 {
+    if written_len.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    let output = ffi_status_message(status).as_bytes();
+    unsafe { *written_len = output.len() }; // SAFETY: non-null writable length pointer.
+
+    if output_capacity < output.len() {
+        return LOCALMT_FFI_BUFFER_TOO_SMALL;
+    }
+    if output_ptr.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, output.len()) }; // SAFETY: output buffer capacity was checked.
+
+    LOCALMT_FFI_OK
 }
 
 /// { true }
@@ -655,9 +707,9 @@ mod tests {
         localmt_ffi_mock_translate, localmt_ffi_mock_translator_close,
         localmt_ffi_mock_translator_open, localmt_ffi_model_pack_summary,
         localmt_ffi_ort_generator_open, localmt_ffi_ort_runtime_enabled,
-        localmt_ffi_supported_language_count, localmt_ffi_validate_language_pair,
-        localmt_ffi_xiaomi17_android_abi_code, localmt_ffi_xiaomi17_preferred_runtime_code,
-        localmt_ffi_xiaomi17_ram_class_gib,
+        localmt_ffi_status_message, localmt_ffi_supported_language_count,
+        localmt_ffi_validate_language_pair, localmt_ffi_xiaomi17_android_abi_code,
+        localmt_ffi_xiaomi17_preferred_runtime_code, localmt_ffi_xiaomi17_ram_class_gib,
     };
     #[cfg(feature = "hf-tokenizers")]
     use localmt::Sha256Digest;
@@ -693,11 +745,93 @@ mod tests {
 
     #[test]
     fn ffi_reports_abi_and_xiaomi17_contract() {
-        assert_eq!(localmt_ffi_abi_version(), 5);
+        assert_eq!(localmt_ffi_abi_version(), 6);
         assert_eq!(localmt_ffi_max_text_chars(), 4096);
         assert_eq!(localmt_ffi_xiaomi17_android_abi_code(), 1);
         assert_eq!(localmt_ffi_xiaomi17_ram_class_gib(), 12);
         assert_eq!(localmt_ffi_xiaomi17_preferred_runtime_code(), 1);
+    }
+
+    #[test]
+    fn ffi_status_message_reports_known_status_text() -> Result<(), Box<dyn std::error::Error>> {
+        let mut output = [0_u8; 64];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_status_message(
+                LOCALMT_FFI_MODEL_PACK_ERROR,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_OK
+        );
+        assert_eq!(
+            std::str::from_utf8(&output[..written_len])?,
+            "model pack error"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_status_message_reports_unknown_status_text() -> Result<(), Box<dyn std::error::Error>> {
+        let mut output = [0_u8; 64];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_status_message(99, output.as_mut_ptr(), output.len(), &mut written_len),
+            LOCALMT_FFI_OK
+        );
+        assert_eq!(
+            std::str::from_utf8(&output[..written_len])?,
+            "unknown status"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_status_message_reports_required_buffer_len() {
+        let mut output = [0_u8; 3];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_status_message(
+                LOCALMT_FFI_MODEL_PACK_ERROR,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_BUFFER_TOO_SMALL
+        );
+        assert_eq!(written_len, "model pack error".len());
+    }
+
+    #[test]
+    fn ffi_status_message_rejects_nulls() {
+        let mut output = [0_u8; 64];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_status_message(
+                LOCALMT_FFI_OK,
+                output.as_mut_ptr(),
+                output.len(),
+                ptr::null_mut(),
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_status_message(
+                LOCALMT_FFI_OK,
+                ptr::null_mut(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(written_len, "ok".len());
     }
 
     #[test]
