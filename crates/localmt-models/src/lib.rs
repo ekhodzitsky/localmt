@@ -253,7 +253,74 @@ string_newtype!(ModelPackVersion, "version");
 string_newtype!(ModelArchitecture, "architecture");
 string_newtype!(ModelRuntime, "runtime");
 string_newtype!(ModelLicense, "license");
-string_newtype!(ModelFileKind, "files.kind");
+
+/// Manifest-declared model-pack file role.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ModelFileRole {
+    /// Encoder ONNX graph.
+    Encoder,
+    /// Decoder ONNX graph.
+    Decoder,
+    /// Decoder ONNX graph with cached past-key-values.
+    DecoderWithPast,
+    /// Tokenizer model or tokenizer JSON.
+    Tokenizer,
+    /// Vocabulary file.
+    Vocabulary,
+    /// Model configuration file.
+    Config,
+    /// Generation configuration file.
+    GenerationConfig,
+}
+
+/// Backward-compatible name for manifest-declared file roles.
+pub type ModelFileKind = ModelFileRole;
+
+impl ModelFileRole {
+    /// { value may be any manifest file role string }
+    /// fn new(value: String) -> Result<Self, ModelPackError>
+    /// { ret is Ok only when value names a supported model file role }
+    pub fn new(value: String) -> Result<Self, ModelPackError> {
+        Self::parse(&value)
+    }
+
+    /// { value may be any manifest file role string }
+    /// fn parse(value: &str) -> Result<Self, ModelPackError>
+    /// { ret is Ok only when value names a supported model file role }
+    pub fn parse(value: &str) -> Result<Self, ModelPackError> {
+        match value {
+            "encoder" => Ok(Self::Encoder),
+            "decoder" => Ok(Self::Decoder),
+            "decoder_with_past" => Ok(Self::DecoderWithPast),
+            "tokenizer" => Ok(Self::Tokenizer),
+            "vocab" => Ok(Self::Vocabulary),
+            "config" => Ok(Self::Config),
+            "generation_config" => Ok(Self::GenerationConfig),
+            _ => Err(ModelPackError::UnsupportedFileRole(value.to_owned())),
+        }
+    }
+
+    /// { true }
+    /// fn as_str(self) -> &'static str
+    /// { ret is the stable manifest role id }
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Encoder => "encoder",
+            Self::Decoder => "decoder",
+            Self::DecoderWithPast => "decoder_with_past",
+            Self::Tokenizer => "tokenizer",
+            Self::Vocabulary => "vocab",
+            Self::Config => "config",
+            Self::GenerationConfig => "generation_config",
+        }
+    }
+}
+
+impl fmt::Display for ModelFileRole {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
 
 /// Safe relative model-pack path.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -326,16 +393,16 @@ impl fmt::Display for Sha256Digest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModelFile {
     path: ModelRelativePath,
-    kind: ModelFileKind,
+    role: ModelFileRole,
     sha256: Sha256Digest,
 }
 
 impl ModelFile {
     /// { all fields are validated }
-    /// fn new(path: ModelRelativePath, kind: ModelFileKind, sha256: Sha256Digest) -> Self
+    /// fn new(path: ModelRelativePath, role: ModelFileRole, sha256: Sha256Digest) -> Self
     /// { ret contains exactly those fields }
-    pub const fn new(path: ModelRelativePath, kind: ModelFileKind, sha256: Sha256Digest) -> Self {
-        Self { path, kind, sha256 }
+    pub const fn new(path: ModelRelativePath, role: ModelFileRole, sha256: Sha256Digest) -> Self {
+        Self { path, role, sha256 }
     }
 
     /// { true }
@@ -346,10 +413,17 @@ impl ModelFile {
     }
 
     /// { true }
-    /// fn kind(&self) -> &ModelFileKind
-    /// { ret is the manifest-declared file kind }
-    pub const fn kind(&self) -> &ModelFileKind {
-        &self.kind
+    /// fn kind(&self) -> ModelFileKind
+    /// { ret is the manifest-declared file role }
+    pub const fn kind(&self) -> ModelFileKind {
+        self.role
+    }
+
+    /// { true }
+    /// fn role(&self) -> ModelFileRole
+    /// { ret is the manifest-declared file role }
+    pub const fn role(&self) -> ModelFileRole {
+        self.role
     }
 
     /// { true }
@@ -382,6 +456,10 @@ pub enum ModelPackError {
     DuplicateLanguage(Language),
     /// File list is empty.
     EmptyFileList,
+    /// File role is not supported by localmt.
+    UnsupportedFileRole(String),
+    /// A manifest file role is declared more than once.
+    DuplicateFileRole(ModelFileRole),
     /// A manifest file path is not a safe relative path.
     InvalidRelativePath(String),
     /// SHA-256 value is not a lowercase 64-character hex digest.
@@ -420,6 +498,10 @@ impl fmt::Display for ModelPackError {
                 write!(formatter, "duplicate language: {language}")
             }
             Self::EmptyFileList => formatter.write_str("manifest files list must not be empty"),
+            Self::UnsupportedFileRole(role) => {
+                write!(formatter, "unsupported model file role: {role}")
+            }
+            Self::DuplicateFileRole(role) => write!(formatter, "duplicate model file role: {role}"),
             Self::InvalidRelativePath(path) => write!(formatter, "invalid relative path: {path}"),
             Self::InvalidSha256(value) => write!(formatter, "invalid sha256 digest: {value}"),
             Self::MissingRequiredLanguage(language) => {
@@ -481,7 +563,17 @@ fn parse_files(values: Vec<RawModelFile>) -> Result<Vec<ModelFile>, ModelPackErr
         return Err(ModelPackError::EmptyFileList);
     }
 
-    values.into_iter().map(parse_file).collect()
+    let mut seen = BTreeSet::new();
+    let mut files = Vec::with_capacity(values.len());
+    for value in values {
+        let file = parse_file(value)?;
+        if !seen.insert(file.role()) {
+            return Err(ModelPackError::DuplicateFileRole(file.role()));
+        }
+        files.push(file);
+    }
+
+    Ok(files)
 }
 
 fn parse_file(value: RawModelFile) -> Result<ModelFile, ModelPackError> {
@@ -541,7 +633,7 @@ mod tests {
 
     use localmt_core::Language;
 
-    use crate::{Discovered, ModelPack, ModelPackError};
+    use crate::{Discovered, ModelFileRole, ModelPack, ModelPackError};
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
     const TOKENIZER_SHA256: &str =
@@ -557,6 +649,74 @@ mod tests {
         assert_eq!(pack.manifest().model_id().as_str(), "m2m100-418m-int8");
         assert_eq!(pack.manifest().languages().len(), 5);
         assert!(pack.manifest().supports(Language::Japanese));
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_exposes_typed_file_roles() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&["en", "ru", "th", "vi", "ja"], ENCODER_SHA256)?;
+
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+        let roles = pack
+            .manifest()
+            .files()
+            .iter()
+            .map(|file| file.role())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            roles,
+            vec![ModelFileRole::Encoder, ModelFileRole::Tokenizer]
+        );
+        assert_eq!(ModelFileRole::Decoder.as_str(), "decoder");
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_rejects_unknown_file_role() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        fs::write(root.join("encoder.onnx"), "encoder\n")?;
+        fs::write(
+            root.join("manifest.json"),
+            manifest_json_for_files(
+                &["en", "ru", "th", "vi", "ja"],
+                &[("encoder.onnx", "weights", ENCODER_SHA256)],
+            ),
+        )?;
+
+        let error = ModelPack::<Discovered>::discover(&root);
+
+        assert!(matches!(
+            error,
+            Err(ModelPackError::UnsupportedFileRole(ref role)) if role == "weights"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_rejects_duplicate_file_role() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        fs::write(root.join("encoder.onnx"), "encoder\n")?;
+        fs::write(root.join("encoder-copy.onnx"), "encoder\n")?;
+        fs::write(root.join("tokenizer.json"), "tokenizer\n")?;
+        fs::write(
+            root.join("manifest.json"),
+            manifest_json_for_files(
+                &["en", "ru", "th", "vi", "ja"],
+                &[
+                    ("encoder.onnx", "encoder", ENCODER_SHA256),
+                    ("encoder-copy.onnx", "encoder", ENCODER_SHA256),
+                    ("tokenizer.json", "tokenizer", TOKENIZER_SHA256),
+                ],
+            ),
+        )?;
+
+        let error = ModelPack::<Discovered>::discover(&root);
+
+        assert!(matches!(
+            error,
+            Err(ModelPackError::DuplicateFileRole(ModelFileRole::Encoder))
+        ));
         Ok(())
     }
 
@@ -634,11 +794,28 @@ mod tests {
     }
 
     fn manifest_json(languages: &[&str], encoder_path: &str, encoder_sha256: &str) -> String {
+        manifest_json_for_files(
+            languages,
+            &[
+                (encoder_path, "encoder", encoder_sha256),
+                ("tokenizer.json", "tokenizer", TOKENIZER_SHA256),
+            ],
+        )
+    }
+
+    fn manifest_json_for_files(languages: &[&str], files: &[(&str, &str, &str)]) -> String {
         let language_json = languages
             .iter()
             .map(|language| format!("\"{language}\""))
             .collect::<Vec<_>>()
             .join(", ");
+        let file_json = files
+            .iter()
+            .map(|(path, kind, sha256)| {
+                format!(r#"    {{ "path": "{path}", "kind": "{kind}", "sha256": "{sha256}" }}"#)
+            })
+            .collect::<Vec<_>>()
+            .join(",\n");
 
         format!(
             r#"{{
@@ -650,8 +827,7 @@ mod tests {
   "license": "MIT",
   "languages": [{language_json}],
   "files": [
-    {{ "path": "{encoder_path}", "kind": "encoder", "sha256": "{encoder_sha256}" }},
-    {{ "path": "tokenizer.json", "kind": "tokenizer", "sha256": "{TOKENIZER_SHA256}" }}
+{file_json}
   ]
 }}"#
         )

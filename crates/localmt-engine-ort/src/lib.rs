@@ -3,7 +3,7 @@
 use core::fmt;
 use std::path::{Path, PathBuf};
 
-use localmt_models::{ModelPack, Verified};
+use localmt_models::{ModelFileRole, ModelPack, Verified};
 
 const ONNX_RUNTIME: &str = "onnx-runtime";
 
@@ -21,6 +21,15 @@ impl OrtModelRole {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Encoder => "encoder",
+        }
+    }
+
+    /// { true }
+    /// fn model_file_role(self) -> ModelFileRole
+    /// { ret is the model-pack file role required for this ORT model role }
+    pub const fn model_file_role(self) -> ModelFileRole {
+        match self {
+            Self::Encoder => ModelFileRole::Encoder,
         }
     }
 }
@@ -56,7 +65,7 @@ impl OrtSessionPlan {
             .manifest()
             .files()
             .iter()
-            .find(|file| file.kind().as_str() == role.as_str())
+            .find(|file| file.role() == role.model_file_role())
             .ok_or(OrtEngineError::MissingModelFile(role))?;
 
         Ok(Self {

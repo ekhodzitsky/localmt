@@ -25,6 +25,11 @@ declares. Verification checks that paths cannot escape the model-pack root, all
 declared files exist, SHA-256 digests match, and the first supported languages
 are present: `en`, `ru`, `th`, `vi`, and `ja`.
 
+Each file `kind` is parsed as a typed role, not a free-form string. Supported
+roles are `encoder`, `decoder`, `decoder_with_past`, `tokenizer`, `vocab`,
+`config`, and `generation_config`. A manifest cannot declare the same role more
+than once.
+
 Minimal manifest shape:
 
 ```json

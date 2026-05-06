@@ -8,9 +8,9 @@ pub use localmt_core::{
 pub use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
 pub use localmt_engine_ort::{OrtEngine, OrtEngineError, OrtModelRole, OrtSessionPlan};
 pub use localmt_models::{
-    Discovered, ModelArchitecture, ModelFile, ModelFileKind, ModelId, ModelLicense, ModelManifest,
-    ModelPack, ModelPackError, ModelPackVersion, ModelRelativePath, ModelRuntime, Sha256Digest,
-    Verified,
+    Discovered, ModelArchitecture, ModelFile, ModelFileKind, ModelFileRole, ModelId, ModelLicense,
+    ModelManifest, ModelPack, ModelPackError, ModelPackVersion, ModelRelativePath, ModelRuntime,
+    Sha256Digest, Verified,
 };
 
 /// High-level translator facade over a concrete engine.

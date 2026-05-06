@@ -39,7 +39,8 @@ The workspace is split into narrow crates:
 - `localmt-engine-ort`: selects ONNX files from a verified model pack and loads
   an ONNX Runtime session only when the `ort-runtime` feature is enabled.
 - `localmt-models`: manifest parsing, safe relative path validation, required
-  language checks, and SHA-256 verification for model-pack files.
+  language checks, typed file-role validation, and SHA-256 verification for
+  model-pack files.
 - `localmt-bench`: device profiles and benchmark report types. The first
   implementation runs fixed smoke scenarios against the mock engine.
 - `localmt`: facade crate that re-exports stable public API and owns
@@ -49,6 +50,11 @@ The workspace is split into narrow crates:
 The ONNX Runtime crate is isolated as `localmt-engine-ort`, behind a feature
 flag. It must not leak `ort` types into `localmt-core` or `localmt`; facade
 users see only localmt-owned plan, role, engine, and error types.
+
+Model-pack `files[].kind` values are not arbitrary labels. They are parsed into
+`ModelFileRole` values: `encoder`, `decoder`, `decoder_with_past`, `tokenizer`,
+`vocab`, `config`, and `generation_config`. The parser rejects unknown and
+duplicate roles so backend adapters can rely on typed role selection.
 
 ## Model Strategy
 
@@ -67,6 +73,7 @@ must carry a license warning and must not become the default bundled option.
   - unsupported language codes
 - The mock translator returns deterministic non-empty output.
 - Model packs can be inspected and verified before real inference loads them.
+- Model-pack file roles are typed and duplicate roles are rejected at discovery.
 - Xiaomi 17 benchmark command exists and clearly labels mock-runtime results.
 - ONNX Runtime session loading is gated behind `ort-runtime`; default builds
   can plan a session but return an explicit disabled-runtime error on load.
