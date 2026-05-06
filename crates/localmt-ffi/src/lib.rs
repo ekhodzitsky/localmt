@@ -1,6 +1,11 @@
 //! Pointer-free C ABI for localmt Android adapters.
 
-use localmt::{DeviceProfile, Language, LanguagePair, MAX_TEXT_CHARS};
+use std::{ptr, slice, str};
+
+use localmt::{
+    DeviceProfile, Language, LanguagePair, MAX_TEXT_CHARS, MockOfflineTranslator, NonEmptyText,
+    TranslateRequest,
+};
 
 /// FFI status for successful calls.
 pub const LOCALMT_FFI_OK: i32 = 0;
@@ -8,6 +13,18 @@ pub const LOCALMT_FFI_OK: i32 = 0;
 pub const LOCALMT_FFI_INVALID_LANGUAGE: i32 = 1;
 /// FFI status for invalid language pairs.
 pub const LOCALMT_FFI_INVALID_PAIR: i32 = 2;
+/// FFI status for null pointer arguments.
+pub const LOCALMT_FFI_NULL_POINTER: i32 = 3;
+/// FFI status for byte slices that are not valid UTF-8.
+pub const LOCALMT_FFI_INVALID_UTF8: i32 = 4;
+/// FFI status for model-pack discovery, verification, or planning failures.
+pub const LOCALMT_FFI_MODEL_PACK_ERROR: i32 = 5;
+/// FFI status for text input that violates facade invariants.
+pub const LOCALMT_FFI_TEXT_ERROR: i32 = 6;
+/// FFI status for translation backend failures.
+pub const LOCALMT_FFI_TRANSLATION_ERROR: i32 = 7;
+/// FFI status when the caller output buffer is too small.
+pub const LOCALMT_FFI_BUFFER_TOO_SMALL: i32 = 8;
 
 /// Pointer-free C ABI version.
 pub const LOCALMT_FFI_ABI_VERSION: u32 = 1;
@@ -31,6 +48,11 @@ pub struct LocalmtFfiLanguageCode {
     pub first: u8,
     /// Second ASCII byte.
     pub second: u8,
+}
+
+/// Opaque Rust-owned mock translator handle for FFI callers.
+pub struct LocalmtFfiTranslator {
+    translator: MockOfflineTranslator,
 }
 
 impl LocalmtFfiLanguageCode {
@@ -143,6 +165,111 @@ pub extern "C" fn localmt_ffi_xiaomi17_preferred_runtime_code() -> u16 {
     }
 }
 
+/// { path_ptr points to path_len readable bytes and out_translator is writable }
+/// fn localmt_ffi_mock_translator_open(path_ptr: *const u8, path_len: usize, out_translator: *mut *mut LocalmtFfiTranslator) -> i32
+/// { ret is OK only when out_translator receives an owned non-null handle }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_mock_translator_open(
+    path_ptr: *const u8,
+    path_len: usize,
+    out_translator: *mut *mut LocalmtFfiTranslator,
+) -> i32 {
+    if out_translator.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *out_translator = ptr::null_mut() }; // SAFETY: non-null writable out pointer.
+
+    let path = match read_ffi_utf8(path_ptr, path_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+
+    match MockOfflineTranslator::from_model_pack_path(path) {
+        Ok(translator) => {
+            let handle = Box::new(LocalmtFfiTranslator { translator });
+            unsafe { *out_translator = Box::into_raw(handle) }; // SAFETY: non-null writable out pointer.
+            LOCALMT_FFI_OK
+        }
+        Err(_error) => LOCALMT_FFI_MODEL_PACK_ERROR,
+    }
+}
+
+/// { translator is null or was returned by localmt_ffi_mock_translator_open }
+/// fn localmt_ffi_mock_translator_close(translator: *mut LocalmtFfiTranslator)
+/// { translator is consumed when non-null }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_mock_translator_close(translator: *mut LocalmtFfiTranslator) {
+    if translator.is_null() {
+        return;
+    }
+
+    unsafe { drop(Box::from_raw(translator)) }; // SAFETY: handle came from open and closes once.
+}
+
+/// { translator is a valid handle, input/output/written pointers follow the header contract }
+/// fn localmt_ffi_mock_translate(translator: *const LocalmtFfiTranslator, source_id: u8, target_id: u8, input_ptr: *const u8, input_len: usize, output_ptr: *mut u8, output_capacity: usize, written_len: *mut usize) -> i32
+/// { ret is OK only when output receives written_len UTF-8 bytes }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_mock_translate(
+    translator: *const LocalmtFfiTranslator,
+    source_id: u8,
+    target_id: u8,
+    input_ptr: *const u8,
+    input_len: usize,
+    output_ptr: *mut u8,
+    output_capacity: usize,
+    written_len: *mut usize,
+) -> i32 {
+    if translator.is_null() || written_len.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *written_len = 0 }; // SAFETY: non-null writable length pointer.
+
+    let Some(source) = language_from_id(source_id) else {
+        return LOCALMT_FFI_INVALID_LANGUAGE;
+    };
+    let Some(target) = language_from_id(target_id) else {
+        return LOCALMT_FFI_INVALID_LANGUAGE;
+    };
+
+    let input = match read_ffi_utf8(input_ptr, input_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let text = match NonEmptyText::new(input.to_owned()) {
+        Ok(value) => value,
+        Err(_error) => return LOCALMT_FFI_TEXT_ERROR,
+    };
+    let request = match TranslateRequest::new(source, target, text) {
+        Ok(value) => value,
+        Err(_error) => return LOCALMT_FFI_INVALID_PAIR,
+    };
+    let translator = unsafe { &*translator }; // SAFETY: non-null live handle pointer.
+    let translation = match translator.translator.translate(&request) {
+        Ok(value) => value,
+        Err(_error) => return LOCALMT_FFI_TRANSLATION_ERROR,
+    };
+    let output = translation.text().as_str().as_bytes();
+
+    unsafe { *written_len = output.len() }; // SAFETY: non-null writable length pointer.
+
+    if output_capacity < output.len() {
+        return LOCALMT_FFI_BUFFER_TOO_SMALL;
+    }
+    if output_ptr.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, output.len()) }; // SAFETY: output buffer capacity was checked.
+
+    LOCALMT_FFI_OK
+}
+
 /// { language_id may be any u8 }
 /// fn language_from_id(language_id: u8) -> Option<Language>
 /// { ret is Some only when language_id is in the stable FFI language table }
@@ -158,15 +285,42 @@ fn language_code(language: Language) -> LocalmtFfiLanguageCode {
     LocalmtFfiLanguageCode::new(bytes[0], bytes[1])
 }
 
+/// { ptr points to len readable bytes }
+/// fn read_ffi_utf8(ptr: *const u8, len: usize) -> Result<&str, i32>
+/// { ret is Ok only when ptr is non-null and bytes are valid UTF-8 }
+fn read_ffi_utf8<'a>(ptr: *const u8, len: usize) -> Result<&'a str, i32> {
+    if ptr.is_null() {
+        return Err(LOCALMT_FFI_NULL_POINTER);
+    }
+
+    let bytes = unsafe { slice::from_raw_parts(ptr, len) }; // SAFETY: non-null readable byte slice.
+
+    str::from_utf8(bytes).map_err(|_error| LOCALMT_FFI_INVALID_UTF8)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::ptr;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::{
-        LOCALMT_FFI_INVALID_LANGUAGE, LOCALMT_FFI_INVALID_PAIR, LOCALMT_FFI_OK,
-        localmt_ffi_abi_version, localmt_ffi_language_code, localmt_ffi_language_from_iso_639_1,
-        localmt_ffi_max_text_chars, localmt_ffi_supported_language_count,
+        LOCALMT_FFI_BUFFER_TOO_SMALL, LOCALMT_FFI_INVALID_LANGUAGE, LOCALMT_FFI_INVALID_PAIR,
+        LOCALMT_FFI_INVALID_UTF8, LOCALMT_FFI_NULL_POINTER, LOCALMT_FFI_OK, LOCALMT_FFI_TEXT_ERROR,
+        LocalmtFfiTranslator, localmt_ffi_abi_version, localmt_ffi_language_code,
+        localmt_ffi_language_from_iso_639_1, localmt_ffi_max_text_chars,
+        localmt_ffi_mock_translate, localmt_ffi_mock_translator_close,
+        localmt_ffi_mock_translator_open, localmt_ffi_supported_language_count,
         localmt_ffi_validate_language_pair, localmt_ffi_xiaomi17_android_abi_code,
         localmt_ffi_xiaomi17_preferred_runtime_code, localmt_ffi_xiaomi17_ram_class_gib,
     };
+
+    const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
+    const DECODER_SHA256: &str = "eacbeef293be61f2a85d929cadb4cbb5248c8b8a1478b3d4b3180ea365d5e687";
+    const TOKENIZER_SHA256: &str =
+        "38395078aa8c0af1657b8fc788f358d57e5f5fea99c8cdc004198e3c6fffbe71";
+    static PACK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn ffi_reports_supported_language_codes() {
@@ -198,5 +352,222 @@ mod tests {
         assert_eq!(localmt_ffi_xiaomi17_android_abi_code(), 1);
         assert_eq!(localmt_ffi_xiaomi17_ram_class_gib(), 12);
         assert_eq!(localmt_ffi_xiaomi17_preferred_runtime_code(), 1);
+    }
+
+    #[test]
+    fn ffi_mock_translator_opens_translates_and_closes() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut translator: *mut LocalmtFfiTranslator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_mock_translator_open(path.as_ptr(), path.len(), &mut translator),
+            LOCALMT_FFI_OK
+        );
+        assert!(!translator.is_null());
+
+        let input = "hello offline";
+        let mut output = [0_u8; 32];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_mock_translate(
+                translator,
+                0,
+                1,
+                input.as_ptr(),
+                input.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_OK
+        );
+        assert_eq!(written_len, input.len());
+        assert_eq!(&output[..written_len], input.as_bytes());
+
+        localmt_ffi_mock_translator_close(translator);
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_mock_translate_reports_required_buffer_len() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_verified_pack()?;
+        let translator = open_translator(&root)?;
+        let input = "too wide";
+        let mut output = [0_u8; 3];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_mock_translate(
+                translator,
+                0,
+                1,
+                input.as_ptr(),
+                input.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_BUFFER_TOO_SMALL
+        );
+        assert_eq!(written_len, input.len());
+
+        localmt_ffi_mock_translator_close(translator);
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_mock_translator_rejects_nulls_and_invalid_utf8() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut translator: *mut LocalmtFfiTranslator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_mock_translator_open(path.as_ptr(), path.len(), ptr::null_mut()),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_mock_translator_open([0xff].as_ptr(), 1, &mut translator),
+            LOCALMT_FFI_INVALID_UTF8
+        );
+        assert!(translator.is_null());
+
+        assert_eq!(
+            localmt_ffi_mock_translate(
+                ptr::null(),
+                0,
+                1,
+                b"hello".as_ptr(),
+                5,
+                [0_u8; 8].as_mut_ptr(),
+                8,
+                &mut 0_usize,
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_mock_translate_maps_validation_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_verified_pack()?;
+        let translator = open_translator(&root)?;
+        let mut output = [0_u8; 32];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_mock_translate(
+                translator,
+                0,
+                0,
+                b"hello".as_ptr(),
+                5,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_INVALID_PAIR
+        );
+        assert_eq!(
+            localmt_ffi_mock_translate(
+                translator,
+                99,
+                0,
+                b"hello".as_ptr(),
+                5,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_INVALID_LANGUAGE
+        );
+        assert_eq!(
+            localmt_ffi_mock_translate(
+                translator,
+                0,
+                1,
+                b"   ".as_ptr(),
+                3,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_TEXT_ERROR
+        );
+        assert_eq!(
+            localmt_ffi_mock_translate(
+                translator,
+                0,
+                1,
+                [0xff].as_ptr(),
+                1,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_INVALID_UTF8
+        );
+
+        localmt_ffi_mock_translator_close(translator);
+        Ok(())
+    }
+
+    fn open_translator(
+        root: &std::path::Path,
+    ) -> Result<*mut LocalmtFfiTranslator, Box<dyn std::error::Error>> {
+        let path = path_bytes(root)?;
+        let mut translator: *mut LocalmtFfiTranslator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_mock_translator_open(path.as_ptr(), path.len(), &mut translator),
+            LOCALMT_FFI_OK
+        );
+
+        Ok(translator)
+    }
+
+    fn path_bytes(path: &std::path::Path) -> Result<&str, Box<dyn std::error::Error>> {
+        path.to_str().ok_or_else(|| {
+            Box::<dyn std::error::Error>::from(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "test path is not UTF-8",
+            ))
+        })
+    }
+
+    fn create_verified_pack() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let counter = PACK_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("localmt-ffi-mock-test-{nanos}-{counter}",));
+
+        fs::create_dir_all(&root)?;
+        fs::write(root.join("encoder.onnx"), "encoder\n")?;
+        fs::write(root.join("decoder.onnx"), "decoder\n")?;
+        fs::write(root.join("tokenizer.json"), "tokenizer\n")?;
+        fs::write(root.join("manifest.json"), manifest_json())?;
+
+        Ok(root)
+    }
+
+    fn manifest_json() -> String {
+        format!(
+            r#"{{
+  "schema_version": 0,
+  "model_id": "m2m100-418m-int8",
+  "version": "0.1.0",
+  "architecture": "m2m100",
+  "runtime": "onnx-runtime",
+  "license": "MIT",
+  "languages": ["en", "ru", "th", "vi", "ja"],
+  "files": [
+    {{ "path": "encoder.onnx", "kind": "encoder", "sha256": "{ENCODER_SHA256}" }},
+    {{ "path": "decoder.onnx", "kind": "decoder", "sha256": "{DECODER_SHA256}" }},
+    {{ "path": "tokenizer.json", "kind": "tokenizer", "sha256": "{TOKENIZER_SHA256}" }}
+  ]
+}}"#
+        )
     }
 }

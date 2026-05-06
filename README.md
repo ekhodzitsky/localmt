@@ -121,13 +121,17 @@ cargo run -p localmt --example model_pack_preflight -- ./models/m2m100-418m-int8
 
 `localmt-ffi` builds as `cdylib`, `staticlib`, and `rlib` so Android/JNI
 adapters can link the Rust contract before real model execution is wired. The
-first ABI is intentionally pointer-free: callers can query the ABI version,
-supported language ids, two-byte ISO language codes, language-pair validation,
+primitive ABI is pointer-free: callers can query the ABI version, supported
+language ids, two-byte ISO language codes, language-pair validation,
 `MAX_TEXT_CHARS`, and the Xiaomi 17 target metadata.
 
-The FFI boundary does not yet expose string translation, model-pack handles, or
-runtime sessions. Those APIs need explicit ownership rules and dedicated safety
-tests before raw pointers cross the boundary.
+For Android smoke integration, `localmt-ffi` also exposes a Rust-owned opaque
+`LocalmtFfiTranslator` handle around `MockOfflineTranslator`. Callers open it
+from a verified local model-pack path, pass UTF-8 input bytes, and provide the
+output buffer; Rust writes translated UTF-8 bytes without NUL termination and
+reports the required byte count when the buffer is too small. This path is still
+mock translation. Real tokenizer parsing, ONNX decoder execution, and real
+runtime-session handles remain future work.
 
 ## ONNX Runtime Boundary
 

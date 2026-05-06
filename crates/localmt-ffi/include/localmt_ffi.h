@@ -11,6 +11,12 @@ extern "C" {
 #define LOCALMT_FFI_OK 0
 #define LOCALMT_FFI_INVALID_LANGUAGE 1
 #define LOCALMT_FFI_INVALID_PAIR 2
+#define LOCALMT_FFI_NULL_POINTER 3
+#define LOCALMT_FFI_INVALID_UTF8 4
+#define LOCALMT_FFI_MODEL_PACK_ERROR 5
+#define LOCALMT_FFI_TEXT_ERROR 6
+#define LOCALMT_FFI_TRANSLATION_ERROR 7
+#define LOCALMT_FFI_BUFFER_TOO_SMALL 8
 
 #define LOCALMT_FFI_ABI_VERSION 1
 #define LOCALMT_FFI_ANDROID_ABI_ARM64_V8A 1
@@ -21,6 +27,15 @@ typedef struct LocalmtFfiLanguageCode {
   uint8_t first;
   uint8_t second;
 } LocalmtFfiLanguageCode;
+
+/*
+ * Opaque Rust-owned translator handle.
+ *
+ * Handles are created by localmt_ffi_mock_translator_open and must be released
+ * exactly once with localmt_ffi_mock_translator_close. Passing a non-null
+ * pointer not created by open, or closing the same handle twice, is invalid.
+ */
+typedef struct LocalmtFfiTranslator LocalmtFfiTranslator;
 
 /* Returns LOCALMT_FFI_ABI_VERSION. */
 uint32_t localmt_ffi_abi_version(void);
@@ -38,6 +53,42 @@ size_t localmt_ffi_max_text_chars(void);
 uint16_t localmt_ffi_xiaomi17_android_abi_code(void);
 uint16_t localmt_ffi_xiaomi17_ram_class_gib(void);
 uint16_t localmt_ffi_xiaomi17_preferred_runtime_code(void);
+
+/*
+ * Opens a verified local model pack and constructs the deterministic mock
+ * translator used for Android/JNI smoke checks before real inference exists.
+ *
+ * path_ptr/path_len must be valid UTF-8 bytes for the model-pack directory.
+ * out_translator must point to writable pointer storage. It is set to NULL
+ * before work and receives a non-null handle only on LOCALMT_FFI_OK.
+ */
+int32_t localmt_ffi_mock_translator_open(
+    const uint8_t *path_ptr,
+    size_t path_len,
+    LocalmtFfiTranslator **out_translator);
+
+/*
+ * Releases a mock translator handle. NULL is accepted as a no-op.
+ */
+void localmt_ffi_mock_translator_close(LocalmtFfiTranslator *translator);
+
+/*
+ * Translates UTF-8 bytes through the deterministic mock translator.
+ *
+ * input_ptr/input_len must be valid UTF-8 bytes. output_ptr/output_capacity is
+ * caller-owned byte storage and is not NUL terminated by Rust. written_len must
+ * point to writable size_t storage. On LOCALMT_FFI_BUFFER_TOO_SMALL,
+ * written_len contains the required byte count and output is not written.
+ */
+int32_t localmt_ffi_mock_translate(
+    const LocalmtFfiTranslator *translator,
+    uint8_t source_id,
+    uint8_t target_id,
+    const uint8_t *input_ptr,
+    size_t input_len,
+    uint8_t *output_ptr,
+    size_t output_capacity,
+    size_t *written_len);
 
 #ifdef __cplusplus
 }
