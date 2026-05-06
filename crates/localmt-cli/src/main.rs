@@ -26,6 +26,7 @@ usage:
   localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE
   localmt ffi smoke PACK FROM TO TEXT
   localmt ffi hf-smoke PACK FROM TO TEXT
+  localmt ffi ort-smoke PACK
   localmt bench --profile xiaomi17 --model-pack PACK
 ";
 
@@ -35,6 +36,7 @@ localmt ffi commands
 usage:
   localmt ffi smoke PACK FROM TO TEXT
   localmt ffi hf-smoke PACK FROM TO TEXT
+  localmt ffi ort-smoke PACK
 ";
 
 const MODEL_HELP_TEXT: &str = "\
@@ -167,6 +169,7 @@ fn run_ffi(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
     match command.as_str() {
         "smoke" => run_ffi_smoke(args),
         "hf-smoke" => run_ffi_hf_smoke(args),
+        "ort-smoke" => run_ffi_ort_smoke(args),
         _ => Err(CliError::UnknownFfiCommand(command)),
     }
 }
@@ -460,6 +463,36 @@ fn run_ffi_hf_smoke(mut args: impl Iterator<Item = String>) -> Result<String, Cl
 
     Ok(format!(
         "ffi_abi: {}\nmodel_pack_summary: ok\nhf_mock_translator_open: ok\nhf_mock_translate: ok\ntranslation: {translation}",
+        localmt_ffi::localmt_ffi_abi_version()
+    ))
+}
+
+/// { args contains FFI ORT preflight smoke command arguments }
+/// fn run_ffi_ort_smoke(args: impl Iterator<Item = String>) -> Result<String, CliError>
+/// { ret is Ok only when ORT generator preflight succeeds through FFI }
+fn run_ffi_ort_smoke(args: impl Iterator<Item = String>) -> Result<String, CliError> {
+    let path = single_model_path(args)?;
+    let path_bytes = path.as_bytes();
+    let _summary = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_model_pack_summary(
+            path_bytes.as_ptr(),
+            path_bytes.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
+    })?;
+
+    let mut generator: *mut localmt_ffi::LocalmtFfiOrtGenerator = ptr::null_mut();
+    ffi_ok(localmt_ffi::localmt_ffi_ort_generator_open(
+        path_bytes.as_ptr(),
+        path_bytes.len(),
+        &mut generator,
+    ))?;
+    localmt_ffi::localmt_ffi_ort_generator_close(generator);
+
+    Ok(format!(
+        "ffi_abi: {}\nmodel_pack_summary: ok\nort_generator_open: ok",
         localmt_ffi::localmt_ffi_abi_version()
     ))
 }
@@ -943,6 +976,24 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "ort-runtime"))]
+    fn cli_ffi_ort_smoke_reports_runtime_disabled_after_pack_planning()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_plannable_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "ffi".to_owned(),
+            "ort-smoke".to_owned(),
+            root.display().to_string(),
+        ];
+
+        let result = run(args.into_iter());
+
+        assert!(matches!(result, Err(ref error) if error.to_string().contains("runtime disabled")));
+        Ok(())
+    }
+
+    #[test]
     #[cfg(not(feature = "hf-tokenizers"))]
     fn cli_model_tokenizer_smoke_reports_feature_disabled_after_pack_planning()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1080,6 +1131,7 @@ mod tests {
         ));
         assert!(output.contains("localmt ffi smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi hf-smoke PACK FROM TO TEXT"));
+        assert!(output.contains("localmt ffi ort-smoke PACK"));
         assert!(output.contains("localmt bench --profile xiaomi17 --model-pack PACK"));
         Ok(())
     }

@@ -133,6 +133,7 @@ CLI smoke checks:
 cargo run -p localmt -- model plan ./models/m2m100-418m-int8
 cargo run -p localmt -- ffi smoke ./models/m2m100-418m-int8 en ru "hello offline"
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke ./models/m2m100-418m-int8 en ru "hello offline"
+cargo run -p localmt --features ort-runtime -- ffi ort-smoke ./models/m2m100-418m-int8
 ```
 
 `localmt ffi smoke` runs the host-side equivalent of the default JNI call flow:
@@ -141,6 +142,9 @@ message mapping on errors, and handle close.
 `localmt ffi hf-smoke` uses the same C ABI shape with the HF-tokenizer-backed
 mock translator: it verifies `tokenizer.json` loading and the translation buffer
 contract while token generation remains deterministic mock generation.
+`localmt ffi ort-smoke` uses the ORT generator preflight ABI to verify runtime
+session loading for a local pack; it is a model/runtime load check, not
+translation.
 
 ## Android FFI Boundary
 

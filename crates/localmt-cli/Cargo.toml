@@ -20,6 +20,7 @@ localmt-models = { path = "../localmt-models" }
 [features]
 default = []
 hf-tokenizers = ["localmt/hf-tokenizers", "localmt-ffi/hf-tokenizers"]
+ort-runtime = ["localmt/ort-runtime", "localmt-ffi/ort-runtime"]
 
 [lints]
 workspace = true

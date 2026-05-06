@@ -128,6 +128,7 @@ cargo run -p localmt -- model verify <pack-dir>
 cargo run -p localmt -- model plan <pack-dir>
 cargo run -p localmt -- ffi smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke <pack-dir> en ru "hello offline"
+cargo run -p localmt --features ort-runtime -- ffi ort-smoke <pack-dir>
 ```
 
 `localmt ffi smoke` exercises the same default C ABI flow described above on the
@@ -136,6 +137,8 @@ status-message lookup on errors, and handle close.
 `localmt ffi hf-smoke` exercises the tokenizer-backed mock translator path
 through the same host-side FFI helpers; it requires `hf-tokenizers`, verifies
 `tokenizer.json` loading, and still keeps token generation mocked.
+`localmt ffi ort-smoke` exercises the ORT generator preflight handle; it
+requires `ort-runtime`, attempts session loading, and does not run translation.
 
 ## Verification
 
