@@ -1,7 +1,10 @@
 use core::fmt;
 use std::process::ExitCode;
 
-use localmt::{Language, MockEngine, NonEmptyText, TranslateRequest, Translator};
+use localmt::{
+    Language, MockTokenGenerator, MockTokenizer, NonEmptyText, TranslateRequest,
+    TranslationPipeline, Translator,
+};
 use localmt_models::{Discovered, ModelPack};
 
 fn main() -> ExitCode {
@@ -41,7 +44,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
     let request_text = NonEmptyText::new(text).map_err(CliError::InvalidText)?;
     let request =
         TranslateRequest::new(source, target, request_text).map_err(CliError::InvalidPair)?;
-    let translator = Translator::new(MockEngine);
+    let translator = Translator::new(TranslationPipeline::new(MockTokenizer, MockTokenGenerator));
     let translation = translator
         .translate(&request)
         .map_err(CliError::Translate)?;
@@ -242,7 +245,7 @@ mod tests {
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
-    fn cli_routes_valid_request_through_mock_engine() {
+    fn cli_routes_valid_request_through_mock_pipeline() {
         let args = [
             "localmt".to_owned(),
             "en".to_owned(),
@@ -252,7 +255,7 @@ mod tests {
 
         assert!(matches!(
             run(args.into_iter()),
-            Ok(ref output) if output == "[en->ru] hello"
+            Ok(ref output) if output == "hello"
         ));
     }
 
@@ -305,7 +308,8 @@ mod tests {
     }
 
     #[test]
-    fn cli_runs_mock_benchmark_for_verified_pack() -> Result<(), Box<dyn std::error::Error>> {
+    fn cli_runs_mock_pipeline_benchmark_for_verified_pack() -> Result<(), Box<dyn std::error::Error>>
+    {
         let root = create_pack()?;
         let args = [
             "localmt".to_owned(),
@@ -319,7 +323,7 @@ mod tests {
         let output = run(args.into_iter())?;
 
         assert!(output.contains("profile: xiaomi17"));
-        assert!(output.contains("runtime: mock"));
+        assert!(output.contains("runtime: mock-pipeline"));
         assert!(output.contains("model_id: m2m100-418m-int8"));
         assert!(output.contains("scenarios: 10"));
         Ok(())

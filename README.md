@@ -5,9 +5,9 @@ Offline-first Rust translation library for high-end mobile devices.
 The first target profile is Xiaomi 17 on Android arm64-v8a. The library keeps
 translation API, language routing, and model-pack validation independent from
 the concrete inference backend. ONNX Runtime Mobile is the first intended real
-backend; the current workspace has a mock engine plus a verified model-pack
-layer, tokenizer boundary, and pipeline skeleton so API, asset-loading, and
-text/token contracts can be tested before real inference.
+backend; the current workspace has a verified model-pack layer plus a
+pipeline-backed mock translation path so API, asset-loading, and text/token
+contracts can be tested before real inference.
 
 ## Workspace
 
@@ -103,9 +103,9 @@ tokenizer.
 ## Benchmark Skeleton
 
 The current benchmark command verifies a model pack, then runs 10 fixed language
-pair scenarios through the mock engine. It is intentionally labeled
-`runtime: mock`; real ONNX latency and memory metrics will be added with the
-`localmt-engine-ort` backend.
+pair scenarios through `TranslationPipeline<MockTokenizer, MockTokenGenerator>`.
+It is intentionally labeled `runtime: mock-pipeline`; real ONNX latency and
+memory metrics will be added with an ONNX-backed `TokenGenerator`.
 
 ```bash
 localmt bench --profile xiaomi17 --model-pack ./models/m2m100-418m-int8

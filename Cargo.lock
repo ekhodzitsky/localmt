@@ -104,6 +104,8 @@ dependencies = [
  "localmt-core",
  "localmt-engine",
  "localmt-models",
+ "localmt-pipeline",
+ "localmt-tokenizer",
 ]
 
 [[package]]

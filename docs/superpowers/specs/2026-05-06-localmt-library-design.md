@@ -47,7 +47,8 @@ The workspace is split into narrow crates:
   tokenizer input/output types, tokenizer trait, and deterministic mock
   tokenizer.
 - `localmt-bench`: device profiles and benchmark report types. The first
-  implementation runs fixed smoke scenarios against the mock engine.
+  implementation verifies a model pack and runs fixed smoke scenarios against
+  the mock pipeline.
 - `localmt`: facade crate that re-exports stable public API and owns
   `Translator<E>`.
 - `localmt-cli`: development-only smoke CLI.
@@ -71,6 +72,8 @@ The pipeline layer is the first end-to-end SDK shape. It composes a
 `TranslationError` through the existing `TranslatorEngine` trait. The current
 mock generator echoes tokens; real translation will replace only that generator
 and tokenizer implementation, not the public request/translation surface.
+The development CLI and benchmark command use this pipeline path so smoke tests
+exercise the same shape that real inference will fill.
 
 ## Model Strategy
 
@@ -94,7 +97,8 @@ must carry a license warning and must not become the default bundled option.
   localmt-owned types with a deterministic mock tokenizer.
 - A pipeline skeleton composes tokenizer encode, token generation, and tokenizer
   decode while implementing `TranslatorEngine`.
-- Xiaomi 17 benchmark command exists and clearly labels mock-runtime results.
+- Xiaomi 17 benchmark command exists and clearly labels `mock-pipeline`
+  results.
 - ONNX Runtime session loading is gated behind `ort-runtime`; default builds
   can plan a session but return an explicit disabled-runtime error on load.
 - `cargo fmt --check`, `cargo test`, `cargo clippy --all-targets --all-features

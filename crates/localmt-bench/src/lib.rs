@@ -4,10 +4,12 @@ use core::fmt;
 use std::time::Instant;
 
 use localmt_core::{Language, NonEmptyText, TranslateRequest};
-use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
+use localmt_engine::{TranslationError, TranslatorEngine};
 use localmt_models::{ModelPack, Verified};
+use localmt_pipeline::{MockTokenGenerator, TranslationPipeline};
+use localmt_tokenizer::MockTokenizer;
 
-const MOCK_RUNTIME: &str = "mock";
+const MOCK_PIPELINE_RUNTIME: &str = "mock-pipeline";
 const SMOKE_TEXT: &str = "Where is the station?";
 const SCENARIOS: [(Language, Language); 10] = [
     (Language::English, Language::Russian),
@@ -75,7 +77,7 @@ impl MockBenchmarkRunner {
     /// { ret contains timing for all fixed smoke scenarios }
     pub fn run(&self, pack: &ModelPack<Verified>) -> Result<BenchReport, BenchmarkError> {
         let total_start = Instant::now();
-        let engine = MockEngine;
+        let engine = TranslationPipeline::new(MockTokenizer, MockTokenGenerator);
         let translate_start = Instant::now();
         let mut translations = 0_usize;
 
@@ -93,7 +95,7 @@ impl MockBenchmarkRunner {
 
         Ok(BenchReport {
             profile: self.profile,
-            runtime: MOCK_RUNTIME,
+            runtime: MOCK_PIPELINE_RUNTIME,
             model_id: pack.manifest().model_id().as_str().to_owned(),
             scenario_count: SCENARIOS.len(),
             translation_count: translations,
@@ -220,7 +222,7 @@ mod tests {
         let report = MockBenchmarkRunner::new(DeviceProfile::Xiaomi17).run(&pack)?;
 
         assert_eq!(report.profile(), DeviceProfile::Xiaomi17);
-        assert_eq!(report.runtime(), "mock");
+        assert_eq!(report.runtime(), "mock-pipeline");
         assert_eq!(report.model_id(), "m2m100-418m-int8");
         assert_eq!(report.scenario_count(), 10);
         assert_eq!(report.translation_count(), 10);
