@@ -68,6 +68,7 @@ localmt model hash ./models/m2m100-418m-int8/encoder.onnx
 localmt model inspect ./models/m2m100-418m-int8
 localmt model verify ./models/m2m100-418m-int8
 localmt model plan ./models/m2m100-418m-int8
+localmt model tokenize ./models/m2m100-418m-int8 en ru "hello offline"
 localmt bench --help
 ```
 
@@ -189,6 +190,7 @@ implementations.
 ```bash
 cargo test -p localmt-tokenizer --features hf-tokenizers hf_tokenizer
 cargo check -p localmt --features hf-tokenizers
+cargo test -p localmt-cli --features hf-tokenizers tokenizer
 ```
 
 ## Pipeline Skeleton

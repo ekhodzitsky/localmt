@@ -16,5 +16,9 @@ localmt = { path = "../localmt" }
 localmt-bench = { path = "../localmt-bench" }
 localmt-models = { path = "../localmt-models" }
 
+[features]
+default = []
+hf-tokenizers = ["localmt/hf-tokenizers"]
+
 [lints]
 workspace = true

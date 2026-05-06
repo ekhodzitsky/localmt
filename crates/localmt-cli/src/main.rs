@@ -2,11 +2,13 @@ use core::fmt;
 use std::path::Path;
 use std::process::ExitCode;
 
+#[cfg(feature = "hf-tokenizers")]
+use localmt::{HfTokenizer, TokenizerEngine, TokenizerInput};
 use localmt::{
-    Language, MockTokenGenerator, MockTokenizer, ModelArchitecture, ModelFile, ModelFileRole,
-    ModelId, ModelLicense, ModelManifest, ModelPackVersion, ModelRelativePath, ModelRuntime,
-    NonEmptyText, OfflineTranslatorAssets, Sha256Digest, TranslateRequest, TranslationPipeline,
-    Translator,
+    Language, LanguagePair, MockTokenGenerator, MockTokenizer, ModelArchitecture, ModelFile,
+    ModelFileRole, ModelId, ModelLicense, ModelManifest, ModelPackVersion, ModelRelativePath,
+    ModelRuntime, NonEmptyText, OfflineTranslatorAssets, Sha256Digest, TranslateRequest,
+    TranslationPipeline, Translator,
 };
 use localmt_models::{Discovered, ModelPack};
 
@@ -19,6 +21,7 @@ usage:
   localmt model inspect PACK
   localmt model verify PACK
   localmt model plan PACK
+  localmt model tokenize PACK FROM TO TEXT
   localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE
   localmt bench --profile xiaomi17 --model-pack PACK
 ";
@@ -31,6 +34,7 @@ usage:
   localmt model inspect PACK
   localmt model verify PACK
   localmt model plan PACK
+  localmt model tokenize PACK FROM TO TEXT
   localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE
 ";
 
@@ -124,6 +128,7 @@ fn run_model(mut args: impl Iterator<Item = String>) -> Result<String, CliError>
         "inspect" => inspect_model(single_model_path(args)?),
         "verify" => verify_model(single_model_path(args)?),
         "plan" => plan_model(single_model_path(args)?),
+        "tokenize" => tokenize_model(args),
         "hash" => hash_model_file(single_model_path(args)?),
         "write-manifest" => write_manifest(args),
         _ => Err(CliError::UnknownModelCommand(command)),
@@ -288,6 +293,55 @@ fn plan_model(path: String) -> Result<String, CliError> {
     Ok(lines.join("\n"))
 }
 
+/// { args contains tokenize command arguments }
+/// fn tokenize_model(args: impl Iterator<Item = String>) -> Result<String, CliError>
+/// { ret is Ok only when a verified tokenizer encodes and decodes the input text }
+fn tokenize_model(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
+    let path = args.next().ok_or(CliError::MissingArgument("MODEL_PACK"))?;
+    let source = parse_language(args.next(), "FROM")?;
+    let target = parse_language(args.next(), "TO")?;
+    let text = args.next().ok_or(CliError::MissingArgument("TEXT"))?;
+
+    if args.next().is_some() {
+        return Err(CliError::TooManyArguments);
+    }
+
+    let text = NonEmptyText::new(text).map_err(CliError::InvalidText)?;
+    let _pair = LanguagePair::new(source, target).map_err(CliError::InvalidPair)?;
+    let assets =
+        OfflineTranslatorAssets::from_model_pack_path(path).map_err(CliError::OfflineAssets)?;
+
+    #[cfg(not(feature = "hf-tokenizers"))]
+    {
+        let _text = text;
+        let _tokenizer_path = assets.plan().tokenizer().tokenizer_path();
+        Err(CliError::TokenizerFeatureDisabled)
+    }
+
+    #[cfg(feature = "hf-tokenizers")]
+    {
+        let tokenizer = HfTokenizer::from_file(assets.plan().tokenizer().tokenizer_path())
+            .map_err(CliError::Tokenizer)?;
+        let input = TokenizerInput::new(source, target, text).map_err(CliError::Tokenizer)?;
+        let encoded = tokenizer.encode(&input).map_err(CliError::Tokenizer)?;
+        let token_ids = encoded
+            .tokens()
+            .as_slice()
+            .iter()
+            .map(|token| token.value().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let decoded = tokenizer
+            .decode(target, encoded.tokens())
+            .map_err(CliError::Tokenizer)?;
+
+        Ok(format!(
+            "tokenizer: loaded\ntokens: {token_ids}\ndecoded: {}",
+            decoded.as_str()
+        ))
+    }
+}
+
 /// { args contains benchmark command arguments }
 /// fn run_bench(args: impl Iterator<Item = String>) -> Result<String, CliError>
 /// { ret is Ok only when profile and model-pack arguments are valid }
@@ -388,6 +442,10 @@ enum CliError {
     Benchmark(localmt_bench::BenchmarkError),
     InvalidBenchArguments(String),
     MissingStandardModelFile(&'static str),
+    #[cfg(not(feature = "hf-tokenizers"))]
+    TokenizerFeatureDisabled,
+    #[cfg(feature = "hf-tokenizers")]
+    Tokenizer(localmt::TokenizerError),
 }
 
 impl fmt::Display for CliError {
@@ -416,6 +474,12 @@ impl fmt::Display for CliError {
             Self::MissingStandardModelFile(path) => {
                 write!(formatter, "missing standard model file: {path}")
             }
+            #[cfg(not(feature = "hf-tokenizers"))]
+            Self::TokenizerFeatureDisabled => {
+                formatter.write_str("hf-tokenizers feature is not enabled")
+            }
+            #[cfg(feature = "hf-tokenizers")]
+            Self::Tokenizer(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -471,6 +535,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::run;
+    #[cfg(feature = "hf-tokenizers")]
+    use localmt::Sha256Digest;
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
     const DECODER_SHA256: &str = "eacbeef293be61f2a85d929cadb4cbb5248c8b8a1478b3d4b3180ea365d5e687";
@@ -605,6 +671,76 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "hf-tokenizers"))]
+    fn cli_model_tokenizer_smoke_reports_feature_disabled_after_pack_planning()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_plannable_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "model".to_owned(),
+            "tokenize".to_owned(),
+            root.display().to_string(),
+            "en".to_owned(),
+            "ru".to_owned(),
+            "hello offline".to_owned(),
+        ];
+
+        let result = run(args.into_iter());
+
+        assert!(
+            matches!(result, Err(ref error) if error.to_string().contains("hf-tokenizers feature is not enabled"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "hf-tokenizers")]
+    fn cli_model_tokenizer_smoke_loads_tokenizer_and_round_trips_text()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_hf_plannable_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "model".to_owned(),
+            "tokenize".to_owned(),
+            root.display().to_string(),
+            "en".to_owned(),
+            "ru".to_owned(),
+            "hello offline".to_owned(),
+        ];
+
+        let output = run(args.into_iter())?;
+
+        assert_eq!(
+            output,
+            "tokenizer: loaded\ntokens: 1, 2\ndecoded: hello offline"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "hf-tokenizers")]
+    fn cli_model_tokenizer_smoke_reports_tokenizer_load_errors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_plannable_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "model".to_owned(),
+            "tokenize".to_owned(),
+            root.display().to_string(),
+            "en".to_owned(),
+            "ru".to_owned(),
+            "hello offline".to_owned(),
+        ];
+
+        let result = run(args.into_iter());
+
+        assert!(
+            matches!(result, Err(ref error) if error.to_string().contains("failed to load tokenizer"))
+        );
+        Ok(())
+    }
+
+    #[test]
     fn cli_hashes_model_pack_file_for_manifest() -> Result<(), Box<dyn std::error::Error>> {
         let root = create_temp_dir()?;
         let path = root.join("encoder.onnx");
@@ -683,6 +819,7 @@ mod tests {
         assert!(output.contains("localmt model inspect PACK"));
         assert!(output.contains("localmt model verify PACK"));
         assert!(output.contains("localmt model plan PACK"));
+        assert!(output.contains("localmt model tokenize PACK FROM TO TEXT"));
         assert!(output.contains("localmt model hash FILE"));
         assert!(output.contains(
             "localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE"
@@ -759,6 +896,38 @@ mod tests {
         Ok(root)
     }
 
+    #[cfg(feature = "hf-tokenizers")]
+    fn create_hf_plannable_pack() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        fs::write(root.join("encoder.onnx"), "encoder\n")?;
+        fs::write(root.join("decoder.onnx"), "decoder\n")?;
+        fs::write(root.join("tokenizer.json"), wordlevel_tokenizer_json())?;
+        fs::write(root.join("generation.json"), GENERATION_CONFIG)?;
+        let tokenizer_sha256 = Sha256Digest::from_file(root.join("tokenizer.json"))?;
+        fs::write(
+            root.join("manifest.json"),
+            format!(
+                r#"{{
+  "schema_version": 0,
+  "model_id": "m2m100-418m-int8",
+  "version": "0.1.0",
+  "architecture": "m2m100",
+  "runtime": "onnx-runtime",
+  "license": "MIT",
+  "languages": ["en", "ru", "th", "vi", "ja"],
+  "files": [
+    {{ "path": "encoder.onnx", "kind": "encoder", "sha256": "{ENCODER_SHA256}" }},
+    {{ "path": "decoder.onnx", "kind": "decoder", "sha256": "{DECODER_SHA256}" }},
+    {{ "path": "tokenizer.json", "kind": "tokenizer", "sha256": "{}" }},
+    {{ "path": "generation.json", "kind": "generation_config", "sha256": "{GENERATION_CONFIG_SHA256}" }}
+  ]
+}}"#,
+                tokenizer_sha256.as_str()
+            ),
+        )?;
+        Ok(root)
+    }
+
     fn create_standard_model_files() -> Result<PathBuf, Box<dyn std::error::Error>> {
         let root = create_temp_dir()?;
         fs::write(root.join("encoder.onnx"), "encoder\n")?;
@@ -791,5 +960,10 @@ mod tests {
         ));
         fs::create_dir_all(&root)?;
         Ok(root)
+    }
+
+    #[cfg(feature = "hf-tokenizers")]
+    fn wordlevel_tokenizer_json() -> &'static str {
+        r#"{"version":"1.0","truncation":null,"padding":null,"added_tokens":[],"normalizer":null,"pre_tokenizer":{"type":"WhitespaceSplit"},"post_processor":null,"decoder":null,"model":{"type":"WordLevel","vocab":{"[UNK]":0,"hello":1,"offline":2},"unk_token":"[UNK]"}}"#
     }
 }
