@@ -7,6 +7,38 @@ use localmt::{
 };
 use localmt_models::{Discovered, ModelPack};
 
+const HELP_TEXT: &str = "\
+localmt development CLI
+
+usage:
+  localmt FROM TO TEXT
+  localmt model hash FILE
+  localmt model inspect PACK
+  localmt model verify PACK
+  localmt model plan PACK
+  localmt bench --profile xiaomi17 --model-pack PACK
+";
+
+const MODEL_HELP_TEXT: &str = "\
+localmt model commands
+
+usage:
+  localmt model hash FILE
+  localmt model inspect PACK
+  localmt model verify PACK
+  localmt model plan PACK
+";
+
+const BENCH_HELP_TEXT: &str = "\
+localmt benchmark command
+
+usage:
+  localmt bench --profile xiaomi17 --model-pack PACK
+
+notes:
+  runtime: mock-pipeline
+";
+
 fn main() -> ExitCode {
     match run(std::env::args()) {
         Ok(output) => {
@@ -26,6 +58,13 @@ fn main() -> ExitCode {
 fn run(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
     let _program = args.next();
     let first = args.next().ok_or(CliError::MissingArgument("FROM"))?;
+    if is_help(&first) {
+        if args.next().is_some() {
+            return Err(CliError::TooManyArguments);
+        }
+
+        return Ok(HELP_TEXT.to_owned());
+    }
     if first == "model" {
         return run_model(args);
     }
@@ -59,6 +98,13 @@ fn run_model(mut args: impl Iterator<Item = String>) -> Result<String, CliError>
     let command = args
         .next()
         .ok_or(CliError::MissingArgument("MODEL_COMMAND"))?;
+    if is_help(&command) {
+        if args.next().is_some() {
+            return Err(CliError::TooManyArguments);
+        }
+
+        return Ok(MODEL_HELP_TEXT.to_owned());
+    }
     let path = args.next().ok_or(CliError::MissingArgument("MODEL_PACK"))?;
 
     if args.next().is_some() {
@@ -156,7 +202,12 @@ fn plan_model(path: String) -> Result<String, CliError> {
 /// fn run_bench(args: impl Iterator<Item = String>) -> Result<String, CliError>
 /// { ret is Ok only when profile and model-pack arguments are valid }
 fn run_bench(args: impl Iterator<Item = String>) -> Result<String, CliError> {
-    let options = BenchOptions::parse(args)?;
+    let args = args.collect::<Vec<_>>();
+    if matches!(args.as_slice(), [value] if is_help(value)) {
+        return Ok(BENCH_HELP_TEXT.to_owned());
+    }
+
+    let options = BenchOptions::parse(args.into_iter())?;
     let pack = ModelPack::<Discovered>::discover(options.model_pack_path)
         .and_then(ModelPack::verify)
         .map_err(CliError::ModelPack)?;
@@ -190,6 +241,13 @@ fn parse_language(value: Option<String>, name: &'static str) -> Result<Language,
 /// { ret is Ok only when code is a supported ISO 639-1 code }
 fn parse_language_code(code: String) -> Result<Language, CliError> {
     Language::from_iso_639_1(&code).map_err(CliError::InvalidLanguage)
+}
+
+/// { value may be any CLI argument }
+/// fn is_help(value: &str) -> bool
+/// { ret is true only for supported help aliases }
+fn is_help(value: &str) -> bool {
+    matches!(value, "help" | "--help" | "-h")
 }
 
 #[derive(Debug)]
@@ -430,6 +488,46 @@ mod tests {
         let output = run(args.into_iter())?;
 
         assert_eq!(output, format!("sha256: {ENCODER_SHA256}"));
+        Ok(())
+    }
+
+    #[test]
+    fn cli_prints_help() -> Result<(), Box<dyn std::error::Error>> {
+        let args = ["localmt".to_owned(), "--help".to_owned()];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("localmt FROM TO TEXT"));
+        assert!(output.contains("localmt model hash FILE"));
+        assert!(output.contains("localmt bench --profile xiaomi17 --model-pack PACK"));
+        Ok(())
+    }
+
+    #[test]
+    fn cli_prints_model_help() -> Result<(), Box<dyn std::error::Error>> {
+        let args = ["localmt".to_owned(), "model".to_owned(), "help".to_owned()];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("localmt model inspect PACK"));
+        assert!(output.contains("localmt model verify PACK"));
+        assert!(output.contains("localmt model plan PACK"));
+        assert!(output.contains("localmt model hash FILE"));
+        Ok(())
+    }
+
+    #[test]
+    fn cli_prints_bench_help() -> Result<(), Box<dyn std::error::Error>> {
+        let args = [
+            "localmt".to_owned(),
+            "bench".to_owned(),
+            "--help".to_owned(),
+        ];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("localmt bench --profile xiaomi17 --model-pack PACK"));
+        assert!(output.contains("runtime: mock-pipeline"));
         Ok(())
     }
 

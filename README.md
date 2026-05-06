@@ -59,10 +59,13 @@ Minimal manifest shape:
 Development CLI:
 
 ```bash
+localmt --help
+localmt model help
 localmt model hash ./models/m2m100-418m-int8/encoder.onnx
 localmt model inspect ./models/m2m100-418m-int8
 localmt model verify ./models/m2m100-418m-int8
 localmt model plan ./models/m2m100-418m-int8
+localmt bench --help
 ```
 
 `model hash` computes the lowercase SHA-256 digest used in `manifest.json`.
