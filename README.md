@@ -130,8 +130,13 @@ For Android smoke integration, `localmt-ffi` also exposes a Rust-owned opaque
 from a verified local model-pack path, pass UTF-8 input bytes, and provide the
 output buffer; Rust writes translated UTF-8 bytes without NUL termination and
 reports the required byte count when the buffer is too small. This path is still
-mock translation. Real tokenizer parsing, ONNX decoder execution, and real
-runtime-session handles remain future work.
+mock translation.
+
+`localmt_ffi_ort_runtime_enabled` and `LocalmtFfiOrtGenerator` provide the next
+runtime preflight step. Default builds report runtime disabled; `ort-runtime`
+builds can verify a model pack and attempt to load encoder/decoder ONNX
+sessions. This is a model/runtime load check, not translation. Real tokenizer
+parsing and ONNX decoder execution remain future work.
 
 ## ONNX Runtime Boundary
 

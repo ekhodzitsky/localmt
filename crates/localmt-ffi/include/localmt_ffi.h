@@ -17,8 +17,10 @@ extern "C" {
 #define LOCALMT_FFI_TEXT_ERROR 6
 #define LOCALMT_FFI_TRANSLATION_ERROR 7
 #define LOCALMT_FFI_BUFFER_TOO_SMALL 8
+#define LOCALMT_FFI_RUNTIME_DISABLED 9
+#define LOCALMT_FFI_ORT_ERROR 10
 
-#define LOCALMT_FFI_ABI_VERSION 1
+#define LOCALMT_FFI_ABI_VERSION 2
 #define LOCALMT_FFI_ANDROID_ABI_ARM64_V8A 1
 #define LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK 1
 
@@ -37,6 +39,15 @@ typedef struct LocalmtFfiLanguageCode {
  */
 typedef struct LocalmtFfiTranslator LocalmtFfiTranslator;
 
+/*
+ * Opaque Rust-owned ORT generator preflight handle.
+ *
+ * Handles are created by localmt_ffi_ort_generator_open and must be released
+ * exactly once with localmt_ffi_ort_generator_close. This handle proves that
+ * generator sessions loaded; it is not a translation API.
+ */
+typedef struct LocalmtFfiOrtGenerator LocalmtFfiOrtGenerator;
+
 /* Returns LOCALMT_FFI_ABI_VERSION. */
 uint32_t localmt_ffi_abi_version(void);
 /* Returns the number of stable language ids. */
@@ -53,6 +64,11 @@ size_t localmt_ffi_max_text_chars(void);
 uint16_t localmt_ffi_xiaomi17_android_abi_code(void);
 uint16_t localmt_ffi_xiaomi17_ram_class_gib(void);
 uint16_t localmt_ffi_xiaomi17_preferred_runtime_code(void);
+
+/*
+ * Returns 1 when localmt-ffi was built with the ort-runtime feature, otherwise 0.
+ */
+uint8_t localmt_ffi_ort_runtime_enabled(void);
 
 /*
  * Opens a verified local model pack and constructs the deterministic mock
@@ -89,6 +105,26 @@ int32_t localmt_ffi_mock_translate(
     uint8_t *output_ptr,
     size_t output_capacity,
     size_t *written_len);
+
+/*
+ * Verifies a model pack and attempts to load ONNX generator sessions.
+ *
+ * path_ptr/path_len must be valid UTF-8 bytes for the model-pack directory.
+ * out_generator must point to writable pointer storage. It is set to NULL
+ * before work and receives a non-null handle only on LOCALMT_FFI_OK.
+ *
+ * Default builds return LOCALMT_FFI_RUNTIME_DISABLED after pack planning.
+ * ort-runtime builds map ORT session-load failures to LOCALMT_FFI_ORT_ERROR.
+ */
+int32_t localmt_ffi_ort_generator_open(
+    const uint8_t *path_ptr,
+    size_t path_len,
+    LocalmtFfiOrtGenerator **out_generator);
+
+/*
+ * Releases an ORT generator preflight handle. NULL is accepted as a no-op.
+ */
+void localmt_ffi_ort_generator_close(LocalmtFfiOrtGenerator *generator);
 
 #ifdef __cplusplus
 }

@@ -4,7 +4,7 @@ use std::{ptr, slice, str};
 
 use localmt::{
     DeviceProfile, Language, LanguagePair, MAX_TEXT_CHARS, MockOfflineTranslator, NonEmptyText,
-    TranslateRequest,
+    OfflineTranslatorAssets, OrtEngineError, OrtTokenGenerator, TranslateRequest,
 };
 
 /// FFI status for successful calls.
@@ -25,9 +25,13 @@ pub const LOCALMT_FFI_TEXT_ERROR: i32 = 6;
 pub const LOCALMT_FFI_TRANSLATION_ERROR: i32 = 7;
 /// FFI status when the caller output buffer is too small.
 pub const LOCALMT_FFI_BUFFER_TOO_SMALL: i32 = 8;
+/// FFI status when the build does not enable the ORT runtime.
+pub const LOCALMT_FFI_RUNTIME_DISABLED: i32 = 9;
+/// FFI status when ONNX Runtime session loading fails.
+pub const LOCALMT_FFI_ORT_ERROR: i32 = 10;
 
 /// Pointer-free C ABI version.
-pub const LOCALMT_FFI_ABI_VERSION: u32 = 1;
+pub const LOCALMT_FFI_ABI_VERSION: u32 = 2;
 /// FFI code for Android arm64-v8a.
 pub const LOCALMT_FFI_ANDROID_ABI_ARM64_V8A: u16 = 1;
 /// FFI code for ONNX Runtime Mobile with XNNPACK.
@@ -53,6 +57,11 @@ pub struct LocalmtFfiLanguageCode {
 /// Opaque Rust-owned mock translator handle for FFI callers.
 pub struct LocalmtFfiTranslator {
     translator: MockOfflineTranslator,
+}
+
+/// Opaque Rust-owned ORT generator preflight handle for FFI callers.
+pub struct LocalmtFfiOrtGenerator {
+    _generator: OrtTokenGenerator,
 }
 
 impl LocalmtFfiLanguageCode {
@@ -270,6 +279,66 @@ pub extern "C" fn localmt_ffi_mock_translate(
     LOCALMT_FFI_OK
 }
 
+/// { true }
+/// fn localmt_ffi_ort_runtime_enabled() -> u8
+/// { ret is 1 only when localmt-ffi was built with ort-runtime }
+#[unsafe(no_mangle)] // SAFETY: pointer-free C export.
+pub extern "C" fn localmt_ffi_ort_runtime_enabled() -> u8 {
+    u8::from(cfg!(feature = "ort-runtime"))
+}
+
+/// { path_ptr points to path_len readable bytes and out_generator is writable }
+/// fn localmt_ffi_ort_generator_open(path_ptr: *const u8, path_len: usize, out_generator: *mut *mut LocalmtFfiOrtGenerator) -> i32
+/// { ret is OK only when out_generator receives an owned non-null ORT generator handle }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_ort_generator_open(
+    path_ptr: *const u8,
+    path_len: usize,
+    out_generator: *mut *mut LocalmtFfiOrtGenerator,
+) -> i32 {
+    if out_generator.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *out_generator = ptr::null_mut() }; // SAFETY: non-null writable out pointer.
+
+    let path = match read_ffi_utf8(path_ptr, path_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let assets = match OfflineTranslatorAssets::from_model_pack_path(path) {
+        Ok(value) => value,
+        Err(_error) => return LOCALMT_FFI_MODEL_PACK_ERROR,
+    };
+    let plan = assets.plan().generator().clone();
+
+    match OrtTokenGenerator::load(plan) {
+        Ok(generator) => {
+            let handle = Box::new(LocalmtFfiOrtGenerator {
+                _generator: generator,
+            });
+            unsafe { *out_generator = Box::into_raw(handle) }; // SAFETY: non-null writable out pointer.
+            LOCALMT_FFI_OK
+        }
+        Err(OrtEngineError::OrtRuntimeFeatureDisabled) => LOCALMT_FFI_RUNTIME_DISABLED,
+        Err(_error) => LOCALMT_FFI_ORT_ERROR,
+    }
+}
+
+/// { generator is null or was returned by localmt_ffi_ort_generator_open }
+/// fn localmt_ffi_ort_generator_close(generator: *mut LocalmtFfiOrtGenerator)
+/// { generator is consumed when non-null }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_ort_generator_close(generator: *mut LocalmtFfiOrtGenerator) {
+    if generator.is_null() {
+        return;
+    }
+
+    unsafe { drop(Box::from_raw(generator)) }; // SAFETY: handle came from open and closes once.
+}
+
 /// { language_id may be any u8 }
 /// fn language_from_id(language_id: u8) -> Option<Language>
 /// { ret is Some only when language_id is in the stable FFI language table }
@@ -308,10 +377,11 @@ mod tests {
     use super::{
         LOCALMT_FFI_BUFFER_TOO_SMALL, LOCALMT_FFI_INVALID_LANGUAGE, LOCALMT_FFI_INVALID_PAIR,
         LOCALMT_FFI_INVALID_UTF8, LOCALMT_FFI_NULL_POINTER, LOCALMT_FFI_OK, LOCALMT_FFI_TEXT_ERROR,
-        LocalmtFfiTranslator, localmt_ffi_abi_version, localmt_ffi_language_code,
-        localmt_ffi_language_from_iso_639_1, localmt_ffi_max_text_chars,
+        LocalmtFfiOrtGenerator, LocalmtFfiTranslator, localmt_ffi_abi_version,
+        localmt_ffi_language_code, localmt_ffi_language_from_iso_639_1, localmt_ffi_max_text_chars,
         localmt_ffi_mock_translate, localmt_ffi_mock_translator_close,
-        localmt_ffi_mock_translator_open, localmt_ffi_supported_language_count,
+        localmt_ffi_mock_translator_open, localmt_ffi_ort_generator_open,
+        localmt_ffi_ort_runtime_enabled, localmt_ffi_supported_language_count,
         localmt_ffi_validate_language_pair, localmt_ffi_xiaomi17_android_abi_code,
         localmt_ffi_xiaomi17_preferred_runtime_code, localmt_ffi_xiaomi17_ram_class_gib,
     };
@@ -347,11 +417,60 @@ mod tests {
 
     #[test]
     fn ffi_reports_abi_and_xiaomi17_contract() {
-        assert_eq!(localmt_ffi_abi_version(), 1);
+        assert_eq!(localmt_ffi_abi_version(), 2);
         assert_eq!(localmt_ffi_max_text_chars(), 4096);
         assert_eq!(localmt_ffi_xiaomi17_android_abi_code(), 1);
         assert_eq!(localmt_ffi_xiaomi17_ram_class_gib(), 12);
         assert_eq!(localmt_ffi_xiaomi17_preferred_runtime_code(), 1);
+    }
+
+    #[test]
+    #[cfg(not(feature = "ort-runtime"))]
+    fn ffi_ort_runtime_enabled_reports_default_build() {
+        assert_eq!(localmt_ffi_ort_runtime_enabled(), 0);
+    }
+
+    #[test]
+    #[cfg(feature = "ort-runtime")]
+    fn ffi_ort_runtime_enabled_reports_feature_build() {
+        assert_eq!(localmt_ffi_ort_runtime_enabled(), 1);
+    }
+
+    #[test]
+    #[cfg(not(feature = "ort-runtime"))]
+    fn ffi_ort_generator_open_reports_runtime_disabled() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut generator: *mut LocalmtFfiOrtGenerator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_ort_generator_open(path.as_ptr(), path.len(), &mut generator),
+            super::LOCALMT_FFI_RUNTIME_DISABLED
+        );
+        assert!(generator.is_null());
+
+        super::localmt_ffi_ort_generator_close(generator);
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_ort_generator_open_rejects_nulls_and_invalid_utf8()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut generator: *mut LocalmtFfiOrtGenerator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_ort_generator_open(path.as_ptr(), path.len(), ptr::null_mut()),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_ort_generator_open([0xff].as_ptr(), 1, &mut generator),
+            LOCALMT_FFI_INVALID_UTF8
+        );
+        assert!(generator.is_null());
+
+        Ok(())
     }
 
     #[test]
