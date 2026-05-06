@@ -203,7 +203,9 @@ does not consume this config yet.
 The current benchmark command verifies a model pack, then runs 10 fixed language
 pair scenarios through `TranslationPipeline<MockTokenizer, MockTokenGenerator>`.
 It is intentionally labeled `runtime: mock-pipeline`; real ONNX latency and
-memory metrics will be added with an ONNX-backed `TokenGenerator`.
+memory metrics will be added with an ONNX-backed `TokenGenerator`. The first
+profile is `xiaomi17`, with Android ABI `arm64-v8a`, 12 GiB RAM class, and
+preferred runtime hint `onnx-runtime-mobile-xnnpack`.
 
 ```bash
 localmt bench --profile xiaomi17 --model-pack ./models/m2m100-418m-int8

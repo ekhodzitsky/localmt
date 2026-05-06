@@ -50,6 +50,33 @@ impl DeviceProfile {
             Self::Xiaomi17 => "xiaomi17",
         }
     }
+
+    /// { true }
+    /// fn android_abi(self) -> &'static str
+    /// { ret is the Android native ABI for profile }
+    pub const fn android_abi(self) -> &'static str {
+        match self {
+            Self::Xiaomi17 => "arm64-v8a",
+        }
+    }
+
+    /// { true }
+    /// fn ram_class_gib(self) -> u16
+    /// { ret is the expected RAM class in GiB for profile }
+    pub const fn ram_class_gib(self) -> u16 {
+        match self {
+            Self::Xiaomi17 => 12,
+        }
+    }
+
+    /// { true }
+    /// fn preferred_runtime(self) -> &'static str
+    /// { ret is the preferred inference runtime hint for profile }
+    pub const fn preferred_runtime(self) -> &'static str {
+        match self {
+            Self::Xiaomi17 => "onnx-runtime-mobile-xnnpack",
+        }
+    }
 }
 
 impl fmt::Display for DeviceProfile {
@@ -130,6 +157,27 @@ impl BenchReport {
     /// { ret is the benchmark runtime label }
     pub const fn runtime(&self) -> &'static str {
         self.runtime
+    }
+
+    /// { true }
+    /// fn android_abi(&self) -> &'static str
+    /// { ret is the benchmark profile Android ABI }
+    pub const fn android_abi(&self) -> &'static str {
+        self.profile.android_abi()
+    }
+
+    /// { true }
+    /// fn ram_class_gib(&self) -> u16
+    /// { ret is the benchmark profile RAM class }
+    pub const fn ram_class_gib(&self) -> u16 {
+        self.profile.ram_class_gib()
+    }
+
+    /// { true }
+    /// fn preferred_runtime(&self) -> &'static str
+    /// { ret is the benchmark profile preferred runtime hint }
+    pub const fn preferred_runtime(&self) -> &'static str {
+        self.profile.preferred_runtime()
     }
 
     /// { true }
@@ -223,6 +271,9 @@ mod tests {
 
         assert_eq!(report.profile(), DeviceProfile::Xiaomi17);
         assert_eq!(report.runtime(), "mock-pipeline");
+        assert_eq!(report.android_abi(), "arm64-v8a");
+        assert_eq!(report.ram_class_gib(), 12);
+        assert_eq!(report.preferred_runtime(), "onnx-runtime-mobile-xnnpack");
         assert_eq!(report.model_id(), "m2m100-418m-int8");
         assert_eq!(report.scenario_count(), 10);
         assert_eq!(report.translation_count(), 10);
@@ -236,6 +287,12 @@ mod tests {
             DeviceProfile::parse("xiaomi17"),
             Ok(DeviceProfile::Xiaomi17)
         ));
+        assert_eq!(DeviceProfile::Xiaomi17.android_abi(), "arm64-v8a");
+        assert_eq!(DeviceProfile::Xiaomi17.ram_class_gib(), 12);
+        assert_eq!(
+            DeviceProfile::Xiaomi17.preferred_runtime(),
+            "onnx-runtime-mobile-xnnpack"
+        );
     }
 
     #[test]

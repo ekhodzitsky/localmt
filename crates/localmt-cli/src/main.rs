@@ -306,8 +306,11 @@ fn run_bench(args: impl Iterator<Item = String>) -> Result<String, CliError> {
         .map_err(CliError::Benchmark)?;
 
     Ok(format!(
-        "profile: {}\nruntime: {}\nmodel_id: {}\nscenarios: {}\ntranslations: {}\ntotal_ms: {}\nwarm_translate_ms: {}",
+        "profile: {}\nandroid_abi: {}\nram_class_gib: {}\npreferred_runtime: {}\nruntime: {}\nmodel_id: {}\nscenarios: {}\ntranslations: {}\ntotal_ms: {}\nwarm_translate_ms: {}",
         report.profile().as_str(),
+        report.android_abi(),
+        report.ram_class_gib(),
+        report.preferred_runtime(),
         report.runtime(),
         report.model_id(),
         report.scenario_count(),
@@ -568,6 +571,9 @@ mod tests {
         let output = run(args.into_iter())?;
 
         assert!(output.contains("profile: xiaomi17"));
+        assert!(output.contains("android_abi: arm64-v8a"));
+        assert!(output.contains("ram_class_gib: 12"));
+        assert!(output.contains("preferred_runtime: onnx-runtime-mobile-xnnpack"));
         assert!(output.contains("runtime: mock-pipeline"));
         assert!(output.contains("model_id: m2m100-418m-int8"));
         assert!(output.contains("scenarios: 10"));
