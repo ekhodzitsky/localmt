@@ -2,12 +2,12 @@
 
 use std::{ptr, slice, str};
 
-#[cfg(feature = "hf-tokenizers")]
-use localmt::HfTokenizer;
 use localmt::{
     DeviceProfile, Language, LanguagePair, MAX_TEXT_CHARS, MockOfflineTranslator, NonEmptyText,
     OfflineTranslatorAssets, OrtEngineError, OrtTokenGenerator, TranslateRequest,
 };
+#[cfg(feature = "hf-tokenizers")]
+use localmt::{HfMockOfflineTranslator, HfMockOfflineTranslatorError, HfTokenizer};
 
 /// FFI status for successful calls.
 pub const LOCALMT_FFI_OK: i32 = 0;
@@ -37,7 +37,7 @@ pub const LOCALMT_FFI_TOKENIZER_DISABLED: i32 = 11;
 pub const LOCALMT_FFI_TOKENIZER_ERROR: i32 = 12;
 
 /// Pointer-free C ABI version.
-pub const LOCALMT_FFI_ABI_VERSION: u32 = 3;
+pub const LOCALMT_FFI_ABI_VERSION: u32 = 4;
 /// FFI code for Android arm64-v8a.
 pub const LOCALMT_FFI_ANDROID_ABI_ARM64_V8A: u16 = 1;
 /// FFI code for ONNX Runtime Mobile with XNNPACK.
@@ -63,6 +63,12 @@ pub struct LocalmtFfiLanguageCode {
 /// Opaque Rust-owned mock translator handle for FFI callers.
 pub struct LocalmtFfiTranslator {
     translator: MockOfflineTranslator,
+}
+
+/// Opaque Rust-owned HF-tokenizer mock translator handle for FFI callers.
+pub struct LocalmtFfiHfMockTranslator {
+    #[cfg(feature = "hf-tokenizers")]
+    translator: HfMockOfflineTranslator,
 }
 
 /// Opaque Rust-owned ORT generator preflight handle for FFI callers.
@@ -291,6 +297,143 @@ pub extern "C" fn localmt_ffi_mock_translate(
     LOCALMT_FFI_OK
 }
 
+/// { path_ptr points to path_len readable bytes and out_translator is writable }
+/// fn localmt_ffi_hf_mock_translator_open(path_ptr: *const u8, path_len: usize, out_translator: *mut *mut LocalmtFfiHfMockTranslator) -> i32
+/// { ret is OK only when out_translator receives an owned non-null HF-tokenizer mock handle }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_hf_mock_translator_open(
+    path_ptr: *const u8,
+    path_len: usize,
+    out_translator: *mut *mut LocalmtFfiHfMockTranslator,
+) -> i32 {
+    if out_translator.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *out_translator = ptr::null_mut() }; // SAFETY: non-null writable out pointer.
+
+    let path = match read_ffi_utf8(path_ptr, path_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let assets = match OfflineTranslatorAssets::from_model_pack_path(path) {
+        Ok(value) => value,
+        Err(_error) => return LOCALMT_FFI_MODEL_PACK_ERROR,
+    };
+
+    #[cfg(not(feature = "hf-tokenizers"))]
+    {
+        let _tokenizer_path = assets.plan().tokenizer().tokenizer_path();
+        LOCALMT_FFI_TOKENIZER_DISABLED
+    }
+
+    #[cfg(feature = "hf-tokenizers")]
+    {
+        match HfMockOfflineTranslator::from_assets(assets) {
+            Ok(translator) => {
+                let handle = Box::new(LocalmtFfiHfMockTranslator { translator });
+                unsafe { *out_translator = Box::into_raw(handle) }; // SAFETY: non-null writable out pointer.
+                LOCALMT_FFI_OK
+            }
+            Err(HfMockOfflineTranslatorError::Assets(_error)) => LOCALMT_FFI_MODEL_PACK_ERROR,
+            Err(HfMockOfflineTranslatorError::Tokenizer(_error)) => LOCALMT_FFI_TOKENIZER_ERROR,
+        }
+    }
+}
+
+/// { translator is null or was returned by localmt_ffi_hf_mock_translator_open }
+/// fn localmt_ffi_hf_mock_translator_close(translator: *mut LocalmtFfiHfMockTranslator)
+/// { translator is consumed when non-null }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_hf_mock_translator_close(
+    translator: *mut LocalmtFfiHfMockTranslator,
+) {
+    if translator.is_null() {
+        return;
+    }
+
+    unsafe { drop(Box::from_raw(translator)) }; // SAFETY: handle came from open and closes once.
+}
+
+/// { translator is a valid HF-tokenizer mock handle, input/output/written pointers follow the header contract }
+/// fn localmt_ffi_hf_mock_translate(translator: *const LocalmtFfiHfMockTranslator, source_id: u8, target_id: u8, input_ptr: *const u8, input_len: usize, output_ptr: *mut u8, output_capacity: usize, written_len: *mut usize) -> i32
+/// { ret is OK only when output receives written_len UTF-8 bytes }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_hf_mock_translate(
+    translator: *const LocalmtFfiHfMockTranslator,
+    source_id: u8,
+    target_id: u8,
+    input_ptr: *const u8,
+    input_len: usize,
+    output_ptr: *mut u8,
+    output_capacity: usize,
+    written_len: *mut usize,
+) -> i32 {
+    if translator.is_null() || written_len.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *written_len = 0 }; // SAFETY: non-null writable length pointer.
+
+    #[cfg(not(feature = "hf-tokenizers"))]
+    {
+        let _ = (
+            source_id,
+            target_id,
+            input_ptr,
+            input_len,
+            output_ptr,
+            output_capacity,
+        );
+        LOCALMT_FFI_TOKENIZER_DISABLED
+    }
+
+    #[cfg(feature = "hf-tokenizers")]
+    {
+        let Some(source) = language_from_id(source_id) else {
+            return LOCALMT_FFI_INVALID_LANGUAGE;
+        };
+        let Some(target) = language_from_id(target_id) else {
+            return LOCALMT_FFI_INVALID_LANGUAGE;
+        };
+
+        let input = match read_ffi_utf8(input_ptr, input_len) {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        let text = match NonEmptyText::new(input.to_owned()) {
+            Ok(value) => value,
+            Err(_error) => return LOCALMT_FFI_TEXT_ERROR,
+        };
+        let request = match TranslateRequest::new(source, target, text) {
+            Ok(value) => value,
+            Err(_error) => return LOCALMT_FFI_INVALID_PAIR,
+        };
+        let translator = unsafe { &*translator }; // SAFETY: non-null live handle pointer.
+        let translation = match translator.translator.translate(&request) {
+            Ok(value) => value,
+            Err(_error) => return LOCALMT_FFI_TRANSLATION_ERROR,
+        };
+        let output = translation.text().as_str().as_bytes();
+
+        unsafe { *written_len = output.len() }; // SAFETY: non-null writable length pointer.
+
+        if output_capacity < output.len() {
+            return LOCALMT_FFI_BUFFER_TOO_SMALL;
+        }
+        if output_ptr.is_null() {
+            return LOCALMT_FFI_NULL_POINTER;
+        }
+
+        unsafe { ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, output.len()) }; // SAFETY: output buffer capacity was checked.
+
+        LOCALMT_FFI_OK
+    }
+}
+
 /// { true }
 /// fn localmt_ffi_ort_runtime_enabled() -> u8
 /// { ret is 1 only when localmt-ffi was built with ort-runtime }
@@ -460,8 +603,10 @@ mod tests {
     use super::{
         LOCALMT_FFI_BUFFER_TOO_SMALL, LOCALMT_FFI_INVALID_LANGUAGE, LOCALMT_FFI_INVALID_PAIR,
         LOCALMT_FFI_INVALID_UTF8, LOCALMT_FFI_NULL_POINTER, LOCALMT_FFI_OK, LOCALMT_FFI_TEXT_ERROR,
-        LocalmtFfiHfTokenizer, LocalmtFfiOrtGenerator, LocalmtFfiTranslator,
-        localmt_ffi_abi_version, localmt_ffi_hf_tokenizer_close, localmt_ffi_hf_tokenizer_enabled,
+        LocalmtFfiHfMockTranslator, LocalmtFfiHfTokenizer, LocalmtFfiOrtGenerator,
+        LocalmtFfiTranslator, localmt_ffi_abi_version, localmt_ffi_hf_mock_translate,
+        localmt_ffi_hf_mock_translator_close, localmt_ffi_hf_mock_translator_open,
+        localmt_ffi_hf_tokenizer_close, localmt_ffi_hf_tokenizer_enabled,
         localmt_ffi_hf_tokenizer_open, localmt_ffi_language_code,
         localmt_ffi_language_from_iso_639_1, localmt_ffi_max_text_chars,
         localmt_ffi_mock_translate, localmt_ffi_mock_translator_close,
@@ -504,7 +649,7 @@ mod tests {
 
     #[test]
     fn ffi_reports_abi_and_xiaomi17_contract() {
-        assert_eq!(localmt_ffi_abi_version(), 3);
+        assert_eq!(localmt_ffi_abi_version(), 4);
         assert_eq!(localmt_ffi_max_text_chars(), 4096);
         assert_eq!(localmt_ffi_xiaomi17_android_abi_code(), 1);
         assert_eq!(localmt_ffi_xiaomi17_ram_class_gib(), 12);
@@ -640,6 +785,147 @@ mod tests {
         );
         assert!(tokenizer.is_null());
 
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(not(feature = "hf-tokenizers"))]
+    fn ffi_hf_mock_translator_open_reports_feature_disabled()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut translator: *mut LocalmtFfiHfMockTranslator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_hf_mock_translator_open(path.as_ptr(), path.len(), &mut translator),
+            LOCALMT_FFI_TOKENIZER_DISABLED
+        );
+        assert!(translator.is_null());
+
+        localmt_ffi_hf_mock_translator_close(translator);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "hf-tokenizers")]
+    fn ffi_hf_mock_translator_opens_translates_and_closes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_hf_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut translator: *mut LocalmtFfiHfMockTranslator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_hf_mock_translator_open(path.as_ptr(), path.len(), &mut translator),
+            LOCALMT_FFI_OK
+        );
+        assert!(!translator.is_null());
+
+        let input = "hello offline";
+        let mut output = [0_u8; 32];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_hf_mock_translate(
+                translator,
+                0,
+                1,
+                input.as_ptr(),
+                input.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_OK
+        );
+        assert_eq!(written_len, input.len());
+        assert_eq!(&output[..written_len], input.as_bytes());
+
+        localmt_ffi_hf_mock_translator_close(translator);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "hf-tokenizers")]
+    fn ffi_hf_mock_translator_open_maps_tokenizer_errors() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut translator: *mut LocalmtFfiHfMockTranslator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_hf_mock_translator_open(path.as_ptr(), path.len(), &mut translator),
+            LOCALMT_FFI_TOKENIZER_ERROR
+        );
+        assert!(translator.is_null());
+
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_hf_mock_translator_rejects_nulls_and_invalid_utf8()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut translator: *mut LocalmtFfiHfMockTranslator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_hf_mock_translator_open(path.as_ptr(), path.len(), ptr::null_mut()),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_hf_mock_translator_open([0xff].as_ptr(), 1, &mut translator),
+            LOCALMT_FFI_INVALID_UTF8
+        );
+        assert!(translator.is_null());
+
+        assert_eq!(
+            localmt_ffi_hf_mock_translate(
+                ptr::null(),
+                0,
+                1,
+                b"hello".as_ptr(),
+                5,
+                [0_u8; 8].as_mut_ptr(),
+                8,
+                &mut 0_usize,
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "hf-tokenizers")]
+    fn ffi_hf_mock_translate_reports_required_buffer_len() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_hf_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut translator: *mut LocalmtFfiHfMockTranslator = ptr::null_mut();
+        assert_eq!(
+            localmt_ffi_hf_mock_translator_open(path.as_ptr(), path.len(), &mut translator),
+            LOCALMT_FFI_OK
+        );
+        let input = "hello offline";
+        let mut output = [0_u8; 3];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_hf_mock_translate(
+                translator,
+                0,
+                1,
+                input.as_ptr(),
+                input.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_BUFFER_TOO_SMALL
+        );
+        assert_eq!(written_len, input.len());
+
+        localmt_ffi_hf_mock_translator_close(translator);
         Ok(())
     }
 

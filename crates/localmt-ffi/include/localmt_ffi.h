@@ -22,7 +22,7 @@ extern "C" {
 #define LOCALMT_FFI_TOKENIZER_DISABLED 11
 #define LOCALMT_FFI_TOKENIZER_ERROR 12
 
-#define LOCALMT_FFI_ABI_VERSION 3
+#define LOCALMT_FFI_ABI_VERSION 4
 #define LOCALMT_FFI_ANDROID_ABI_ARM64_V8A 1
 #define LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK 1
 
@@ -40,6 +40,16 @@ typedef struct LocalmtFfiLanguageCode {
  * pointer not created by open, or closing the same handle twice, is invalid.
  */
 typedef struct LocalmtFfiTranslator LocalmtFfiTranslator;
+
+/*
+ * Opaque Rust-owned HF-tokenizer mock translator handle.
+ *
+ * Handles are created by localmt_ffi_hf_mock_translator_open and must be
+ * released exactly once with localmt_ffi_hf_mock_translator_close. This path
+ * loads the verified tokenizer.json and preserves the translation-shaped ABI,
+ * but token generation is still deterministic mock generation.
+ */
+typedef struct LocalmtFfiHfMockTranslator LocalmtFfiHfMockTranslator;
 
 /*
  * Opaque Rust-owned ORT generator preflight handle.
@@ -115,6 +125,46 @@ void localmt_ffi_mock_translator_close(LocalmtFfiTranslator *translator);
  */
 int32_t localmt_ffi_mock_translate(
     const LocalmtFfiTranslator *translator,
+    uint8_t source_id,
+    uint8_t target_id,
+    const uint8_t *input_ptr,
+    size_t input_len,
+    uint8_t *output_ptr,
+    size_t output_capacity,
+    size_t *written_len);
+
+/*
+ * Opens a verified local model pack and constructs the HF-tokenizer-backed
+ * mock translator.
+ *
+ * path_ptr/path_len must be valid UTF-8 bytes for the model-pack directory.
+ * out_translator must point to writable pointer storage. It is set to NULL
+ * before work and receives a non-null handle only on LOCALMT_FFI_OK.
+ *
+ * Default builds return LOCALMT_FFI_TOKENIZER_DISABLED after pack planning.
+ * hf-tokenizers builds map tokenizer load failures to
+ * LOCALMT_FFI_TOKENIZER_ERROR.
+ */
+int32_t localmt_ffi_hf_mock_translator_open(
+    const uint8_t *path_ptr,
+    size_t path_len,
+    LocalmtFfiHfMockTranslator **out_translator);
+
+/*
+ * Releases an HF-tokenizer mock translator handle. NULL is accepted as a no-op.
+ */
+void localmt_ffi_hf_mock_translator_close(LocalmtFfiHfMockTranslator *translator);
+
+/*
+ * Translates UTF-8 bytes through the HF-tokenizer-backed mock translator.
+ *
+ * input_ptr/input_len must be valid UTF-8 bytes. output_ptr/output_capacity is
+ * caller-owned byte storage and is not NUL terminated by Rust. written_len must
+ * point to writable size_t storage. On LOCALMT_FFI_BUFFER_TOO_SMALL,
+ * written_len contains the required byte count and output is not written.
+ */
+int32_t localmt_ffi_hf_mock_translate(
+    const LocalmtFfiHfMockTranslator *translator,
     uint8_t source_id,
     uint8_t target_id,
     const uint8_t *input_ptr,

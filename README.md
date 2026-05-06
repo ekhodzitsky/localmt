@@ -144,6 +144,12 @@ preflight. Default builds verify the model pack and report tokenizer disabled;
 `tokenizer.json`. This proves tokenizer JSON loading through the Android ABI,
 not translation.
 
+`LocalmtFfiHfMockTranslator` and `localmt_ffi_hf_mock_translate` provide the
+next Android/JNI smoke path behind `hf-tokenizers`: the model pack is verified,
+the Hugging Face `tokenizer.json` is loaded, and the normal UTF-8 translation
+buffer contract is exercised. Token generation is still deterministic mock
+generation, so this is stronger adapter coverage but not real translation.
+
 `localmt_ffi_ort_runtime_enabled` and `LocalmtFfiOrtGenerator` provide runtime
 preflight. Default builds report runtime disabled; `ort-runtime` builds can
 verify a model pack and attempt to load encoder/decoder ONNX sessions. This is
