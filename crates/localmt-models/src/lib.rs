@@ -101,6 +101,19 @@ impl ModelPack<Discovered> {
     }
 }
 
+impl ModelPack<Verified> {
+    /// { self has verified manifest, files, and checksums }
+    /// fn file_path(&self, role: ModelFileRole) -> `Option<PathBuf>`
+    /// { ret is Some root-joined file path only when the manifest declares role }
+    pub fn file_path(&self, role: ModelFileRole) -> Option<PathBuf> {
+        self.manifest
+            .files()
+            .iter()
+            .find(|file| file.role() == role)
+            .map(|file| self.root.join(file.path().as_path()))
+    }
+}
+
 impl<State> ModelPack<State> {
     /// { true }
     /// fn root(&self) -> &Path
@@ -669,6 +682,20 @@ mod tests {
             vec![ModelFileRole::Encoder, ModelFileRole::Tokenizer]
         );
         assert_eq!(ModelFileRole::Decoder.as_str(), "decoder");
+        Ok(())
+    }
+
+    #[test]
+    fn verified_pack_resolves_file_paths_by_role() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&["en", "ru", "th", "vi", "ja"], ENCODER_SHA256)?;
+
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+
+        assert_eq!(
+            pack.file_path(ModelFileRole::Tokenizer),
+            Some(root.join("tokenizer.json"))
+        );
+        assert_eq!(pack.file_path(ModelFileRole::Config), None);
         Ok(())
     }
 

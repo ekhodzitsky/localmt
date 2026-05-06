@@ -61,17 +61,14 @@ impl OrtSessionPlan {
             return Err(OrtEngineError::UnsupportedRuntime(runtime.to_owned()));
         }
 
-        let model_file = pack
-            .manifest()
-            .files()
-            .iter()
-            .find(|file| file.role() == role.model_file_role())
+        let model_path = pack
+            .file_path(role.model_file_role())
             .ok_or(OrtEngineError::MissingModelFile(role))?;
 
         Ok(Self {
             model_id: pack.manifest().model_id().as_str().to_owned(),
             role,
-            model_path: pack.root().join(model_file.path().as_path()),
+            model_path,
         })
     }
 

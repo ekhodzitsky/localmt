@@ -61,6 +61,8 @@ Model-pack `files[].kind` values are not arbitrary labels. They are parsed into
 `ModelFileRole` values: `encoder`, `decoder`, `decoder_with_past`, `tokenizer`,
 `vocab`, `config`, and `generation_config`. The parser rejects unknown and
 duplicate roles so backend adapters can rely on typed role selection.
+Verified packs expose `file_path(role)` so tokenizer and inference adapters use
+one safe root-qualified role-path lookup instead of repeating manifest scans.
 
 The tokenizer boundary exists before real model-specific tokenization. It uses
 localmt-owned `TokenId`, `TokenSequence`, `TokenizerInput`, and
@@ -93,6 +95,8 @@ must carry a license warning and must not become the default bundled option.
 - The mock translator returns deterministic non-empty output.
 - Model packs can be inspected and verified before real inference loads them.
 - Model-pack file roles are typed and duplicate roles are rejected at discovery.
+- Verified model packs resolve declared file roles to root-qualified paths for
+  backend adapters.
 - Tokenizer input/output and token sequence invariants are represented by
   localmt-owned types with a deterministic mock tokenizer.
 - A pipeline skeleton composes tokenizer encode, token generation, and tokenizer

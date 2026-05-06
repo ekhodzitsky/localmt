@@ -31,7 +31,9 @@ are present: `en`, `ru`, `th`, `vi`, and `ja`.
 Each file `kind` is parsed as a typed role, not a free-form string. Supported
 roles are `encoder`, `decoder`, `decoder_with_past`, `tokenizer`, `vocab`,
 `config`, and `generation_config`. A manifest cannot declare the same role more
-than once.
+than once. After verification, `ModelPack<Verified>::file_path(role)` resolves a
+declared role to its model-pack-root-qualified file path; missing optional roles
+return `None`.
 
 Minimal manifest shape:
 
