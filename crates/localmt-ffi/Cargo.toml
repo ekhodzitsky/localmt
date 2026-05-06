@@ -1,0 +1,17 @@
+[package]
+name = "localmt-ffi"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+localmt = { path = "../localmt" }
+
+[features]
+default = []
+ort-runtime = ["localmt/ort-runtime"]

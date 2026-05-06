@@ -6,6 +6,7 @@ members = [
     "crates/localmt-core",
     "crates/localmt-engine",
     "crates/localmt-engine-ort",
+    "crates/localmt-ffi",
     "crates/localmt-models",
     "crates/localmt-pipeline",
     "crates/localmt-tokenizer",

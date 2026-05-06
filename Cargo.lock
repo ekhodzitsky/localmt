@@ -139,6 +139,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "localmt-ffi"
+version = "0.1.0"
+dependencies = [
+ "localmt",
+]
+
+[[package]]
 name = "localmt-models"
 version = "0.1.0"
 dependencies = [

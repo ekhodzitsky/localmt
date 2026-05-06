@@ -20,6 +20,7 @@ contracts can be tested before real inference.
 - `crates/localmt-bench` - benchmark profiles and mock benchmark skeleton
 - `crates/localmt` - public facade crate
 - `crates/localmt-cli` - development CLI for smoke testing
+- `crates/localmt-ffi` - pointer-free C ABI for Android/JNI adapters
 
 ## Model Packs
 
@@ -115,6 +116,18 @@ SDK preflight example:
 ```bash
 cargo run -p localmt --example model_pack_preflight -- ./models/m2m100-418m-int8
 ```
+
+## Android FFI Boundary
+
+`localmt-ffi` builds as `cdylib`, `staticlib`, and `rlib` so Android/JNI
+adapters can link the Rust contract before real model execution is wired. The
+first ABI is intentionally pointer-free: callers can query the ABI version,
+supported language ids, two-byte ISO language codes, language-pair validation,
+`MAX_TEXT_CHARS`, and the Xiaomi 17 target metadata.
+
+The FFI boundary does not yet expose string translation, model-pack handles, or
+runtime sessions. Those APIs need explicit ownership rules and dedicated safety
+tests before raw pointers cross the boundary.
 
 ## ONNX Runtime Boundary
 
