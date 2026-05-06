@@ -135,7 +135,9 @@ language ids, two-byte ISO language codes, language-pair validation,
 local model pack through the Rust facade, then read the same stable newline
 summary as `localmt model plan`. This does checksum verification, asset
 planning, and optional `generation_config` parsing, but does not load tokenizer
-backends or ONNX Runtime sessions.
+backends or ONNX Runtime sessions. The CLI and FFI paths share
+`OfflineTranslatorAssetsSummary::to_preflight_text` so adapter-visible summary
+text has one source of truth.
 
 For Android smoke integration, `localmt-ffi` also exposes a Rust-owned opaque
 `LocalmtFfiTranslator` handle around `MockOfflineTranslator`. Callers open it

@@ -343,6 +343,36 @@ impl OfflineTranslatorAssetsSummary {
     pub const fn generation_config(&self) -> Option<GenerationConfig> {
         self.generation_config
     }
+
+    /// { true }
+    /// fn to_preflight_text(&self) -> String
+    /// { ret is the stable newline summary for CLI and FFI preflight adapters }
+    pub fn to_preflight_text(&self) -> String {
+        let decoder_with_past = self
+            .decoder_with_past_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "absent".to_owned());
+        let mut lines = vec![
+            format!("planned: {}", self.model_id()),
+            format!("tokenizer: {}", self.tokenizer_path().display()),
+            format!("encoder: {}", self.encoder_path().display()),
+            format!("decoder: {}", self.decoder_path().display()),
+            format!("decoder_with_past: {decoder_with_past}"),
+        ];
+
+        match self.generation_config() {
+            Some(config) => {
+                lines.push("generation_config: parsed".to_owned());
+                lines.push(format!(
+                    "max_new_tokens: {}",
+                    config.max_new_tokens().value()
+                ));
+            }
+            None => lines.push("generation_config: absent".to_owned()),
+        }
+
+        lines.join("\n")
+    }
 }
 
 /// Facade-level prepared-asset loading error.
@@ -751,6 +781,14 @@ mod tests {
                 .map(|config| config.max_new_tokens().value()),
             Some(32)
         );
+        let text = summary.to_preflight_text();
+        assert!(text.contains("planned: m2m100-418m-int8"));
+        assert!(text.contains("tokenizer:"));
+        assert!(text.contains("encoder:"));
+        assert!(text.contains("decoder:"));
+        assert!(text.contains("decoder_with_past:"));
+        assert!(text.contains("generation_config: parsed"));
+        assert!(text.contains("max_new_tokens: 32"));
         Ok(())
     }
 

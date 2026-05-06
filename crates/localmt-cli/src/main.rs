@@ -265,32 +265,8 @@ fn standard_model_files(root: &Path) -> Result<Vec<ModelFile>, CliError> {
 fn plan_model(path: String) -> Result<String, CliError> {
     let assets =
         OfflineTranslatorAssets::from_model_pack_path(path).map_err(CliError::OfflineAssets)?;
-    let summary = assets.summary();
 
-    let decoder_with_past = summary
-        .decoder_with_past_path()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "absent".to_owned());
-    let mut lines = vec![
-        format!("planned: {}", summary.model_id()),
-        format!("tokenizer: {}", summary.tokenizer_path().display()),
-        format!("encoder: {}", summary.encoder_path().display()),
-        format!("decoder: {}", summary.decoder_path().display()),
-        format!("decoder_with_past: {decoder_with_past}"),
-    ];
-
-    match summary.generation_config() {
-        Some(config) => {
-            lines.push("generation_config: parsed".to_owned());
-            lines.push(format!(
-                "max_new_tokens: {}",
-                config.max_new_tokens().value()
-            ));
-        }
-        None => lines.push("generation_config: absent".to_owned()),
-    }
-
-    Ok(lines.join("\n"))
+    Ok(assets.summary().to_preflight_text())
 }
 
 /// { args contains tokenize command arguments }

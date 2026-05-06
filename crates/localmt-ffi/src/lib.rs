@@ -218,7 +218,7 @@ pub extern "C" fn localmt_ffi_model_pack_summary(
         Ok(value) => value,
         Err(_error) => return LOCALMT_FFI_MODEL_PACK_ERROR,
     };
-    let summary = format_assets_summary(&assets);
+    let summary = assets.summary().to_preflight_text();
     let output = summary.as_bytes();
 
     unsafe { *written_len = output.len() }; // SAFETY: non-null writable length pointer.
@@ -630,37 +630,6 @@ fn read_ffi_utf8<'a>(ptr: *const u8, len: usize) -> Result<&'a str, i32> {
     let bytes = unsafe { slice::from_raw_parts(ptr, len) }; // SAFETY: non-null readable byte slice.
 
     str::from_utf8(bytes).map_err(|_error| LOCALMT_FFI_INVALID_UTF8)
-}
-
-/// { assets were prepared successfully }
-/// fn format_assets_summary(assets: &OfflineTranslatorAssets) -> String
-/// { ret is the stable newline summary exposed through CLI and FFI }
-fn format_assets_summary(assets: &OfflineTranslatorAssets) -> String {
-    let summary = assets.summary();
-    let decoder_with_past = summary
-        .decoder_with_past_path()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "absent".to_owned());
-    let mut lines = vec![
-        format!("planned: {}", summary.model_id()),
-        format!("tokenizer: {}", summary.tokenizer_path().display()),
-        format!("encoder: {}", summary.encoder_path().display()),
-        format!("decoder: {}", summary.decoder_path().display()),
-        format!("decoder_with_past: {decoder_with_past}"),
-    ];
-
-    match summary.generation_config() {
-        Some(config) => {
-            lines.push("generation_config: parsed".to_owned());
-            lines.push(format!(
-                "max_new_tokens: {}",
-                config.max_new_tokens().value()
-            ));
-        }
-        None => lines.push("generation_config: absent".to_owned()),
-    }
-
-    lines.join("\n")
 }
 
 #[cfg(test)]
