@@ -76,6 +76,48 @@ impl OfflineTranslatorPlan {
     }
 }
 
+/// Prepared no-inference assets for constructing a future offline translator.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfflineTranslatorAssets {
+    plan: OfflineTranslatorPlan,
+    generation_config: Option<GenerationConfig>,
+}
+
+impl OfflineTranslatorAssets {
+    /// { pack has verified manifest, files, and checksums }
+    /// fn from_pack(pack: &`ModelPack<Verified>`) -> Result<Self, OfflineTranslatorPlanError>
+    /// { ret is Ok only when planning and optional generation-config parsing succeed }
+    pub fn from_pack(pack: &ModelPack<Verified>) -> Result<Self, OfflineTranslatorPlanError> {
+        Self::from_plan(OfflineTranslatorPlan::from_pack(pack)?)
+    }
+
+    /// { plan was built from a verified model pack }
+    /// fn from_plan(plan: OfflineTranslatorPlan) -> Result<Self, OfflineTranslatorPlanError>
+    /// { ret is Ok only when optional generation-config parsing succeeds }
+    pub fn from_plan(plan: OfflineTranslatorPlan) -> Result<Self, OfflineTranslatorPlanError> {
+        let generation_config = plan.parse_generation_config()?;
+
+        Ok(Self {
+            plan,
+            generation_config,
+        })
+    }
+
+    /// { true }
+    /// fn plan(&self) -> &OfflineTranslatorPlan
+    /// { ret is the verified tokenizer and ORT generator path plan }
+    pub const fn plan(&self) -> &OfflineTranslatorPlan {
+        &self.plan
+    }
+
+    /// { true }
+    /// fn generation_config(&self) -> `Option<GenerationConfig>`
+    /// { ret is Some only when the model pack declared a valid generation_config }
+    pub const fn generation_config(&self) -> Option<GenerationConfig> {
+        self.generation_config
+    }
+}
+
 /// Facade-level translator planning error.
 #[derive(Debug)]
 pub enum OfflineTranslatorPlanError {
@@ -137,8 +179,8 @@ mod tests {
 
     use super::{
         Discovered, Language, MockEngine, ModelFileRole, ModelPack, NonEmptyText,
-        OfflineTranslatorPlan, OfflineTranslatorPlanError, OrtEngineError, OrtModelRole,
-        TokenGeneratorError, TokenId, TokenizerError, TranslateRequest, Translator,
+        OfflineTranslatorAssets, OfflineTranslatorPlan, OfflineTranslatorPlanError, OrtEngineError,
+        OrtModelRole, TokenGeneratorError, TokenId, TokenizerError, TranslateRequest, Translator,
     };
     #[cfg(not(feature = "ort-runtime"))]
     use super::{LanguagePair, OrtTokenGenerator, TokenGenerator, TokenSequence, TokenizerOutput};
@@ -333,6 +375,42 @@ mod tests {
         assert_eq!(
             config.target_language_token(Language::Japanese),
             TokenId::new(14)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn offline_translator_assets_prepare_plan_and_generation_config()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&[
+            ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+            ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+            (
+                "generation.json",
+                "generation_config",
+                VALID_GENERATION_CONFIG_SHA256,
+                VALID_GENERATION_CONFIG,
+            ),
+            (
+                "tokenizer.json",
+                "tokenizer",
+                TOKENIZER_SHA256,
+                "tokenizer\n",
+            ),
+        ])?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+
+        let assets = OfflineTranslatorAssets::from_pack(&pack)?;
+
+        assert_eq!(
+            assets.plan().tokenizer().tokenizer_path(),
+            root.join("tokenizer.json").as_path()
+        );
+        assert_eq!(
+            assets
+                .generation_config()
+                .map(|config| config.max_new_tokens().value()),
+            Some(32)
         );
         Ok(())
     }

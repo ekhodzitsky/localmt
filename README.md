@@ -82,6 +82,9 @@ Runtime sessions, or run translation.
 `OfflineTranslatorPlan::parse_generation_config` exposes facade-level parsing
 for the optional generation config while still avoiding tokenizer parsing,
 session loading, and decoder execution.
+`OfflineTranslatorAssets::from_pack` is the next no-inference preparation layer:
+it owns the verified plan plus parsed optional generation config for CLI and
+future mobile adapters.
 
 ## ONNX Runtime Boundary
 

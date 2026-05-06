@@ -2,7 +2,7 @@ use core::fmt;
 use std::process::ExitCode;
 
 use localmt::{
-    Language, MockTokenGenerator, MockTokenizer, NonEmptyText, OfflineTranslatorPlan,
+    Language, MockTokenGenerator, MockTokenizer, NonEmptyText, OfflineTranslatorAssets,
     TranslateRequest, TranslationPipeline, Translator,
 };
 use localmt_models::{Discovered, ModelPack};
@@ -115,10 +115,9 @@ fn plan_model(path: String) -> Result<String, CliError> {
     let pack = ModelPack::<Discovered>::discover(path)
         .and_then(ModelPack::verify)
         .map_err(CliError::ModelPack)?;
-    let plan = OfflineTranslatorPlan::from_pack(&pack).map_err(CliError::OfflinePlan)?;
-    let generation_config = plan
-        .parse_generation_config()
-        .map_err(CliError::OfflinePlan)?;
+    let assets = OfflineTranslatorAssets::from_pack(&pack).map_err(CliError::OfflinePlan)?;
+    let plan = assets.plan();
+    let generation_config = assets.generation_config();
 
     let decoder_with_past = plan
         .generator()
