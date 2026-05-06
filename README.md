@@ -85,6 +85,9 @@ session loading, and decoder execution.
 `OfflineTranslatorAssets::from_pack` is the next no-inference preparation layer:
 it owns the verified plan plus parsed optional generation config for CLI and
 future mobile adapters.
+`OfflineTranslatorAssets::from_model_pack_path` is the SDK-level convenience
+entry point for a local model-pack directory: it discovers, verifies, plans, and
+parses generation config without loading runtime resources.
 
 ## ONNX Runtime Boundary
 

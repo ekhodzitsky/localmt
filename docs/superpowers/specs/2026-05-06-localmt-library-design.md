@@ -105,6 +105,9 @@ settings.
 `OfflineTranslatorAssets` is the prepared no-inference facade object above raw
 planning: it owns the plan plus parsed optional generation config for CLI and
 future mobile adapters.
+Its `from_model_pack_path` constructor is the SDK-level local-pack entry point
+for discover -> verify -> prepare without exposing those lower-level steps to
+app adapters.
 The development CLI and benchmark command use this pipeline path so smoke tests
 exercise the same shape that real inference will fill.
 `localmt model plan <pack>` is the no-inference CLI smoke path for verified
@@ -156,6 +159,8 @@ must carry a license warning and must not become the default bundled option.
   without exposing ORT-specific generator internals to adapters.
 - Facade-level prepared assets combine the verified offline translator plan and
   parsed optional generation config without loading runtime resources.
+- Prepared assets can be created directly from a local model-pack path through
+  the facade without adapter-side model-pack lifecycle wiring.
 - Development CLI can run `localmt model plan <pack>` to smoke verified facade
   planning and generation-config parsing without inference.
 - Xiaomi 17 benchmark command exists and clearly labels `mock-pipeline`

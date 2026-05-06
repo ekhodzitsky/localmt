@@ -84,6 +84,19 @@ pub struct OfflineTranslatorAssets {
 }
 
 impl OfflineTranslatorAssets {
+    /// { path points to a model-pack directory candidate }
+    /// fn from_model_pack_path(path: impl `AsRef<Path>`) -> Result<Self, OfflineTranslatorAssetsError>
+    /// { ret is Ok only when discovery, verification, planning, and config parsing succeed }
+    pub fn from_model_pack_path(
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Self, OfflineTranslatorAssetsError> {
+        let pack = ModelPack::<Discovered>::discover(path)
+            .and_then(ModelPack::verify)
+            .map_err(OfflineTranslatorAssetsError::ModelPack)?;
+
+        Self::from_pack(&pack).map_err(OfflineTranslatorAssetsError::Plan)
+    }
+
     /// { pack has verified manifest, files, and checksums }
     /// fn from_pack(pack: &`ModelPack<Verified>`) -> Result<Self, OfflineTranslatorPlanError>
     /// { ret is Ok only when planning and optional generation-config parsing succeed }
@@ -115,6 +128,33 @@ impl OfflineTranslatorAssets {
     /// { ret is Some only when the model pack declared a valid generation_config }
     pub const fn generation_config(&self) -> Option<GenerationConfig> {
         self.generation_config
+    }
+}
+
+/// Facade-level prepared-asset loading error.
+#[derive(Debug)]
+pub enum OfflineTranslatorAssetsError {
+    /// Model-pack discovery or verification failed.
+    ModelPack(ModelPackError),
+    /// Offline translator asset planning failed.
+    Plan(OfflineTranslatorPlanError),
+}
+
+impl fmt::Display for OfflineTranslatorAssetsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ModelPack(error) => write!(formatter, "model pack failed: {error}"),
+            Self::Plan(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for OfflineTranslatorAssetsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ModelPack(error) => Some(error),
+            Self::Plan(error) => Some(error),
+        }
     }
 }
 
@@ -411,6 +451,38 @@ mod tests {
                 .generation_config()
                 .map(|config| config.max_new_tokens().value()),
             Some(32)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn offline_translator_assets_prepare_from_model_pack_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&[
+            ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+            ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+            (
+                "generation.json",
+                "generation_config",
+                VALID_GENERATION_CONFIG_SHA256,
+                VALID_GENERATION_CONFIG,
+            ),
+            (
+                "tokenizer.json",
+                "tokenizer",
+                TOKENIZER_SHA256,
+                "tokenizer\n",
+            ),
+        ])?;
+
+        let assets = OfflineTranslatorAssets::from_model_pack_path(&root)?;
+
+        assert_eq!(assets.plan().generator().model_id(), "m2m100-418m-int8");
+        assert_eq!(
+            assets
+                .generation_config()
+                .map(|config| config.target_language_token(Language::Russian)),
+            Some(TokenId::new(11))
         );
         Ok(())
     }

@@ -112,10 +112,8 @@ fn verify_model(path: String) -> Result<String, CliError> {
 /// fn plan_model(path: String) -> Result<String, CliError>
 /// { ret summarizes verified SDK asset planning without loading inference sessions }
 fn plan_model(path: String) -> Result<String, CliError> {
-    let pack = ModelPack::<Discovered>::discover(path)
-        .and_then(ModelPack::verify)
-        .map_err(CliError::ModelPack)?;
-    let assets = OfflineTranslatorAssets::from_pack(&pack).map_err(CliError::OfflinePlan)?;
+    let assets =
+        OfflineTranslatorAssets::from_model_pack_path(path).map_err(CliError::OfflineAssets)?;
     let plan = assets.plan();
     let generation_config = assets.generation_config();
 
@@ -125,7 +123,7 @@ fn plan_model(path: String) -> Result<String, CliError> {
         .map(|session| session.model_path().display().to_string())
         .unwrap_or_else(|| "absent".to_owned());
     let mut lines = vec![
-        format!("planned: {}", pack.manifest().model_id()),
+        format!("planned: {}", plan.generator().model_id()),
         format!("tokenizer: {}", plan.tokenizer().tokenizer_path().display()),
         format!(
             "encoder: {}",
@@ -202,7 +200,7 @@ enum CliError {
     Translate(localmt::TranslationError),
     UnknownModelCommand(String),
     ModelPack(localmt_models::ModelPackError),
-    OfflinePlan(localmt::OfflineTranslatorPlanError),
+    OfflineAssets(localmt::OfflineTranslatorAssetsError),
     Benchmark(localmt_bench::BenchmarkError),
     InvalidBenchArguments(String),
 }
@@ -227,7 +225,7 @@ impl fmt::Display for CliError {
                 write!(formatter, "unknown model command: {command}")
             }
             Self::ModelPack(error) => write!(formatter, "{error}"),
-            Self::OfflinePlan(error) => write!(formatter, "{error}"),
+            Self::OfflineAssets(error) => write!(formatter, "{error}"),
             Self::Benchmark(error) => write!(formatter, "{error}"),
             Self::InvalidBenchArguments(message) => write!(formatter, "{message}"),
         }
