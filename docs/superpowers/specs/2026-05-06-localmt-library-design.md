@@ -36,6 +36,8 @@ The workspace is split into narrow crates:
 - `localmt-core`: invariant-bearing types such as `Language`, `LanguagePair`,
   `NonEmptyText`, `TranslateRequest`, and `Translation`.
 - `localmt-engine`: `TranslatorEngine` trait plus a deterministic mock engine.
+- `localmt-engine-ort`: selects ONNX files from a verified model pack and loads
+  an ONNX Runtime session only when the `ort-runtime` feature is enabled.
 - `localmt-models`: manifest parsing, safe relative path validation, required
   language checks, and SHA-256 verification for model-pack files.
 - `localmt-bench`: device profiles and benchmark report types. The first
@@ -44,8 +46,9 @@ The workspace is split into narrow crates:
   `Translator<E>`.
 - `localmt-cli`: development-only smoke CLI.
 
-The later ONNX Runtime crate will be added as `localmt-engine-ort`, behind a
-feature flag. It must not leak `ort` types into `localmt-core` or `localmt`.
+The ONNX Runtime crate is isolated as `localmt-engine-ort`, behind a feature
+flag. It must not leak `ort` types into `localmt-core` or `localmt`; facade
+users see only localmt-owned plan, role, engine, and error types.
 
 ## Model Strategy
 
@@ -65,5 +68,7 @@ must carry a license warning and must not become the default bundled option.
 - The mock translator returns deterministic non-empty output.
 - Model packs can be inspected and verified before real inference loads them.
 - Xiaomi 17 benchmark command exists and clearly labels mock-runtime results.
+- ONNX Runtime session loading is gated behind `ort-runtime`; default builds
+  can plan a session but return an explicit disabled-runtime error on load.
 - `cargo fmt --check`, `cargo test`, `cargo clippy --all-targets --all-features
   -- -D warnings`, and `cargo doc --no-deps` pass.

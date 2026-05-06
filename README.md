@@ -12,6 +12,7 @@ layer so API and asset-loading contracts can be tested before real inference.
 
 - `crates/localmt-core` - language, text, request, and invariant types
 - `crates/localmt-engine` - engine trait and mock engine
+- `crates/localmt-engine-ort` - ONNX Runtime session planning and gated loading
 - `crates/localmt-models` - model-pack manifest parsing and checksum verification
 - `crates/localmt-bench` - benchmark profiles and mock benchmark skeleton
 - `crates/localmt` - public facade crate
@@ -51,6 +52,22 @@ Development CLI:
 localmt model inspect ./models/m2m100-418m-int8
 localmt model verify ./models/m2m100-418m-int8
 ```
+
+## ONNX Runtime Boundary
+
+`localmt-engine-ort` selects ONNX graph files from a verified model pack before
+any runtime session is created. In the default build, `OrtEngine::load` returns
+`OrtRuntimeFeatureDisabled`, so normal workspace checks do not load or link ONNX
+Runtime accidentally. Real session creation is available behind the
+`ort-runtime` feature:
+
+```bash
+cargo check -p localmt-engine-ort --features ort-runtime
+cargo check -p localmt --features ort-runtime
+```
+
+This crate currently stops at session loading. Tokenization, decoder graph
+composition, and actual translation are intentionally still future work.
 
 ## Benchmark Skeleton
 

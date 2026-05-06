@@ -5,6 +5,7 @@ members = [
     "crates/localmt-cli",
     "crates/localmt-core",
     "crates/localmt-engine",
+    "crates/localmt-engine-ort",
     "crates/localmt-models",
 ]
 resolver = "3"

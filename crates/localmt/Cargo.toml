@@ -10,7 +10,12 @@ version.workspace = true
 localmt-bench = { path = "../localmt-bench" }
 localmt-core = { path = "../localmt-core" }
 localmt-engine = { path = "../localmt-engine" }
+localmt-engine-ort = { path = "../localmt-engine-ort" }
 localmt-models = { path = "../localmt-models" }
+
+[features]
+default = []
+ort-runtime = ["localmt-engine-ort/ort-runtime"]
 
 [lints]
 workspace = true

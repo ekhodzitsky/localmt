@@ -1,0 +1,18 @@
+[package]
+name = "localmt-engine-ort"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+localmt-models = { path = "../localmt-models" }
+ort = { version = "2.0.0-rc.12", optional = true, default-features = false, features = ["api-22", "load-dynamic", "std"] }
+
+[features]
+default = []
+ort-runtime = ["dep:ort"]
+
+[lints]
+workspace = true
