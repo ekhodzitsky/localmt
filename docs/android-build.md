@@ -127,11 +127,15 @@ cargo run -p localmt -- model write-manifest <pack-dir>
 cargo run -p localmt -- model verify <pack-dir>
 cargo run -p localmt -- model plan <pack-dir>
 cargo run -p localmt -- ffi smoke <pack-dir> en ru "hello offline"
+cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke <pack-dir> en ru "hello offline"
 ```
 
 `localmt ffi smoke` exercises the same default C ABI flow described above on the
 host: ABI query, model-pack summary, mock translator open, mock translate,
 status-message lookup on errors, and handle close.
+`localmt ffi hf-smoke` exercises the tokenizer-backed mock translator path
+through the same host-side FFI helpers; it requires `hf-tokenizers`, verifies
+`tokenizer.json` loading, and still keeps token generation mocked.
 
 ## Verification
 

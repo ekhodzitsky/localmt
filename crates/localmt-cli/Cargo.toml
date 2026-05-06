@@ -19,7 +19,7 @@ localmt-models = { path = "../localmt-models" }
 
 [features]
 default = []
-hf-tokenizers = ["localmt/hf-tokenizers"]
+hf-tokenizers = ["localmt/hf-tokenizers", "localmt-ffi/hf-tokenizers"]
 
 [lints]
 workspace = true
