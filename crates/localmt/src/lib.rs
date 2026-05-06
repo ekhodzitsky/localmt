@@ -1,6 +1,7 @@
 //! Public facade for the localmt translation library.
 
 use core::fmt;
+use std::path::{Path, PathBuf};
 
 pub use localmt_bench::{BenchReport, BenchmarkError, DeviceProfile, MockBenchmarkRunner};
 pub use localmt_core::{
@@ -126,6 +127,79 @@ impl OfflineTranslatorAssets {
     /// { true }
     /// fn generation_config(&self) -> `Option<GenerationConfig>`
     /// { ret is Some only when the model pack declared a valid generation_config }
+    pub const fn generation_config(&self) -> Option<GenerationConfig> {
+        self.generation_config
+    }
+
+    /// { self was prepared successfully }
+    /// fn summary(&self) -> OfflineTranslatorAssetsSummary
+    /// { ret is an owned no-inference preflight summary for adapters }
+    pub fn summary(&self) -> OfflineTranslatorAssetsSummary {
+        let generator = self.plan.generator();
+
+        OfflineTranslatorAssetsSummary {
+            model_id: generator.model_id().to_owned(),
+            tokenizer_path: self.plan.tokenizer().tokenizer_path().to_path_buf(),
+            encoder_path: generator.encoder().model_path().to_path_buf(),
+            decoder_path: generator.decoder().model_path().to_path_buf(),
+            decoder_with_past_path: generator
+                .decoder_with_past()
+                .map(|session| session.model_path().to_path_buf()),
+            generation_config: self.generation_config,
+        }
+    }
+}
+
+/// Owned no-inference summary of prepared offline translator assets.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OfflineTranslatorAssetsSummary {
+    model_id: String,
+    tokenizer_path: PathBuf,
+    encoder_path: PathBuf,
+    decoder_path: PathBuf,
+    decoder_with_past_path: Option<PathBuf>,
+    generation_config: Option<GenerationConfig>,
+}
+
+impl OfflineTranslatorAssetsSummary {
+    /// { true }
+    /// fn model_id(&self) -> &str
+    /// { ret is the verified model id }
+    pub fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    /// { true }
+    /// fn tokenizer_path(&self) -> &Path
+    /// { ret is the verified tokenizer asset path }
+    pub fn tokenizer_path(&self) -> &Path {
+        &self.tokenizer_path
+    }
+
+    /// { true }
+    /// fn encoder_path(&self) -> &Path
+    /// { ret is the verified encoder graph path }
+    pub fn encoder_path(&self) -> &Path {
+        &self.encoder_path
+    }
+
+    /// { true }
+    /// fn decoder_path(&self) -> &Path
+    /// { ret is the verified decoder graph path }
+    pub fn decoder_path(&self) -> &Path {
+        &self.decoder_path
+    }
+
+    /// { true }
+    /// fn decoder_with_past_path(&self) -> `Option<&Path>`
+    /// { ret is Some only when the pack declared a cached decoder graph }
+    pub fn decoder_with_past_path(&self) -> Option<&Path> {
+        self.decoder_with_past_path.as_deref()
+    }
+
+    /// { true }
+    /// fn generation_config(&self) -> `Option<GenerationConfig>`
+    /// { ret is Some only when the pack declared a valid generation_config }
     pub const fn generation_config(&self) -> Option<GenerationConfig> {
         self.generation_config
     }
@@ -483,6 +557,56 @@ mod tests {
                 .generation_config()
                 .map(|config| config.target_language_token(Language::Russian)),
             Some(TokenId::new(11))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn offline_translator_assets_summary_reports_preflight_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&[
+            ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+            ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+            (
+                "decoder-with-past.onnx",
+                "decoder_with_past",
+                DECODER_WITH_PAST_SHA256,
+                "decoder-with-past\n",
+            ),
+            (
+                "generation.json",
+                "generation_config",
+                VALID_GENERATION_CONFIG_SHA256,
+                VALID_GENERATION_CONFIG,
+            ),
+            (
+                "tokenizer.json",
+                "tokenizer",
+                TOKENIZER_SHA256,
+                "tokenizer\n",
+            ),
+        ])?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+        let assets = OfflineTranslatorAssets::from_pack(&pack)?;
+
+        let summary = assets.summary();
+
+        assert_eq!(summary.model_id(), "m2m100-418m-int8");
+        assert_eq!(
+            summary.tokenizer_path(),
+            root.join("tokenizer.json").as_path()
+        );
+        assert_eq!(summary.encoder_path(), root.join("encoder.onnx").as_path());
+        assert_eq!(summary.decoder_path(), root.join("decoder.onnx").as_path());
+        assert_eq!(
+            summary.decoder_with_past_path(),
+            Some(root.join("decoder-with-past.onnx").as_path())
+        );
+        assert_eq!(
+            summary
+                .generation_config()
+                .map(|config| config.max_new_tokens().value()),
+            Some(32)
         );
         Ok(())
     }

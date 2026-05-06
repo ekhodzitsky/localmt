@@ -124,29 +124,21 @@ fn hash_model_file(path: String) -> Result<String, CliError> {
 fn plan_model(path: String) -> Result<String, CliError> {
     let assets =
         OfflineTranslatorAssets::from_model_pack_path(path).map_err(CliError::OfflineAssets)?;
-    let plan = assets.plan();
-    let generation_config = assets.generation_config();
+    let summary = assets.summary();
 
-    let decoder_with_past = plan
-        .generator()
-        .decoder_with_past()
-        .map(|session| session.model_path().display().to_string())
+    let decoder_with_past = summary
+        .decoder_with_past_path()
+        .map(|path| path.display().to_string())
         .unwrap_or_else(|| "absent".to_owned());
     let mut lines = vec![
-        format!("planned: {}", plan.generator().model_id()),
-        format!("tokenizer: {}", plan.tokenizer().tokenizer_path().display()),
-        format!(
-            "encoder: {}",
-            plan.generator().encoder().model_path().display()
-        ),
-        format!(
-            "decoder: {}",
-            plan.generator().decoder().model_path().display()
-        ),
+        format!("planned: {}", summary.model_id()),
+        format!("tokenizer: {}", summary.tokenizer_path().display()),
+        format!("encoder: {}", summary.encoder_path().display()),
+        format!("decoder: {}", summary.decoder_path().display()),
         format!("decoder_with_past: {decoder_with_past}"),
     ];
 
-    match generation_config {
+    match summary.generation_config() {
         Some(config) => {
             lines.push("generation_config: parsed".to_owned());
             lines.push(format!(

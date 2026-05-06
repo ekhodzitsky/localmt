@@ -111,6 +111,9 @@ future mobile adapters.
 Its `from_model_pack_path` constructor is the SDK-level local-pack entry point
 for discover -> verify -> prepare without exposing those lower-level steps to
 app adapters.
+Its `summary` method returns an owned preflight summary so CLI, Android, and
+future UniFFI/JNI adapters can display or validate prepared paths without
+parsing text output.
 The development CLI and benchmark command use this pipeline path so smoke tests
 exercise the same shape that real inference will fill.
 `localmt model plan <pack>` is the no-inference CLI smoke path for verified
@@ -166,6 +169,8 @@ must carry a license warning and must not become the default bundled option.
   parsed optional generation config without loading runtime resources.
 - Prepared assets can be created directly from a local model-pack path through
   the facade without adapter-side model-pack lifecycle wiring.
+- Prepared assets expose a structured preflight summary for adapter-facing
+  model id, asset paths, and generation-config status.
 - Development CLI can run `localmt model plan <pack>` to smoke verified facade
   planning and generation-config parsing without inference.
 - Xiaomi 17 benchmark command exists and clearly labels `mock-pipeline`

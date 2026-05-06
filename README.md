@@ -90,6 +90,9 @@ future mobile adapters.
 `OfflineTranslatorAssets::from_model_pack_path` is the SDK-level convenience
 entry point for a local model-pack directory: it discovers, verifies, plans, and
 parses generation config without loading runtime resources.
+`OfflineTranslatorAssets::summary` returns a structured preflight summary with
+the verified model id, tokenizer/generator paths, optional cached decoder, and
+optional generation config.
 
 ## ONNX Runtime Boundary
 
