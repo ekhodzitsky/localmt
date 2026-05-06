@@ -97,6 +97,12 @@ parses generation config without loading runtime resources.
 the verified model id, tokenizer/generator paths, optional cached decoder, and
 optional generation config.
 
+SDK preflight example:
+
+```bash
+cargo run -p localmt --example model_pack_preflight -- ./models/m2m100-418m-int8
+```
+
 ## ONNX Runtime Boundary
 
 `localmt-engine-ort` selects ONNX graph files from a verified model pack before
