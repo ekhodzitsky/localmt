@@ -5,15 +5,51 @@ Offline-first Rust translation library for high-end mobile devices.
 The first target profile is Xiaomi 17 on Android arm64-v8a. The library keeps
 translation API, language routing, and model-pack validation independent from
 the concrete inference backend. ONNX Runtime Mobile is the first intended real
-backend; the initial workspace starts with a mock engine so API contracts can be
-tested before ML dependencies enter the repo.
+backend; the current workspace has a mock engine plus a verified model-pack
+layer so API and asset-loading contracts can be tested before real inference.
 
 ## Workspace
 
 - `crates/localmt-core` - language, text, request, and invariant types
 - `crates/localmt-engine` - engine trait and mock engine
+- `crates/localmt-models` - model-pack manifest parsing and checksum verification
 - `crates/localmt` - public facade crate
 - `crates/localmt-cli` - development CLI for smoke testing
+
+## Model Packs
+
+Model packs are local directories with a `manifest.json` file and the files it
+declares. Verification checks that paths cannot escape the model-pack root, all
+declared files exist, SHA-256 digests match, and the first supported languages
+are present: `en`, `ru`, `th`, `vi`, and `ja`.
+
+Minimal manifest shape:
+
+```json
+{
+  "schema_version": 0,
+  "model_id": "m2m100-418m-int8",
+  "version": "0.1.0",
+  "architecture": "m2m100",
+  "runtime": "onnx-runtime",
+  "license": "MIT",
+  "languages": ["en", "ru", "th", "vi", "ja"],
+  "files": [
+    {
+      "path": "encoder.onnx",
+      "kind": "encoder",
+      "sha256": "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b"
+    }
+  ]
+}
+```
+
+Development CLI:
+
+```bash
+localmt model inspect ./models/m2m100-418m-int8
+localmt model verify ./models/m2m100-418m-int8
+```
 
 ## Verify
 

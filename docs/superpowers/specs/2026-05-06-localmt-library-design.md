@@ -36,6 +36,8 @@ The workspace is split into narrow crates:
 - `localmt-core`: invariant-bearing types such as `Language`, `LanguagePair`,
   `NonEmptyText`, `TranslateRequest`, and `Translation`.
 - `localmt-engine`: `TranslatorEngine` trait plus a deterministic mock engine.
+- `localmt-models`: manifest parsing, safe relative path validation, required
+  language checks, and SHA-256 verification for model-pack files.
 - `localmt`: facade crate that re-exports stable public API and owns
   `Translator<E>`.
 - `localmt-cli`: development-only smoke CLI.
@@ -59,5 +61,6 @@ must carry a license warning and must not become the default bundled option.
   - same-language translation pairs
   - unsupported language codes
 - The mock translator returns deterministic non-empty output.
+- Model packs can be inspected and verified before real inference loads them.
 - `cargo fmt --check`, `cargo test`, `cargo clippy --all-targets --all-features
   -- -D warnings`, and `cargo doc --no-deps` pass.

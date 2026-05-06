@@ -5,6 +5,11 @@ pub use localmt_core::{
     TextError, TranslateRequest, Translation,
 };
 pub use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
+pub use localmt_models::{
+    Discovered, ModelArchitecture, ModelFile, ModelFileKind, ModelId, ModelLicense, ModelManifest,
+    ModelPack, ModelPackError, ModelPackVersion, ModelRelativePath, ModelRuntime, Sha256Digest,
+    Verified,
+};
 
 /// High-level translator facade over a concrete engine.
 #[derive(Clone, Debug)]
