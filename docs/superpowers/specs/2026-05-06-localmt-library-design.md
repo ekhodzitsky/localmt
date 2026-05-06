@@ -83,6 +83,10 @@ optional `decoder_with_past` and `generation_config` paths.
 assets into encoder/decoder session plans before any session is loaded.
 `OrtTokenGenerator::load` loads those sessions behind `ort-runtime`; default
 builds still return an explicit disabled-runtime error.
+`OfflineTranslatorPlan` is the facade-level planning object for SDK users. It
+combines `TokenizerAssetPlan` and `OrtGeneratorPlan` from one verified model
+pack without parsing tokenizer files, loading ORT sessions, or running
+translation.
 The development CLI and benchmark command use this pipeline path so smoke tests
 exercise the same shape that real inference will fill.
 
@@ -118,6 +122,8 @@ must carry a license warning and must not become the default bundled option.
   encoder/decoder session plans without running inference.
 - ORT token-generator loading is feature-gated and default builds return an
   explicit disabled-runtime error.
+- Facade-level offline translator planning combines tokenizer and ORT generator
+  plans from one verified model pack without loading runtime resources.
 - Xiaomi 17 benchmark command exists and clearly labels `mock-pipeline`
   results.
 - ONNX Runtime session loading is gated behind `ort-runtime`; default builds

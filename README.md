@@ -63,6 +63,17 @@ localmt model inspect ./models/m2m100-418m-int8
 localmt model verify ./models/m2m100-418m-int8
 ```
 
+## Facade Planning
+
+`OfflineTranslatorPlan::from_pack(&verified_pack)` is the SDK-level bridge from
+a verified model pack to the assets needed by a future offline translator. It
+combines `TokenizerAssetPlan` and `OrtGeneratorPlan` so application adapters do
+not need to manually wire tokenizer, encoder, decoder, cached decoder, and
+generation-config paths.
+
+This object is still a load plan. It does not parse tokenizer files, load ONNX
+Runtime sessions, or run translation.
+
 ## ONNX Runtime Boundary
 
 `localmt-engine-ort` selects ONNX graph files from a verified model pack before
