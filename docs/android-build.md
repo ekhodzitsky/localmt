@@ -32,6 +32,9 @@ target/android-jniLibs/arm64-v8a/
 
 Copy that directory into the app module's `src/main/jniLibs/` or wire it into
 the app build pipeline.
+The C ABI header is checked in at
+`crates/localmt-ffi/include/localmt_ffi.h`; the development CLI can also print
+the same header with `cargo run -p localmt -- ffi header`.
 
 ## Feature Flags
 
@@ -127,6 +130,7 @@ cargo run -p localmt -- model write-manifest <pack-dir> m2m100-418m-int8 0.1.0 m
 cargo run -p localmt -- model verify <pack-dir>
 cargo run -p localmt -- model plan <pack-dir>
 cargo run -p localmt -- model doctor <pack-dir>
+cargo run -p localmt -- ffi header
 cargo run -p localmt -- ffi smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features ort-runtime -- ffi ort-smoke <pack-dir>

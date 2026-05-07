@@ -74,6 +74,7 @@ localmt model verify ./models/m2m100-418m-int8
 localmt model plan ./models/m2m100-418m-int8
 localmt model doctor ./models/m2m100-418m-int8
 localmt model tokenize ./models/m2m100-418m-int8 en ru "hello offline"
+localmt ffi header
 localmt bench --help
 ```
 
@@ -137,11 +138,14 @@ CLI smoke checks:
 ```bash
 cargo run -p localmt -- model plan ./models/m2m100-418m-int8
 cargo run -p localmt -- model doctor ./models/m2m100-418m-int8
+cargo run -p localmt -- ffi header
 cargo run -p localmt -- ffi smoke ./models/m2m100-418m-int8 en ru "hello offline"
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke ./models/m2m100-418m-int8 en ru "hello offline"
 cargo run -p localmt --features ort-runtime -- ffi ort-smoke ./models/m2m100-418m-int8
 ```
 
+`localmt ffi header` prints the checked-in C ABI header from
+`crates/localmt-ffi/include/localmt_ffi.h` for Android/NDK consumers.
 `localmt ffi smoke` runs the host-side equivalent of the default JNI call flow:
 ABI query, model-pack summary, mock translator open, mock translate, status
 message mapping on errors, and handle close.

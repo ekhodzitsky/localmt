@@ -26,6 +26,7 @@ usage:
   localmt model tokenize PACK FROM TO TEXT
   localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE
   localmt ffi smoke PACK FROM TO TEXT
+  localmt ffi header
   localmt ffi hf-smoke PACK FROM TO TEXT
   localmt ffi ort-smoke PACK
   localmt bench --profile xiaomi17 --model-pack PACK
@@ -36,6 +37,7 @@ localmt ffi commands
 
 usage:
   localmt ffi smoke PACK FROM TO TEXT
+  localmt ffi header
   localmt ffi hf-smoke PACK FROM TO TEXT
   localmt ffi ort-smoke PACK
 ";
@@ -64,6 +66,7 @@ notes:
 ";
 
 const DOCTOR_SMOKE_TEXT: &str = "hello offline";
+const FFI_HEADER_TEXT: &str = include_str!("../../localmt-ffi/include/localmt_ffi.h");
 const STANDARD_MODEL_FILES: [StandardModelFile; 7] = [
     StandardModelFile::required("encoder.onnx", ModelFileRole::Encoder),
     StandardModelFile::required("decoder.onnx", ModelFileRole::Decoder),
@@ -172,10 +175,22 @@ fn run_ffi(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
 
     match command.as_str() {
         "smoke" => run_ffi_smoke(args),
+        "header" => ffi_header(args),
         "hf-smoke" => run_ffi_hf_smoke(args),
         "ort-smoke" => run_ffi_ort_smoke(args),
         _ => Err(CliError::UnknownFfiCommand(command)),
     }
+}
+
+/// { args contains no remaining arguments }
+/// fn ffi_header(args: impl Iterator<Item = String>) -> Result<String, CliError>
+/// { ret is the bundled C ABI header text }
+fn ffi_header(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
+    if args.next().is_some() {
+        return Err(CliError::TooManyArguments);
+    }
+
+    Ok(FFI_HEADER_TEXT.to_owned())
 }
 
 /// { args contains one model path argument }
@@ -1072,6 +1087,20 @@ mod tests {
     }
 
     #[test]
+    fn cli_ffi_header_prints_bundled_header() -> Result<(), Box<dyn std::error::Error>> {
+        let args = ["localmt".to_owned(), "ffi".to_owned(), "header".to_owned()];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("#ifndef LOCALMT_FFI_H"));
+        assert!(output.contains("#define LOCALMT_FFI_ABI_VERSION 6"));
+        assert!(output.contains("int32_t localmt_ffi_model_pack_summary("));
+        assert!(output.contains("int32_t localmt_ffi_mock_translate("));
+        assert!(output.contains("int32_t localmt_ffi_ort_generator_open("));
+        Ok(())
+    }
+
+    #[test]
     #[cfg(not(feature = "hf-tokenizers"))]
     fn cli_ffi_hf_smoke_reports_tokenizer_feature_disabled_after_pack_planning()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1275,9 +1304,23 @@ mod tests {
             "localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE"
         ));
         assert!(output.contains("localmt ffi smoke PACK FROM TO TEXT"));
+        assert!(output.contains("localmt ffi header"));
         assert!(output.contains("localmt ffi hf-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-smoke PACK"));
         assert!(output.contains("localmt bench --profile xiaomi17 --model-pack PACK"));
+        Ok(())
+    }
+
+    #[test]
+    fn cli_prints_ffi_help() -> Result<(), Box<dyn std::error::Error>> {
+        let args = ["localmt".to_owned(), "ffi".to_owned(), "help".to_owned()];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("localmt ffi smoke PACK FROM TO TEXT"));
+        assert!(output.contains("localmt ffi header"));
+        assert!(output.contains("localmt ffi hf-smoke PACK FROM TO TEXT"));
+        assert!(output.contains("localmt ffi ort-smoke PACK"));
         Ok(())
     }
 
