@@ -106,7 +106,10 @@ Before opening a translator:
    model-pack directory. This performs full checksum verification and writes
    `.localmt-trust.json`.
 2. On hot startup, call `localmt_ffi_model_pack_trusted_summary()` to validate
-   the trust artifact without re-hashing large model files.
+   the trust artifact without re-hashing large model files. The trust artifact
+   pins the manifest hash, manifest file identity, byte length, and modified
+   timestamp; regenerate it after every model-pack update or localmt
+   trust-schema change.
 3. If the buffer is too small, allocate `written_len` bytes and call again.
 4. Call `localmt_ffi_runtime_config_summary()` before opening ORT generation;
    this requires valid `generation_config` and `ort_io` metadata without loading

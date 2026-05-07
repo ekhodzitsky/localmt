@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use localmt_core::Language;
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,8 @@ use sha2::{Digest, Sha256};
 const MANIFEST_FILE_NAME: &str = "manifest.json";
 const TRUST_FILE_NAME: &str = ".localmt-trust.json";
 const SCHEMA_VERSION: u16 = 0;
-const TRUST_SCHEMA_VERSION: u16 = 0;
+const TRUST_SCHEMA_VERSION: u16 = 1;
+const NANOS_PER_SECOND: u64 = 1_000_000_000;
 const REQUIRED_LANGUAGES: [Language; 5] = [
     Language::English,
     Language::Russian,
@@ -609,6 +611,13 @@ pub enum ModelPackError {
         /// I/O source error.
         source: std::io::Error,
     },
+    /// Model-pack file modified timestamp cannot be represented in the trust artifact.
+    InvalidModelFileModifiedTime {
+        /// Model-pack file path.
+        path: PathBuf,
+        /// Stable validation reason.
+        reason: String,
+    },
     /// File digest does not match manifest.
     ChecksumMismatch {
         /// Model-pack file path.
@@ -627,9 +636,13 @@ pub enum ModelPackError {
         /// Model-pack file path.
         path: PathBuf,
         /// Trusted byte length.
-        expected: u64,
+        expected_byte_len: u64,
         /// Current byte length.
-        actual: u64,
+        actual_byte_len: u64,
+        /// Trusted modified timestamp as nanoseconds since the Unix epoch.
+        expected_modified_unix_nanos: u64,
+        /// Current modified timestamp as nanoseconds since the Unix epoch.
+        actual_modified_unix_nanos: u64,
     },
 }
 
@@ -683,6 +696,11 @@ impl fmt::Display for ModelPackError {
             Self::ReadModelFile { path, source } => {
                 write!(formatter, "failed to read {}: {source}", path.display())
             }
+            Self::InvalidModelFileModifiedTime { path, reason } => write!(
+                formatter,
+                "invalid modified timestamp for {}: {reason}",
+                path.display()
+            ),
             Self::ChecksumMismatch {
                 path,
                 expected,
@@ -700,11 +718,13 @@ impl fmt::Display for ModelPackError {
             }
             Self::TrustFileMetadataMismatch {
                 path,
-                expected,
-                actual,
+                expected_byte_len,
+                actual_byte_len,
+                expected_modified_unix_nanos,
+                actual_modified_unix_nanos,
             } => write!(
                 formatter,
-                "trust metadata mismatch for {}: expected {expected} bytes, got {actual}",
+                "trust metadata mismatch for {}: expected {expected_byte_len} bytes and modified_nanos {expected_modified_unix_nanos}, got {actual_byte_len} bytes and modified_nanos {actual_modified_unix_nanos}",
                 path.display()
             ),
         }
@@ -733,6 +753,7 @@ impl std::error::Error for ModelPackError {
             | Self::InvalidRelativePath(_)
             | Self::InvalidSha256(_)
             | Self::MissingRequiredLanguage(_)
+            | Self::InvalidModelFileModifiedTime { .. }
             | Self::ChecksumMismatch { .. }
             | Self::TrustManifestMismatch
             | Self::TrustFileListMismatch
@@ -783,19 +804,6 @@ struct SerializableModelFile<'a> {
 struct ModelFileByteLen(u64);
 
 impl ModelFileByteLen {
-    /// { path points to a readable model-pack file }
-    /// fn from_path(path: impl `AsRef<Path>`) -> Result<Self, ModelPackError>
-    /// { ret is the current file byte length reported by the filesystem }
-    fn from_path(path: impl AsRef<Path>) -> Result<Self, ModelPackError> {
-        let path = path.as_ref();
-        let metadata = fs::metadata(path).map_err(|source| ModelPackError::ReadModelFile {
-            path: path.to_path_buf(),
-            source,
-        })?;
-
-        Ok(Self(metadata.len()))
-    }
-
     /// { true }
     /// fn value(self) -> u64
     /// { ret is the stored byte length }
@@ -804,27 +812,92 @@ impl ModelFileByteLen {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ModelFileModifiedUnixNanos(u64);
+
+impl ModelFileModifiedUnixNanos {
+    /// { path identifies the file whose timestamp is being converted }
+    /// fn from_system_time(path: &Path, value: SystemTime) -> Result<Self, ModelPackError>
+    /// { ret is Ok only when value is representable as u64 nanoseconds since Unix epoch }
+    fn from_system_time(path: &Path, value: SystemTime) -> Result<Self, ModelPackError> {
+        let duration = value.duration_since(UNIX_EPOCH).map_err(|source| {
+            ModelPackError::InvalidModelFileModifiedTime {
+                path: path.to_path_buf(),
+                reason: source.to_string(),
+            }
+        })?;
+        let seconds = duration.as_secs();
+        let nanos = u64::from(duration.subsec_nanos());
+        let value = seconds
+            .checked_mul(NANOS_PER_SECOND)
+            .and_then(|base| base.checked_add(nanos))
+            .ok_or_else(|| ModelPackError::InvalidModelFileModifiedTime {
+                path: path.to_path_buf(),
+                reason: "timestamp nanoseconds overflow u64".to_owned(),
+            })?;
+
+        Ok(Self(value))
+    }
+
+    /// { true }
+    /// fn value(self) -> u64
+    /// { ret is the stored modified timestamp as nanoseconds since Unix epoch }
+    const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ModelFileMetadataSnapshot {
+    byte_len: ModelFileByteLen,
+    modified_unix_nanos: ModelFileModifiedUnixNanos,
+}
+
+impl ModelFileMetadataSnapshot {
+    /// { path points to a readable model-pack file }
+    /// fn from_path(path: impl `AsRef<Path>`) -> Result<Self, ModelPackError>
+    /// { ret snapshots byte length and modified time from the filesystem metadata }
+    fn from_path(path: impl AsRef<Path>) -> Result<Self, ModelPackError> {
+        let path = path.as_ref();
+        let metadata = fs::metadata(path).map_err(|source| ModelPackError::ReadModelFile {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let modified = metadata
+            .modified()
+            .map_err(|source| ModelPackError::ReadModelFile {
+                path: path.to_path_buf(),
+                source,
+            })?;
+
+        Ok(Self {
+            byte_len: ModelFileByteLen(metadata.len()),
+            modified_unix_nanos: ModelFileModifiedUnixNanos::from_system_time(path, modified)?,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ModelPackTrustedFile {
     path: ModelRelativePath,
     role: ModelFileRole,
     sha256: Sha256Digest,
-    byte_len: ModelFileByteLen,
+    metadata: ModelFileMetadataSnapshot,
 }
 
 impl ModelPackTrustedFile {
     /// { root/file came from a verified model pack }
     /// fn from_model_file(root: &Path, file: &ModelFile) -> Result<Self, ModelPackError>
-    /// { ret snapshots manifest identity plus current filesystem byte length }
+    /// { ret snapshots manifest identity plus current filesystem metadata }
     fn from_model_file(root: &Path, file: &ModelFile) -> Result<Self, ModelPackError> {
         let path = file.path().clone();
-        let byte_len = ModelFileByteLen::from_path(root.join(path.as_path()))?;
+        let metadata = ModelFileMetadataSnapshot::from_path(root.join(path.as_path()))?;
 
         Ok(Self {
             path,
             role: file.role(),
             sha256: file.sha256().clone(),
-            byte_len,
+            metadata,
         })
     }
 
@@ -837,18 +910,20 @@ impl ModelPackTrustedFile {
 
     /// { root is the model-pack root }
     /// fn verify_metadata(&self, root: &Path) -> Result<(), ModelPackError>
-    /// { ret is Ok only when the current file byte length matches the trust snapshot }
+    /// { ret is Ok only when the current file metadata matches the trust snapshot }
     fn verify_metadata(&self, root: &Path) -> Result<(), ModelPackError> {
         let path = root.join(self.path.as_path());
-        let actual = ModelFileByteLen::from_path(&path)?;
-        if actual == self.byte_len {
+        let actual = ModelFileMetadataSnapshot::from_path(&path)?;
+        if actual == self.metadata {
             return Ok(());
         }
 
         Err(ModelPackError::TrustFileMetadataMismatch {
             path,
-            expected: self.byte_len.value(),
-            actual: actual.value(),
+            expected_byte_len: self.metadata.byte_len.value(),
+            actual_byte_len: actual.byte_len.value(),
+            expected_modified_unix_nanos: self.metadata.modified_unix_nanos.value(),
+            actual_modified_unix_nanos: actual.modified_unix_nanos.value(),
         })
     }
 }
@@ -967,6 +1042,7 @@ struct RawTrustFile {
     kind: String,
     sha256: String,
     byte_len: u64,
+    modified_unix_nanos: u64,
 }
 
 #[derive(Serialize)]
@@ -982,6 +1058,7 @@ struct SerializableTrustFile<'a> {
     kind: &'static str,
     sha256: &'a str,
     byte_len: u64,
+    modified_unix_nanos: u64,
 }
 
 fn serializable_file(file: &ModelFile) -> SerializableModelFile<'_> {
@@ -997,7 +1074,8 @@ fn serializable_trust_file(file: &ModelPackTrustedFile) -> SerializableTrustFile
         path: file.path.to_string(),
         kind: file.role.as_str(),
         sha256: file.sha256.as_str(),
-        byte_len: file.byte_len.value(),
+        byte_len: file.metadata.byte_len.value(),
+        modified_unix_nanos: file.metadata.modified_unix_nanos.value(),
     }
 }
 
@@ -1029,7 +1107,10 @@ fn parse_trust_file(value: RawTrustFile) -> Result<ModelPackTrustedFile, ModelPa
         path: ModelRelativePath::new(value.path)?,
         role: ModelFileRole::new(value.kind)?,
         sha256: Sha256Digest::new(value.sha256)?,
-        byte_len: ModelFileByteLen(value.byte_len),
+        metadata: ModelFileMetadataSnapshot {
+            byte_len: ModelFileByteLen(value.byte_len),
+            modified_unix_nanos: ModelFileModifiedUnixNanos(value.modified_unix_nanos),
+        },
     })
 }
 
@@ -1415,6 +1496,24 @@ mod tests {
         let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
         pack.write_trust_file()?;
         fs::write(root.join("encoder.onnx"), "encoder changed\n")?;
+
+        let error = ModelPack::<Discovered>::discover(&root)?.verify_trusted();
+
+        assert!(matches!(
+            error,
+            Err(ModelPackError::TrustFileMetadataMismatch { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_pack_rejects_same_size_model_file_change() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_pack(&["en", "ru", "th", "vi", "ja"], ENCODER_SHA256)?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+        pack.write_trust_file()?;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::write(root.join("encoder.onnx"), "changed\n")?;
 
         let error = ModelPack::<Discovered>::discover(&root)?.verify_trusted();
 
