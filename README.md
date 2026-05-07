@@ -93,9 +93,10 @@ when present, computes SHA-256 values, and prints JSON to stdout.
 no-inference smoke command: it does not load ONNX Runtime sessions or execute
 decoder graphs.
 `model doctor` is the single local readiness gate for a pack: it runs facade
-planning, the shared FFI model-pack summary, deterministic mock FFI translation,
-and HF/ORT preflight status checks. In default builds, disabled tokenizer and
-runtime features are reported as diagnostic lines instead of command failures.
+planning, the Android startup ABI summary, the shared FFI model-pack summary,
+deterministic mock FFI translation, and HF/ORT preflight status checks. In
+default builds, disabled tokenizer and runtime features are reported as
+diagnostic lines instead of command failures.
 
 ## Facade Planning
 

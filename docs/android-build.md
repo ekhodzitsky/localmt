@@ -143,10 +143,10 @@ cargo run -p localmt --features ort-runtime -- ffi ort-smoke <pack-dir>
 host: ABI query, model-pack summary, mock translator open, mock translate,
 status-message lookup on errors, and handle close.
 `localmt model doctor` is the combined preflight gate before handing a pack to
-Android: facade planning, shared FFI summary, deterministic mock FFI
-translation, HF tokenizer status, and ORT runtime status. Default builds report
-disabled HF/ORT features as diagnostics, while feature builds use the compiled
-backends.
+Android: facade planning, startup ABI summary, shared FFI model-pack summary,
+deterministic mock FFI translation, HF tokenizer status, and ORT runtime status.
+Default builds report disabled HF/ORT features as diagnostics, while feature
+builds use the compiled backends.
 `localmt ffi hf-smoke` exercises the tokenizer-backed mock translator path
 through the same host-side FFI helpers; it requires `hf-tokenizers`, verifies
 `tokenizer.json` loading, and still keeps token generation mocked.

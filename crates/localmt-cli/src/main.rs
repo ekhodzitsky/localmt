@@ -362,13 +362,26 @@ fn doctor_model(path: String) -> Result<String, CliError> {
     })?;
     let source_id = ffi_language_id(Language::English)?;
     let target_id = ffi_language_id(Language::Russian)?;
+    let startup_status = doctor_ffi_startup()?;
     let mock_status = doctor_mock_translate(path_bytes, source_id, target_id)?;
     let hf_status = doctor_hf_mock_translate(path_bytes, source_id, target_id)?;
     let ort_status = doctor_ort_generator(path_bytes)?;
 
     Ok(format!(
-        "doctor: ok\nmodel_plan: ok\nffi_model_pack_summary: ok\nffi_mock_translate: {mock_status}\nffi_hf_mock_translate: {hf_status}\nffi_ort_generator: {ort_status}"
+        "doctor: ok\nmodel_plan: ok\nffi_startup: {startup_status}\nffi_model_pack_summary: ok\nffi_mock_translate: {mock_status}\nffi_hf_mock_translate: {hf_status}\nffi_ort_generator: {ort_status}"
     ))
+}
+
+/// { true }
+/// fn doctor_ffi_startup() -> Result<&'static str, CliError>
+/// { ret is Ok only when startup summary is readable UTF-8 through FFI }
+fn doctor_ffi_startup() -> Result<&'static str, CliError> {
+    let output = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_startup_summary(output_ptr, output_capacity, written_len)
+    })?;
+    let _summary = String::from_utf8(output).map_err(CliError::FfiOutputUtf8)?;
+
+    Ok("ok")
 }
 
 /// { path_bytes is a UTF-8 model-pack path and source_id/target_id form a valid FFI pair }
@@ -1097,6 +1110,7 @@ mod tests {
 
         assert!(output.contains("doctor: ok"));
         assert!(output.contains("model_plan: ok"));
+        assert!(output.contains("ffi_startup: ok"));
         assert!(output.contains("ffi_model_pack_summary: ok"));
         assert!(output.contains("ffi_mock_translate: ok"));
         assert!(output.contains("ffi_hf_mock_translate: tokenizer disabled"));
