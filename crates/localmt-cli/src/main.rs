@@ -396,9 +396,10 @@ fn doctor_model(path: String) -> Result<String, CliError> {
     let mock_status = doctor_mock_translate(path_bytes, source_id, target_id)?;
     let hf_status = doctor_hf_mock_translate(path_bytes, source_id, target_id)?;
     let ort_status = doctor_ort_generator(path_bytes)?;
+    let ort_translate_status = doctor_ort_translate(path_bytes, source_id, target_id)?;
 
     Ok(format!(
-        "doctor: ok\nmodel_plan: ok\nffi_startup: {startup_status}\nffi_model_pack_summary: ok\nffi_mock_translate: {mock_status}\nffi_hf_mock_translate: {hf_status}\nffi_ort_generator: {ort_status}"
+        "doctor: ok\nmodel_plan: ok\nffi_startup: {startup_status}\nffi_model_pack_summary: ok\nffi_mock_translate: {mock_status}\nffi_hf_mock_translate: {hf_status}\nffi_ort_generator: {ort_status}\nffi_ort_translate: {ort_translate_status}"
     ))
 }
 
@@ -501,6 +502,46 @@ fn doctor_ort_generator(path_bytes: &[u8]) -> Result<String, CliError> {
     }
     ffi_ok(status)?;
     localmt_ffi::localmt_ffi_ort_generator_close(generator);
+
+    Ok("ok".to_owned())
+}
+
+/// { path_bytes is a UTF-8 model-pack path and source_id/target_id form a valid FFI pair }
+/// fn doctor_ort_translate(path_bytes: &[u8], source_id: u8, target_id: u8) -> Result<String, CliError>
+/// { ret is Ok only when ORT FFI translation succeeds or required runtime features are disabled }
+fn doctor_ort_translate(
+    path_bytes: &[u8],
+    source_id: u8,
+    target_id: u8,
+) -> Result<String, CliError> {
+    let mut translator: *mut localmt_ffi::LocalmtFfiOrtTranslator = ptr::null_mut();
+    let status = localmt_ffi::localmt_ffi_ort_translator_open(
+        path_bytes.as_ptr(),
+        path_bytes.len(),
+        &mut translator,
+    );
+    if status == localmt_ffi::LOCALMT_FFI_TOKENIZER_DISABLED
+        || status == localmt_ffi::LOCALMT_FFI_RUNTIME_DISABLED
+    {
+        return Ok(ffi_status_text(status));
+    }
+    ffi_ok(status)?;
+
+    let input = DOCTOR_SMOKE_TEXT.as_bytes();
+    let translation = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_ort_translate(
+            translator,
+            source_id,
+            target_id,
+            input.as_ptr(),
+            input.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
+    });
+    localmt_ffi::localmt_ffi_ort_translator_close(translator);
+    let _translation = String::from_utf8(translation?).map_err(CliError::FfiOutputUtf8)?;
 
     Ok("ok".to_owned())
 }
@@ -1258,6 +1299,7 @@ mod tests {
         assert!(output.contains("ffi_mock_translate: ok"));
         assert!(output.contains("ffi_hf_mock_translate: tokenizer disabled"));
         assert!(output.contains("ffi_ort_generator: runtime disabled"));
+        assert!(output.contains("ffi_ort_translate: tokenizer disabled"));
         Ok(())
     }
 

@@ -101,9 +101,10 @@ generation: it requires both a valid `generation_config` and a valid `ort_io`
 contract, then prints the selected generation limit and tensor names.
 `model doctor` is the single local readiness gate for a pack: it runs facade
 planning, the Android startup ABI summary, the shared FFI model-pack summary,
-deterministic mock FFI translation, and HF/ORT preflight status checks. In
-default builds, disabled tokenizer and runtime features are reported as
-diagnostic lines instead of command failures.
+deterministic mock FFI translation, HF mock translation, ORT generator
+preflight, and the ORT translator FFI smoke path. In default builds, disabled
+tokenizer and runtime features are reported as diagnostic lines instead of
+command failures.
 
 ## Facade Planning
 
