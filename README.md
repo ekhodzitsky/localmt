@@ -4,17 +4,17 @@ Offline-first Rust translation library for high-end mobile devices.
 
 The first target profile is Xiaomi 17 on Android arm64-v8a. The library keeps
 translation API, language routing, and model-pack validation independent from
-the concrete inference backend. ONNX Runtime Mobile is the first intended real
-backend; the current workspace has a verified model-pack layer, a feature-gated
-Hugging Face tokenizer JSON loader, and a pipeline-backed mock translation path
-so API, asset-loading, and text/token contracts can be tested before real
-inference.
+the concrete inference backend. ONNX Runtime Mobile is the first real backend:
+feature-gated builds can load a Hugging Face `tokenizer.json`, open verified
+encoder/decoder ONNX sessions, and run offline translations through the same
+FFI buffer ABI intended for Android/JNI. Mock paths remain available for fast
+adapter and contract testing without loading large models.
 
 ## Workspace
 
 - `crates/localmt-core` - language, text, request, and invariant types
 - `crates/localmt-engine` - engine trait and mock engine
-- `crates/localmt-engine-ort` - ONNX Runtime session planning and gated loading
+- `crates/localmt-engine-ort` - ONNX Runtime planning, mobile session tuning, and generation
 - `crates/localmt-models` - model-pack manifest parsing and checksum verification
 - `crates/localmt-pipeline` - tokenizer/generator translation pipeline skeleton
 - `crates/localmt-tokenizer` - tokenizer trait, token invariants, mock tokenizer, and gated HF tokenizer
@@ -199,6 +199,13 @@ ORT translator open, first translation, total translation time, average
 translation time, and total command time.
 `localmt ffi ort-translate-bench-trusted` runs the same repeated-translation
 loop after trusted-pack planning and `localmt_ffi_ort_translator_open_trusted`.
+
+ORT sessions use a mobile CPU policy by default. If the loaded ONNX Runtime
+library advertises XNNPACK, localmt gives XNNPACK the operator threadpool and
+keeps ORT intra/inter-op pools at one thread to avoid CPU contention. If XNNPACK
+is absent, localmt falls back to a capped ORT CPU pool of up to four threads.
+The required encoder and decoder sessions are opened in parallel after ORT is
+initialized.
 
 ## Android FFI Boundary
 

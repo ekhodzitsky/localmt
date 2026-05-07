@@ -1,6 +1,6 @@
 //! ONNX Runtime adapter boundary for localmt.
 
-use core::fmt;
+use core::{fmt, num::NonZeroUsize};
 #[cfg(feature = "ort-runtime")]
 use std::ffi::OsString;
 use std::fs;
@@ -18,6 +18,7 @@ use serde::Deserialize;
 
 const ONNX_RUNTIME: &str = "onnx-runtime";
 const ORT_DYLIB_PATH_ENV: &str = "ORT_DYLIB_PATH";
+const ORT_THREAD_CAP: usize = 4;
 #[cfg(not(feature = "ort-runtime"))]
 const GENERATION_LOOP_UNIMPLEMENTED: &str = "ONNX token generation loop is not implemented";
 #[cfg(feature = "ort-runtime")]
@@ -1022,6 +1023,72 @@ pub enum OrtModelRole {
     DecoderWithPast,
 }
 
+/// Session-level CPU threading policy for ONNX Runtime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OrtSessionThreadingPolicy {
+    ort_intra_threads: usize,
+    ort_inter_threads: usize,
+    xnnpack_threads: Option<NonZeroUsize>,
+}
+
+impl OrtSessionThreadingPolicy {
+    /// { available_parallelism is the runtime CPU parallelism hint and xnnpack_available reflects ORT EP availability }
+    /// fn for_available_parallelism(available_parallelism: usize, xnnpack_available: bool) -> Self
+    /// { ret uses XNNPACK's threadpool when available and otherwise caps ORT CPU threads for mobile latency }
+    pub fn for_available_parallelism(
+        available_parallelism: usize,
+        xnnpack_available: bool,
+    ) -> Self {
+        let runtime_threads = capped_ort_threads(available_parallelism);
+        if xnnpack_available {
+            return Self {
+                ort_intra_threads: 1,
+                ort_inter_threads: 1,
+                xnnpack_threads: NonZeroUsize::new(runtime_threads),
+            };
+        }
+
+        Self {
+            ort_intra_threads: runtime_threads,
+            ort_inter_threads: 1,
+            xnnpack_threads: None,
+        }
+    }
+
+    /// { true }
+    /// fn ort_intra_threads(&self) -> usize
+    /// { ret is the ORT intra-op thread count configured on every session }
+    pub const fn ort_intra_threads(&self) -> usize {
+        self.ort_intra_threads
+    }
+
+    /// { true }
+    /// fn ort_inter_threads(&self) -> usize
+    /// { ret is the ORT inter-op thread count configured on every session }
+    pub const fn ort_inter_threads(&self) -> usize {
+        self.ort_inter_threads
+    }
+
+    /// { true }
+    /// fn xnnpack_threads(&self) -> `Option<NonZeroUsize>`
+    /// { ret is Some only when XNNPACK should own the operator threadpool }
+    pub const fn xnnpack_threads(&self) -> Option<NonZeroUsize> {
+        self.xnnpack_threads
+    }
+
+    #[cfg(feature = "ort-runtime")]
+    fn for_current_runtime() -> Self {
+        Self::for_available_parallelism(available_parallelism(), xnnpack_is_available())
+    }
+}
+
+/// { available_parallelism is a process CPU parallelism hint }
+/// fn capped_ort_threads(available_parallelism: usize) -> usize
+/// { ret is in 1..=ORT_THREAD_CAP }
+fn capped_ort_threads(available_parallelism: usize) -> usize {
+    available_parallelism.clamp(1, ORT_THREAD_CAP)
+}
+
 impl OrtModelRole {
     /// { true }
     /// fn as_str(self) -> &'static str
@@ -1278,6 +1345,8 @@ pub enum OrtEngineError {
     },
     /// A mutable ORT session lock was poisoned.
     OrtSessionLock(OrtModelRole),
+    /// Parallel ORT session loading failed while joining a load thread.
+    OrtSessionLoadThread(OrtModelRole),
     /// Crate was compiled without the `ort-runtime` feature.
     OrtRuntimeFeatureDisabled,
     /// Dynamic ONNX Runtime loading requires an explicit dylib path.
@@ -1315,6 +1384,9 @@ impl fmt::Display for OrtEngineError {
                 "ORT output {output} has invalid shape dimension {dimension}"
             ),
             Self::OrtSessionLock(role) => write!(formatter, "ORT session lock poisoned: {role}"),
+            Self::OrtSessionLoadThread(role) => {
+                write!(formatter, "ORT session load thread failed: {role}")
+            }
             Self::OrtRuntimeFeatureDisabled => {
                 formatter.write_str("ort-runtime feature is not enabled")
             }
@@ -1451,8 +1523,7 @@ impl OrtTokenGenerator {
     /// { ret is Ok only when ONNX Runtime loads required generator sessions }
     pub fn load(plan: OrtGeneratorPlan) -> Result<Self, OrtEngineError> {
         let runtime_config = plan.parse_runtime_config()?;
-        let encoder = OrtEngineSlot::new(OrtEngine::load(plan.encoder().clone())?);
-        let decoder = OrtEngineSlot::new(OrtEngine::load(plan.decoder().clone())?);
+        let (encoder, decoder) = load_required_generator_sessions(&plan)?;
         let decoder_with_past = plan
             .decoder_with_past()
             .cloned()
@@ -1614,11 +1685,16 @@ impl OrtEngine {
     /// { ret is Ok only when ONNX Runtime creates a session from plan.model_path() }
     pub fn load(plan: OrtSessionPlan) -> Result<Self, OrtEngineError> {
         prepare_ort_runtime()?;
+        let policy = OrtSessionThreadingPolicy::for_current_runtime();
 
-        let session = ort::session::Session::builder()
-            .map_err(|source| OrtEngineError::Ort(source.to_string()))?
-            .commit_from_file(plan.model_path())
-            .map_err(|source| OrtEngineError::Ort(source.to_string()))?;
+        Self::load_after_runtime_prepared(plan, policy)
+    }
+
+    fn load_after_runtime_prepared(
+        plan: OrtSessionPlan,
+        policy: OrtSessionThreadingPolicy,
+    ) -> Result<Self, OrtEngineError> {
+        let session = load_ort_session(plan.model_path(), policy)?;
 
         Ok(Self { plan, session })
     }
@@ -1702,6 +1778,77 @@ impl OrtEngine {
     }
 }
 
+/// { plan was built from a verified ONNX Runtime model pack }
+/// fn load_required_generator_sessions(plan: &OrtGeneratorPlan) -> Result<(OrtEngineSlot, OrtEngineSlot), OrtEngineError>
+/// { ret is Ok only when required encoder and decoder ORT sessions load successfully }
+#[cfg(feature = "ort-runtime")]
+fn load_required_generator_sessions(
+    plan: &OrtGeneratorPlan,
+) -> Result<(OrtEngineSlot, OrtEngineSlot), OrtEngineError> {
+    prepare_ort_runtime()?;
+    let policy = OrtSessionThreadingPolicy::for_current_runtime();
+
+    let encoder_plan = plan.encoder().clone();
+    let decoder_plan = plan.decoder().clone();
+
+    std::thread::scope(|scope| {
+        let encoder_thread =
+            scope.spawn(move || OrtEngine::load_after_runtime_prepared(encoder_plan, policy));
+        let decoder_thread =
+            scope.spawn(move || OrtEngine::load_after_runtime_prepared(decoder_plan, policy));
+
+        let encoder = join_ort_session_load(encoder_thread, OrtModelRole::Encoder);
+        let decoder = join_ort_session_load(decoder_thread, OrtModelRole::Decoder);
+
+        Ok((encoder?, decoder?))
+    })
+}
+
+/// { thread is a scoped ORT session load handle }
+/// fn join_ort_session_load(thread: ScopedJoinHandle<Result<OrtEngine, OrtEngineError>>, role: OrtModelRole) -> Result<OrtEngineSlot, OrtEngineError>
+/// { ret is Ok only when the load thread joined and produced a loaded session }
+#[cfg(feature = "ort-runtime")]
+fn join_ort_session_load(
+    thread: std::thread::ScopedJoinHandle<'_, Result<OrtEngine, OrtEngineError>>,
+    role: OrtModelRole,
+) -> Result<OrtEngineSlot, OrtEngineError> {
+    thread
+        .join()
+        .map_err(|_error| OrtEngineError::OrtSessionLoadThread(role))?
+        .map(OrtEngineSlot::new)
+}
+
+/// { ONNX Runtime dynamic library was initialized and model_path points to an ONNX graph }
+/// fn load_ort_session(model_path: &Path, policy: OrtSessionThreadingPolicy) -> Result<ort::session::Session, OrtEngineError>
+/// { ret is Ok only when ORT creates a session with the localmt mobile CPU policy }
+#[cfg(feature = "ort-runtime")]
+fn load_ort_session(
+    model_path: &Path,
+    policy: OrtSessionThreadingPolicy,
+) -> Result<ort::session::Session, OrtEngineError> {
+    let mut builder = ort::session::Session::builder()
+        .map_err(|source| OrtEngineError::Ort(source.to_string()))?
+        .with_inter_threads(policy.ort_inter_threads())
+        .map_err(|source| OrtEngineError::Ort(source.to_string()))?
+        .with_intra_threads(policy.ort_intra_threads())
+        .map_err(|source| OrtEngineError::Ort(source.to_string()))?
+        .with_intra_op_spinning(false)
+        .map_err(|source| OrtEngineError::Ort(source.to_string()))?;
+
+    if let Some(threads) = policy.xnnpack_threads() {
+        builder = builder
+            .with_execution_providers([ort::ep::XNNPACK::default()
+                .with_intra_op_num_threads(threads)
+                .build()
+                .fail_silently()])
+            .map_err(|source| OrtEngineError::Ort(source.to_string()))?;
+    }
+
+    builder
+        .commit_from_file(model_path)
+        .map_err(|source| OrtEngineError::Ort(source.to_string()))
+}
+
 /// { ORT_DYLIB_PATH may or may not be set in the process environment }
 /// fn prepare_ort_runtime() -> Result<(), OrtEngineError>
 /// { ret is Ok only when ONNX Runtime dynamic loading has an explicit dylib path }
@@ -1717,6 +1864,24 @@ fn prepare_ort_runtime() -> Result<(), OrtEngineError> {
     let _ = builder.commit();
 
     Ok(())
+}
+
+/// { true }
+/// fn available_parallelism() -> usize
+/// { ret is the process CPU parallelism hint, or 1 when the platform cannot report it }
+#[cfg(feature = "ort-runtime")]
+fn available_parallelism() -> usize {
+    std::thread::available_parallelism().map_or(1, NonZeroUsize::get)
+}
+
+/// { ONNX Runtime dynamic library was initialized }
+/// fn xnnpack_is_available() -> bool
+/// { ret is true only when the loaded ORT runtime advertises the XNNPACK execution provider }
+#[cfg(feature = "ort-runtime")]
+fn xnnpack_is_available() -> bool {
+    use ort::ep::ExecutionProvider;
+
+    ort::ep::XNNPACK::default().is_available().unwrap_or(false)
 }
 
 /// { ORT runtime path may be configured through FFI or ORT_DYLIB_PATH }
@@ -1820,7 +1985,7 @@ mod tests {
         OrtGenerationStateError, OrtGenerationStep, OrtGenerationStepError,
         OrtGenerationTensorInputs, OrtGeneratorPlan, OrtIoConfig, OrtIoConfigError,
         OrtIoConfigParseError, OrtModelRole, OrtNextTokenSelectionError, OrtNextTokenSelector,
-        OrtSessionPlan,
+        OrtSessionPlan, OrtSessionThreadingPolicy,
     };
     #[cfg(not(feature = "ort-runtime"))]
     use crate::{OrtEngine, OrtTokenGenerator};
@@ -1886,6 +2051,43 @@ mod tests {
     const TOKENIZER_SHA256: &str =
         "38395078aa8c0af1657b8fc788f358d57e5f5fea99c8cdc004198e3c6fffbe71";
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn session_threading_policy_uses_xnnpack_pool_when_available() {
+        let policy = OrtSessionThreadingPolicy::for_available_parallelism(8, true);
+
+        assert_eq!(policy.ort_intra_threads(), 1);
+        assert_eq!(policy.ort_inter_threads(), 1);
+        assert_eq!(
+            policy.xnnpack_threads().map(core::num::NonZeroUsize::get),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn session_threading_policy_uses_capped_cpu_pool_without_xnnpack() {
+        let policy = OrtSessionThreadingPolicy::for_available_parallelism(8, false);
+
+        assert_eq!(policy.ort_intra_threads(), 4);
+        assert_eq!(policy.ort_inter_threads(), 1);
+        assert_eq!(policy.xnnpack_threads(), None);
+    }
+
+    #[test]
+    fn session_threading_policy_keeps_at_least_one_thread() {
+        let policy = OrtSessionThreadingPolicy::for_available_parallelism(0, false);
+
+        assert_eq!(policy.ort_intra_threads(), 1);
+        assert_eq!(policy.ort_inter_threads(), 1);
+        assert_eq!(policy.xnnpack_threads(), None);
+    }
+
+    #[test]
+    fn ort_engine_error_reports_session_load_thread_role() {
+        let error = OrtEngineError::OrtSessionLoadThread(OrtModelRole::Decoder);
+
+        assert_eq!(error.to_string(), "ORT session load thread failed: decoder");
+    }
 
     #[test]
     fn next_token_selector_selects_highest_logit() -> Result<(), Box<dyn std::error::Error>> {

@@ -72,7 +72,11 @@ This enables ONNX Runtime session loading boundaries. The current generator
 loads encoder/decoder sessions and runs the non-cached decoder loop when paired
 with tokenizer output. If this feature is used in an Android app, the app build
 must also package the matching ONNX Runtime Mobile library expected by the
-runtime loader.
+runtime loader. At session-open time, localmt detects whether that runtime
+advertises XNNPACK. When XNNPACK is available, localmt lets XNNPACK own the
+operator threadpool and pins ORT intra/inter-op pools to one thread to reduce
+mobile CPU contention. When XNNPACK is absent, localmt uses a capped ORT CPU
+pool of up to four threads.
 
 Full translator builds:
 
@@ -130,6 +134,9 @@ absolute `nativeLibraryDir/libonnxruntime.so` path before opening the generator
 or translator. `ORT_DYLIB_PATH` remains a CLI/development fallback. Missing or
 invalid paths return `LOCALMT_FFI_RUNTIME_NOT_CONFIGURED` instead of relying on
 platform dynamic-library search.
+After ORT is initialized, the required encoder and decoder sessions open in
+parallel. This reduces hot trusted translator open latency without changing the
+FFI contract or the generated token sequence.
 
 The ORT translator flow is:
 
