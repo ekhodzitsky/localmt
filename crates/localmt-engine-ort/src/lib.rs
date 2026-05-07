@@ -480,6 +480,70 @@ impl OrtGenerationState {
     }
 }
 
+/// Next-token selection error for decoder logits.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OrtNextTokenSelectionError {
+    /// Decoder output did not contain any vocabulary logits.
+    EmptyLogits,
+    /// A decoder logit was NaN or infinite.
+    NonFiniteLogit {
+        /// Position of the invalid logit.
+        index: usize,
+    },
+    /// Selected vocabulary index cannot fit the token-id type.
+    VocabularyIndexTooLarge {
+        /// Selected vocabulary index.
+        index: usize,
+    },
+}
+
+impl fmt::Display for OrtNextTokenSelectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyLogits => formatter.write_str("decoder logits must not be empty"),
+            Self::NonFiniteLogit { index } => {
+                write!(formatter, "decoder logit at index {index} is not finite")
+            }
+            Self::VocabularyIndexTooLarge { index } => {
+                write!(formatter, "vocabulary index {index} does not fit token id")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OrtNextTokenSelectionError {}
+
+/// Deterministic next-token selector for decoder logits.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OrtNextTokenSelector;
+
+impl OrtNextTokenSelector {
+    /// { logits is one decoder vocabulary score row }
+    /// fn select_argmax(logits: &[f32]) -> Result<TokenId, OrtNextTokenSelectionError>
+    /// { ret is the first token id with the highest finite score }
+    pub fn select_argmax(logits: &[f32]) -> Result<TokenId, OrtNextTokenSelectionError> {
+        let mut best_index = None;
+        let mut best_score = f32::NEG_INFINITY;
+
+        for (index, score) in logits.iter().copied().enumerate() {
+            if !score.is_finite() {
+                return Err(OrtNextTokenSelectionError::NonFiniteLogit { index });
+            }
+
+            if best_index.is_none() || score > best_score {
+                best_index = Some(index);
+                best_score = score;
+            }
+        }
+
+        let index = best_index.ok_or(OrtNextTokenSelectionError::EmptyLogits)?;
+        let token_id = u32::try_from(index)
+            .map_err(|_error| OrtNextTokenSelectionError::VocabularyIndexTooLarge { index })?;
+
+        Ok(TokenId::new(token_id))
+    }
+}
+
 #[derive(Deserialize)]
 struct RawOrtIoConfigEnvelope {
     ort_io: Option<RawOrtIoConfig>,
@@ -1021,7 +1085,7 @@ mod tests {
     use crate::{OrtEngine, OrtTokenGenerator};
     use crate::{
         OrtEngineError, OrtGeneratorPlan, OrtIoConfig, OrtIoConfigError, OrtIoConfigParseError,
-        OrtModelRole, OrtSessionPlan,
+        OrtModelRole, OrtNextTokenSelectionError, OrtNextTokenSelector, OrtSessionPlan,
     };
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
@@ -1085,6 +1149,42 @@ mod tests {
     const TOKENIZER_SHA256: &str =
         "38395078aa8c0af1657b8fc788f358d57e5f5fea99c8cdc004198e3c6fffbe71";
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn next_token_selector_selects_highest_logit() -> Result<(), Box<dyn std::error::Error>> {
+        let token = OrtNextTokenSelector::select_argmax(&[0.1, 2.5, 1.3])?;
+
+        assert_eq!(token, TokenId::new(1));
+        Ok(())
+    }
+
+    #[test]
+    fn next_token_selector_keeps_first_index_on_tie() -> Result<(), Box<dyn std::error::Error>> {
+        let token = OrtNextTokenSelector::select_argmax(&[2.0, 2.0, 1.0])?;
+
+        assert_eq!(token, TokenId::new(0));
+        Ok(())
+    }
+
+    #[test]
+    fn next_token_selector_rejects_empty_logits() {
+        let token = OrtNextTokenSelector::select_argmax(&[]);
+
+        assert!(matches!(
+            token,
+            Err(OrtNextTokenSelectionError::EmptyLogits)
+        ));
+    }
+
+    #[test]
+    fn next_token_selector_rejects_non_finite_logits() {
+        let token = OrtNextTokenSelector::select_argmax(&[1.0, f32::NAN]);
+
+        assert!(matches!(
+            token,
+            Err(OrtNextTokenSelectionError::NonFiniteLogit { index: 1 })
+        ));
+    }
 
     #[test]
     fn session_plan_selects_encoder_file_from_verified_pack()

@@ -273,6 +273,10 @@ session execution is wired.
 those inputs: it appends accepted token ids, extends decoder input ids, and
 marks the loop finished on EOS or the max-new-token limit. Logits selection and
 real ORT tensor binding remain separate future steps.
+`OrtNextTokenSelector::select_argmax` handles the first logits-selection policy:
+it rejects empty or non-finite logits, chooses the highest vocabulary index as a
+`TokenId`, and keeps the first index on ties. Real ORT tensor binding still
+remains the next execution step.
 
 Accepted local `config.json` fragment for ORT I/O:
 
