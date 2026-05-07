@@ -26,6 +26,7 @@ adapter and contract testing without loading large models.
 ## Docs
 
 - `docs/android-build.md` - Android/JNI build notes, feature flags, and FFI call flow
+- `docs/performance.md` - real-model latency baselines and bottleneck notes
 
 ## Model Packs
 
