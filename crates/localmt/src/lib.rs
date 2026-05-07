@@ -10,9 +10,9 @@ pub use localmt_core::{
 };
 pub use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
 pub use localmt_engine_ort::{
-    OrtEngine, OrtEngineError, OrtGenerationInputs, OrtGeneratorPlan, OrtGeneratorRuntimeConfig,
-    OrtIoConfig, OrtIoConfigError, OrtIoConfigParseError, OrtModelRole, OrtSessionPlan,
-    OrtTokenGenerator,
+    OrtEngine, OrtEngineError, OrtGenerationInputs, OrtGenerationState, OrtGenerationStateError,
+    OrtGeneratorPlan, OrtGeneratorRuntimeConfig, OrtIoConfig, OrtIoConfigError,
+    OrtIoConfigParseError, OrtModelRole, OrtSessionPlan, OrtTokenGenerator,
 };
 pub use localmt_models::{
     Discovered, ModelArchitecture, ModelFile, ModelFileKind, ModelFileRole, ModelId, ModelLicense,
@@ -525,9 +525,9 @@ mod tests {
         Discovered, GenerationConfig, GenerationSpecialTokens, Language, LanguagePair,
         LanguageTokenIds, MaxNewTokens, MockEngine, MockOfflineTranslator, ModelFileRole,
         ModelPack, NonEmptyText, OfflineTranslatorAssets, OfflineTranslatorPlan,
-        OfflineTranslatorPlanError, OrtEngineError, OrtGenerationInputs, OrtIoConfigStatus,
-        OrtModelRole, TokenGeneratorError, TokenId, TokenSequence, TokenizerError, TokenizerOutput,
-        TranslateRequest, Translator,
+        OfflineTranslatorPlanError, OrtEngineError, OrtGenerationInputs, OrtGenerationState,
+        OrtGenerationStateError, OrtIoConfigStatus, OrtModelRole, TokenGeneratorError, TokenId,
+        TokenSequence, TokenizerError, TokenizerOutput, TranslateRequest, Translator,
     };
     #[cfg(feature = "hf-tokenizers")]
     use super::{HfMockOfflineTranslator, HfMockOfflineTranslatorError, Sha256Digest};
@@ -1074,6 +1074,74 @@ mod tests {
         assert_eq!(inputs.encoder_input_ids(), &[42, 7, 42]);
         assert_eq!(inputs.encoder_attention_mask(), &[1, 1, 1]);
         assert_eq!(inputs.decoder_input_ids(), &[11]);
+        Ok(())
+    }
+
+    #[test]
+    fn generation_state_appends_tokens_until_eos() -> Result<(), Box<dyn std::error::Error>> {
+        let pair = LanguagePair::new(Language::English, Language::Japanese)?;
+        let tokens = TokenSequence::new(vec![TokenId::new(7), TokenId::new(8)])?;
+        let input = TokenizerOutput::new(pair, tokens);
+        let inputs =
+            OrtGenerationInputs::from_tokenizer_output(&input, generation_config_with_limit(3)?);
+        let mut state = OrtGenerationState::new(inputs);
+
+        assert_eq!(state.decoder_input_ids(), &[14]);
+        assert!(!state.is_finished());
+        assert_eq!(state.accept_next_token(TokenId::new(21)), Ok(()));
+        assert_eq!(state.accept_next_token(TokenId::new(1)), Ok(()));
+
+        assert_eq!(state.decoder_input_ids(), &[14, 21, 1]);
+        assert_eq!(
+            state.generated_token_ids(),
+            &[TokenId::new(21), TokenId::new(1)]
+        );
+        assert!(state.is_finished());
+        Ok(())
+    }
+
+    #[test]
+    fn generation_state_stops_at_max_new_tokens() -> Result<(), Box<dyn std::error::Error>> {
+        let pair = LanguagePair::new(Language::English, Language::Russian)?;
+        let tokens = TokenSequence::new(vec![TokenId::new(42)])?;
+        let input = TokenizerOutput::new(pair, tokens);
+        let inputs =
+            OrtGenerationInputs::from_tokenizer_output(&input, generation_config_with_limit(2)?);
+        let mut state = OrtGenerationState::new(inputs);
+
+        assert_eq!(state.accept_next_token(TokenId::new(21)), Ok(()));
+        assert!(!state.is_finished());
+        assert_eq!(state.accept_next_token(TokenId::new(22)), Ok(()));
+
+        assert_eq!(state.decoder_input_ids(), &[11, 21, 22]);
+        assert_eq!(
+            state.generated_token_ids(),
+            &[TokenId::new(21), TokenId::new(22)]
+        );
+        assert!(state.is_finished());
+        Ok(())
+    }
+
+    #[test]
+    fn generation_state_rejects_tokens_after_finish() -> Result<(), Box<dyn std::error::Error>> {
+        let pair = LanguagePair::new(Language::English, Language::Russian)?;
+        let tokens = TokenSequence::new(vec![TokenId::new(42)])?;
+        let input = TokenizerOutput::new(pair, tokens);
+        let inputs =
+            OrtGenerationInputs::from_tokenizer_output(&input, generation_config_with_limit(1)?);
+        let mut state = OrtGenerationState::new(inputs);
+
+        assert_eq!(state.accept_next_token(TokenId::new(21)), Ok(()));
+        let before_decoder = state.decoder_input_ids().to_vec();
+        let before_generated = state.generated_token_ids().to_vec();
+
+        assert_eq!(
+            state.accept_next_token(TokenId::new(22)),
+            Err(OrtGenerationStateError::AlreadyFinished)
+        );
+        assert_eq!(state.decoder_input_ids(), before_decoder);
+        assert_eq!(state.generated_token_ids(), before_generated);
+        assert!(state.is_finished());
         Ok(())
     }
 

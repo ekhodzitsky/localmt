@@ -269,6 +269,10 @@ the encoder attention mask, seeds decoder input ids with the configured target
 language token, and carries `max_new_tokens` plus EOS. `OrtTokenGenerator`
 still returns the explicit unavailable-backend error until ORT encoder/decoder
 session execution is wired.
+`OrtGenerationState` now owns the deterministic decoder-loop state on top of
+those inputs: it appends accepted token ids, extends decoder input ids, and
+marks the loop finished on EOS or the max-new-token limit. Logits selection and
+real ORT tensor binding remain separate future steps.
 
 Accepted local `config.json` fragment for ORT I/O:
 

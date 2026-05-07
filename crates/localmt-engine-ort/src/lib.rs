@@ -9,7 +9,7 @@ use localmt_pipeline::{
     GenerationConfig, GenerationConfigParseError, GeneratorAssetPlan, TokenGenerator,
     TokenGeneratorError,
 };
-use localmt_tokenizer::{TokenSequence, TokenizerOutput};
+use localmt_tokenizer::{TokenId, TokenSequence, TokenizerOutput};
 use serde::Deserialize;
 
 const ONNX_RUNTIME: &str = "onnx-runtime";
@@ -396,6 +396,88 @@ fn token_sequence_to_i64(tokens: &TokenSequence) -> Vec<i64> {
         .iter()
         .map(|token| i64::from(token.value()))
         .collect()
+}
+
+/// Decoder-loop state error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OrtGenerationStateError {
+    /// The decoder loop already reached EOS or the max-new-token limit.
+    AlreadyFinished,
+}
+
+impl fmt::Display for OrtGenerationStateError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadyFinished => {
+                formatter.write_str("ORT generation state is already finished")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OrtGenerationStateError {}
+
+/// Deterministic decoder-loop state before ORT execution is wired.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrtGenerationState {
+    decoder_input_ids: Vec<i64>,
+    generated_token_ids: Vec<TokenId>,
+    max_new_tokens: usize,
+    eos_token_id: i64,
+    finished: bool,
+}
+
+impl OrtGenerationState {
+    /// { inputs were prepared from tokenizer output and generation config }
+    /// fn new(inputs: OrtGenerationInputs) -> Self
+    /// { ret starts a decoder loop with the configured decoder seed }
+    pub fn new(inputs: OrtGenerationInputs) -> Self {
+        Self {
+            decoder_input_ids: inputs.decoder_input_ids,
+            generated_token_ids: Vec::new(),
+            max_new_tokens: inputs.max_new_tokens,
+            eos_token_id: inputs.eos_token_id,
+            finished: false,
+        }
+    }
+
+    /// { true }
+    /// fn decoder_input_ids(&self) -> &[i64]
+    /// { ret is the decoder seed followed by accepted generated token ids }
+    pub fn decoder_input_ids(&self) -> &[i64] {
+        &self.decoder_input_ids
+    }
+
+    /// { true }
+    /// fn generated_token_ids(&self) -> &[TokenId]
+    /// { ret is the accepted generated target token ids }
+    pub fn generated_token_ids(&self) -> &[TokenId] {
+        &self.generated_token_ids
+    }
+
+    /// { true }
+    /// fn is_finished(&self) -> bool
+    /// { ret is true only after EOS or max-new-token limit has been reached }
+    pub const fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    /// { token is the next selected decoder token }
+    /// fn accept_next_token(&mut self, token: TokenId) -> Result<(), OrtGenerationStateError>
+    /// { ret is Ok only when token was appended to unfinished state }
+    pub fn accept_next_token(&mut self, token: TokenId) -> Result<(), OrtGenerationStateError> {
+        if self.finished {
+            return Err(OrtGenerationStateError::AlreadyFinished);
+        }
+
+        let token_id = i64::from(token.value());
+        self.generated_token_ids.push(token);
+        self.decoder_input_ids.push(token_id);
+        self.finished =
+            token_id == self.eos_token_id || self.generated_token_ids.len() >= self.max_new_tokens;
+
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
