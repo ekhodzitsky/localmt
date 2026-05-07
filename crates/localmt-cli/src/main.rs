@@ -1700,8 +1700,14 @@ mod tests {
         let output = run(args.into_iter())?;
 
         assert!(output.contains("#ifndef LOCALMT_FFI_H"));
-        assert!(output.contains("#define LOCALMT_FFI_ABI_VERSION 13"));
-        assert!(output.contains("#define LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION 1"));
+        assert_eq!(
+            header_define_value(&output, "LOCALMT_FFI_ABI_VERSION"),
+            Some(localmt_ffi::LOCALMT_FFI_ABI_VERSION.to_string())
+        );
+        assert_eq!(
+            header_define_value(&output, "LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION"),
+            Some(localmt_ffi::LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION.to_string())
+        );
         assert!(output.contains("uint16_t localmt_ffi_model_pack_trust_schema_version(void);"));
         assert!(output.contains("int32_t localmt_ffi_ort_runtime_configure("));
         assert!(output.contains("int32_t localmt_ffi_model_pack_summary("));
@@ -2198,6 +2204,17 @@ mod tests {
         assert!(output.contains("localmt bench --profile xiaomi17 --model-pack PACK"));
         assert!(output.contains("runtime: mock-pipeline"));
         Ok(())
+    }
+
+    fn header_define_value(header: &str, name: &str) -> Option<String> {
+        let prefix = format!("#define {name} ");
+
+        header.lines().find_map(|line| {
+            line.strip_prefix(&prefix)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
     }
 
     fn create_pack() -> Result<PathBuf, Box<dyn std::error::Error>> {
