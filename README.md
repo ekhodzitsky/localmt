@@ -289,10 +289,9 @@ mutable ORT session access behind the shared `TokenGenerator::generate(&self)`
 API, so the pipeline trait can stay stable while real session execution is
 wired incrementally.
 With `ort-runtime`, `OrtTokenGenerator::generate` now prepares generation
-inputs, runs the encoder stage, and then stops at the explicit
-`ONNX decoder generation loop is not implemented` boundary. Default builds keep
-the immediate unavailable-backend response because they intentionally do not
-link or load ONNX Runtime.
+inputs, runs the encoder stage, and drives the non-cached decoder loop until EOS
+or the max-new-token limit. Default builds keep the immediate unavailable-backend
+response because they intentionally do not link or load ONNX Runtime.
 `OrtEngine::run_decoder` is available for the non-cached decoder graph: it binds
 decoder input ids, encoder attention mask, and encoder hidden states, then
 copies the named decoder logits output. Cached decoder-with-past execution
@@ -309,9 +308,9 @@ tensors from the growing state while keeping encoder input ids and attention
 mask anchored to the original generation inputs.
 `OrtNextTokenSelector::select_argmax` handles the first logits-selection policy:
 it rejects empty or non-finite logits, chooses the highest vocabulary index as a
-`TokenId`, and keeps the first index on ties. Repeatedly feeding updated
-decoder ids through ORT decoder execution and detokenizing real model output
-remain the next runtime steps.
+`TokenId`, and keeps the first index on ties. Cached decoder-with-past,
+real-model runtime validation, and detokenizing real model output remain the
+next runtime steps.
 
 Accepted local `config.json` fragment for ORT I/O:
 

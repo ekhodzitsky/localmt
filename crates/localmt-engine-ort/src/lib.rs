@@ -15,8 +15,6 @@ use serde::Deserialize;
 const ONNX_RUNTIME: &str = "onnx-runtime";
 #[cfg(not(feature = "ort-runtime"))]
 const GENERATION_LOOP_UNIMPLEMENTED: &str = "ONNX token generation loop is not implemented";
-#[cfg(feature = "ort-runtime")]
-const DECODER_LOOP_UNIMPLEMENTED: &str = "ONNX decoder generation loop is not implemented";
 
 /// Typed ONNX tensor names required by the ORT generation loop.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -794,6 +792,68 @@ impl OrtGenerationStep {
     }
 }
 
+/// ORT decoder loop error.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OrtGenerationLoopError {
+    /// Decoder execution failed.
+    Decoder(String),
+    /// Decoder output could not be applied to generation state.
+    Step(OrtGenerationStepError),
+    /// Generated token ids could not be converted into a bounded sequence.
+    InvalidGeneratedTokens(String),
+}
+
+impl fmt::Display for OrtGenerationLoopError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decoder(reason) => write!(formatter, "ORT decoder execution failed: {reason}"),
+            Self::Step(error) => write!(formatter, "ORT generation step failed: {error}"),
+            Self::InvalidGeneratedTokens(reason) => {
+                write!(formatter, "invalid ORT generated tokens: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OrtGenerationLoopError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Step(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Non-cached ORT decoder-loop driver.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OrtGenerationLoop;
+
+impl OrtGenerationLoop {
+    /// { inputs contains validated generation vectors and decode_next runs one decoder step }
+    /// fn run_non_cached(inputs: &OrtGenerationInputs, decode_next: F) -> Result<TokenSequence, OrtGenerationLoopError>
+    /// { ret is Ok only when decoder steps produce a non-empty bounded generated-token sequence }
+    pub fn run_non_cached<F>(
+        inputs: &OrtGenerationInputs,
+        mut decode_next: F,
+    ) -> Result<TokenSequence, OrtGenerationLoopError>
+    where
+        F: FnMut(
+            &OrtGenerationTensorInputs,
+        ) -> Result<OrtFloatTensorOutput, OrtGenerationLoopError>,
+    {
+        let mut state = OrtGenerationState::new(inputs.clone());
+        while !state.is_finished() {
+            let tensor_inputs = OrtGenerationTensorInputs::from_generation_state(inputs, &state);
+            let output = decode_next(&tensor_inputs)?;
+            OrtGenerationStep::accept_decoder_output(&mut state, &output)
+                .map_err(OrtGenerationLoopError::Step)?;
+        }
+
+        TokenSequence::new(state.generated_token_ids().to_vec())
+            .map_err(|error| OrtGenerationLoopError::InvalidGeneratedTokens(error.to_string()))
+    }
+}
+
 /// Next-token selection error for decoder logits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OrtNextTokenSelectionError {
@@ -1428,17 +1488,45 @@ impl TokenGenerator for OrtTokenGenerator {
 impl TokenGenerator for OrtTokenGenerator {
     /// { input contains validated source tokens and target language }
     /// fn generate(&self, input: &TokenizerOutput) -> Result<TokenSequence, TokenGeneratorError>
-    /// { ret is Err until ONNX decoder token generation is implemented }
+    /// { ret is Ok only when ORT encoder and non-cached decoder execution produce generated tokens }
     fn generate(&self, input: &TokenizerOutput) -> Result<TokenSequence, TokenGeneratorError> {
-        let _encoder_output = self.run_encoder_for_input(input).map_err(|error| {
+        let generation_inputs = OrtGenerationInputs::from_tokenizer_output(
+            input,
+            self.runtime_config.generation_config(),
+        );
+        let encoder_output = self.run_encoder_for_input(input).map_err(|error| {
             TokenGeneratorError::BackendUnavailable(format!(
                 "ORT encoder execution failed: {error}"
             ))
         })?;
+        let decoder_names = self.runtime_config.ort_io_config().decoder();
 
-        Err(TokenGeneratorError::BackendUnavailable(
-            DECODER_LOOP_UNIMPLEMENTED.to_owned(),
-        ))
+        OrtGenerationLoop::run_non_cached(&generation_inputs, |tensor_inputs| {
+            self.decoder
+                .with_mut(|engine| {
+                    engine.run_decoder(decoder_names, tensor_inputs, &encoder_output)
+                })
+                .map_err(|error| OrtGenerationLoopError::Decoder(error.to_string()))
+        })
+        .map_err(map_ort_generation_loop_error)
+    }
+}
+
+/// { error came from the ORT decoder loop }
+/// fn map_ort_generation_loop_error(error: OrtGenerationLoopError) -> TokenGeneratorError
+/// { ret preserves invalid token errors and reports runtime failures as backend unavailability }
+#[cfg(feature = "ort-runtime")]
+fn map_ort_generation_loop_error(error: OrtGenerationLoopError) -> TokenGeneratorError {
+    match error {
+        OrtGenerationLoopError::Decoder(reason) => TokenGeneratorError::BackendUnavailable(
+            format!("ORT decoder execution failed: {reason}"),
+        ),
+        OrtGenerationLoopError::Step(error) => TokenGeneratorError::BackendUnavailable(format!(
+            "ORT decoder generation step failed: {error}"
+        )),
+        OrtGenerationLoopError::InvalidGeneratedTokens(reason) => {
+            TokenGeneratorError::InvalidGeneratedTokens(reason)
+        }
     }
 }
 
@@ -1606,10 +1694,11 @@ mod tests {
     };
     use crate::{
         OrtDecoderLogits, OrtDecoderLogitsError, OrtEngineError, OrtFloatTensorOutput,
-        OrtGenerationInputs, OrtGenerationState, OrtGenerationStateError, OrtGenerationStep,
-        OrtGenerationStepError, OrtGenerationTensorInputs, OrtGeneratorPlan, OrtIoConfig,
-        OrtIoConfigError, OrtIoConfigParseError, OrtModelRole, OrtNextTokenSelectionError,
-        OrtNextTokenSelector, OrtSessionPlan,
+        OrtGenerationInputs, OrtGenerationLoop, OrtGenerationLoopError, OrtGenerationState,
+        OrtGenerationStateError, OrtGenerationStep, OrtGenerationStepError,
+        OrtGenerationTensorInputs, OrtGeneratorPlan, OrtIoConfig, OrtIoConfigError,
+        OrtIoConfigParseError, OrtModelRole, OrtNextTokenSelectionError, OrtNextTokenSelector,
+        OrtSessionPlan,
     };
     #[cfg(not(feature = "ort-runtime"))]
     use crate::{OrtEngine, OrtTokenGenerator};
@@ -1872,6 +1961,62 @@ mod tests {
         assert_eq!(tensor_inputs.decoder_input_ids().shape(), [1, 3]);
         assert_eq!(tensor_inputs.decoder_input_ids().values(), &[11, 21, 22]);
         Ok(())
+    }
+
+    #[test]
+    fn generation_loop_runs_until_eos() -> Result<(), Box<dyn std::error::Error>> {
+        let inputs = raw_generation_inputs();
+        let mut calls = 0_usize;
+        let mut decoder_rows = Vec::<Vec<i64>>::new();
+
+        let tokens = OrtGenerationLoop::run_non_cached(&inputs, |tensor_inputs| {
+            calls += 1;
+            decoder_rows.push(tensor_inputs.decoder_input_ids().values().to_vec());
+            let output = if calls == 1 {
+                decoder_logits([0.1, 0.2, 5.0])
+            } else {
+                decoder_logits([0.1, 9.0, 0.2])
+            };
+
+            Ok(output)
+        })?;
+
+        assert_eq!(tokens.as_slice(), &[TokenId::new(2), TokenId::new(1)]);
+        assert_eq!(decoder_rows, vec![vec![11], vec![11, 2]]);
+        assert_eq!(calls, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn generation_loop_stops_at_max_new_tokens() -> Result<(), Box<dyn std::error::Error>> {
+        let inputs = raw_generation_inputs_with_limit(2);
+        let mut calls = 0_usize;
+
+        let tokens = OrtGenerationLoop::run_non_cached(&inputs, |_tensor_inputs| {
+            calls += 1;
+            Ok(decoder_logits([0.1, 0.2, 5.0]))
+        })?;
+
+        assert_eq!(tokens.as_slice(), &[TokenId::new(2), TokenId::new(2)]);
+        assert_eq!(calls, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn generation_loop_propagates_decoder_error() {
+        let inputs = raw_generation_inputs();
+
+        let tokens = OrtGenerationLoop::run_non_cached(&inputs, |_tensor_inputs| {
+            Err(OrtGenerationLoopError::Decoder(
+                "synthetic decoder failure".to_owned(),
+            ))
+        });
+
+        assert!(matches!(
+            tokens,
+            Err(OrtGenerationLoopError::Decoder(ref reason))
+                if reason == "synthetic decoder failure"
+        ));
     }
 
     #[test]
@@ -2459,12 +2604,23 @@ mod tests {
     }
 
     fn raw_generation_inputs() -> OrtGenerationInputs {
+        raw_generation_inputs_with_limit(3)
+    }
+
+    fn raw_generation_inputs_with_limit(max_new_tokens: usize) -> OrtGenerationInputs {
         OrtGenerationInputs {
             encoder_input_ids: vec![7, 8],
             encoder_attention_mask: vec![1, 1],
             decoder_input_ids: vec![11],
-            max_new_tokens: 3,
+            max_new_tokens,
             eos_token_id: 1,
+        }
+    }
+
+    fn decoder_logits(values: [f32; 3]) -> OrtFloatTensorOutput {
+        OrtFloatTensorOutput {
+            shape: vec![1, 1, 3],
+            values: values.to_vec(),
         }
     }
 }

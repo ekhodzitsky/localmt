@@ -13,10 +13,10 @@ pub use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
 pub use localmt_engine_ort::OrtEngineSlot;
 pub use localmt_engine_ort::{
     OrtDecoderLogits, OrtDecoderLogitsError, OrtEngine, OrtEngineError, OrtFloatTensorOutput,
-    OrtGenerationInputs, OrtGenerationState, OrtGenerationStateError, OrtGenerationStep,
-    OrtGenerationStepError, OrtGenerationTensorInputs, OrtGeneratorPlan, OrtGeneratorRuntimeConfig,
-    OrtI64TensorInput, OrtIoConfig, OrtIoConfigError, OrtIoConfigParseError, OrtModelRole,
-    OrtSessionPlan, OrtTokenGenerator,
+    OrtGenerationInputs, OrtGenerationLoop, OrtGenerationLoopError, OrtGenerationState,
+    OrtGenerationStateError, OrtGenerationStep, OrtGenerationStepError, OrtGenerationTensorInputs,
+    OrtGeneratorPlan, OrtGeneratorRuntimeConfig, OrtI64TensorInput, OrtIoConfig, OrtIoConfigError,
+    OrtIoConfigParseError, OrtModelRole, OrtSessionPlan, OrtTokenGenerator,
 };
 pub use localmt_models::{
     Discovered, ModelArchitecture, ModelFile, ModelFileKind, ModelFileRole, ModelId, ModelLicense,
