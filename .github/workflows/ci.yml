@@ -39,3 +39,10 @@ jobs:
 
       - name: Android arm64 FFI check
         run: cargo check --locked -p localmt-ffi --target aarch64-linux-android
+
+      - name: Release FFI symbol check
+        run: |
+          cargo build --locked --release -p localmt-ffi --features hf-tokenizers,ort-runtime
+          test -f target/release/liblocalmt_ffi.so
+          nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_abi_version
+          nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_model_pack_trust_schema_version
