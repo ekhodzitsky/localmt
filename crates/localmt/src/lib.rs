@@ -10,8 +10,8 @@ pub use localmt_core::{
 };
 pub use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
 pub use localmt_engine_ort::{
-    OrtEngine, OrtEngineError, OrtGeneratorPlan, OrtIoConfig, OrtIoConfigError,
-    OrtIoConfigParseError, OrtModelRole, OrtSessionPlan, OrtTokenGenerator,
+    OrtEngine, OrtEngineError, OrtGeneratorPlan, OrtGeneratorRuntimeConfig, OrtIoConfig,
+    OrtIoConfigError, OrtIoConfigParseError, OrtModelRole, OrtSessionPlan, OrtTokenGenerator,
 };
 pub use localmt_models::{
     Discovered, ModelArchitecture, ModelFile, ModelFileKind, ModelFileRole, ModelId, ModelLicense,

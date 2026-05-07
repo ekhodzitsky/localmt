@@ -242,6 +242,11 @@ packs with `config` but without `ort_io` fail the explicit ORT I/O parse.
 The facade converts that missing-object case into the stable preflight line
 `ort_io_config: missing`; valid contracts print `ort_io_config: parsed`, and
 packs with no `config` role print `ort_io_config: absent`.
+For runtime generation, `OrtGeneratorPlan::parse_runtime_config` is stricter:
+it requires both a parsed `generation_config` and a parsed `ort_io` config.
+Feature-enabled `OrtTokenGenerator::load` parses that strict config before
+loading ONNX sessions, so missing decoder-loop settings or tensor names fail
+before any model execution starts.
 
 Accepted local `config.json` fragment for ORT I/O:
 

@@ -105,6 +105,9 @@ model-specific ONNX names.
 The facade reports this as `OrtIoConfigStatus` in prepared-asset summaries:
 `absent` when no `config` role exists, `missing` when a valid config lacks
 `ort_io`, and `parsed` when tensor names validate.
+`OrtGeneratorRuntimeConfig` is the stricter runtime contract: it requires both
+typed `GenerationConfig` and typed `OrtIoConfig`, and feature-enabled
+`OrtTokenGenerator::load` parses it before ORT sessions are created.
 `OfflineTranslatorPlan` is the facade-level planning object for SDK users. It
 combines `TokenizerAssetPlan` and `OrtGeneratorPlan` from one verified model
 pack without parsing tokenizer files, loading ORT sessions, or running

@@ -286,6 +286,39 @@ impl fmt::Display for OrtIoConfigParseError {
 
 impl std::error::Error for OrtIoConfigParseError {}
 
+/// Strict config required before ORT token generation can run.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrtGeneratorRuntimeConfig {
+    generation_config: GenerationConfig,
+    ort_io_config: OrtIoConfig,
+}
+
+impl OrtGeneratorRuntimeConfig {
+    /// { generation_config and ort_io_config were parsed from verified model-pack files }
+    /// fn new(generation_config: GenerationConfig, ort_io_config: OrtIoConfig) -> Self
+    /// { ret contains the strict decoder-loop and tensor-name runtime contract }
+    pub const fn new(generation_config: GenerationConfig, ort_io_config: OrtIoConfig) -> Self {
+        Self {
+            generation_config,
+            ort_io_config,
+        }
+    }
+
+    /// { true }
+    /// fn generation_config(&self) -> GenerationConfig
+    /// { ret is the parsed decoder-loop generation config }
+    pub const fn generation_config(&self) -> GenerationConfig {
+        self.generation_config
+    }
+
+    /// { true }
+    /// fn ort_io_config(&self) -> &OrtIoConfig
+    /// { ret is the parsed ORT tensor-name contract }
+    pub const fn ort_io_config(&self) -> &OrtIoConfig {
+        &self.ort_io_config
+    }
+}
+
 #[derive(Deserialize)]
 struct RawOrtIoConfigEnvelope {
     ort_io: Option<RawOrtIoConfig>,
@@ -583,6 +616,28 @@ impl OrtGeneratorPlan {
             .transpose()
             .map_err(OrtEngineError::IoConfig)
     }
+
+    /// { self was built from a verified ONNX Runtime model pack }
+    /// fn parse_runtime_config(&self) -> Result<OrtGeneratorRuntimeConfig, OrtEngineError>
+    /// { ret is Ok only when generation_config and ort_io config are both present and valid }
+    pub fn parse_runtime_config(&self) -> Result<OrtGeneratorRuntimeConfig, OrtEngineError> {
+        let generation_config = self
+            .parse_generation_config()?
+            .ok_or(OrtEngineError::MissingGenerationConfig)?;
+        let ort_io_config = match self.parse_ort_io_config() {
+            Ok(Some(config)) => config,
+            Ok(None) => return Err(OrtEngineError::MissingOrtIoConfig),
+            Err(OrtEngineError::IoConfig(OrtIoConfigParseError::MissingOrtIoConfig)) => {
+                return Err(OrtEngineError::MissingOrtIoConfig);
+            }
+            Err(error) => return Err(error),
+        };
+
+        Ok(OrtGeneratorRuntimeConfig::new(
+            generation_config,
+            ort_io_config,
+        ))
+    }
 }
 
 /// ONNX Runtime adapter error.
@@ -598,6 +653,10 @@ pub enum OrtEngineError {
     GenerationConfig(GenerationConfigParseError),
     /// ORT I/O config parsing failed.
     IoConfig(OrtIoConfigParseError),
+    /// Runtime generation requires generation_config but the pack lacks one.
+    MissingGenerationConfig,
+    /// Runtime generation requires ort_io config but the pack lacks one.
+    MissingOrtIoConfig,
     /// Crate was compiled without the `ort-runtime` feature.
     OrtRuntimeFeatureDisabled,
     /// ONNX Runtime failed to create a session.
@@ -614,6 +673,12 @@ impl fmt::Display for OrtEngineError {
             Self::GeneratorAsset(error) => write!(formatter, "{error}"),
             Self::GenerationConfig(error) => write!(formatter, "{error}"),
             Self::IoConfig(error) => write!(formatter, "{error}"),
+            Self::MissingGenerationConfig => {
+                formatter.write_str("missing generation_config for ORT runtime")
+            }
+            Self::MissingOrtIoConfig => {
+                formatter.write_str("missing ort_io config for ORT runtime")
+            }
             Self::OrtRuntimeFeatureDisabled => {
                 formatter.write_str("ort-runtime feature is not enabled")
             }
@@ -644,6 +709,7 @@ impl OrtTokenGenerator {
 #[derive(Debug)]
 pub struct OrtTokenGenerator {
     plan: OrtGeneratorPlan,
+    runtime_config: OrtGeneratorRuntimeConfig,
     encoder: OrtEngine,
     decoder: OrtEngine,
     decoder_with_past: Option<OrtEngine>,
@@ -655,6 +721,7 @@ impl OrtTokenGenerator {
     /// fn load(plan: OrtGeneratorPlan) -> Result<Self, OrtEngineError>
     /// { ret is Ok only when ONNX Runtime loads required generator sessions }
     pub fn load(plan: OrtGeneratorPlan) -> Result<Self, OrtEngineError> {
+        let runtime_config = plan.parse_runtime_config()?;
         let encoder = OrtEngine::load(plan.encoder().clone())?;
         let decoder = OrtEngine::load(plan.decoder().clone())?;
         let decoder_with_past = plan
@@ -665,6 +732,7 @@ impl OrtTokenGenerator {
 
         Ok(Self {
             plan,
+            runtime_config,
             encoder,
             decoder,
             decoder_with_past,
@@ -676,6 +744,13 @@ impl OrtTokenGenerator {
     /// { ret is the verified generator plan used for loading }
     pub const fn plan(&self) -> &OrtGeneratorPlan {
         &self.plan
+    }
+
+    /// { self was loaded successfully }
+    /// fn runtime_config(&self) -> &OrtGeneratorRuntimeConfig
+    /// { ret is the strict generation config parsed before ORT sessions loaded }
+    pub const fn runtime_config(&self) -> &OrtGeneratorRuntimeConfig {
+        &self.runtime_config
     }
 
     /// { self was loaded successfully }
@@ -1126,6 +1201,99 @@ mod tests {
 
         assert_eq!(plan.config_path(), None);
         assert_eq!(config, None);
+        Ok(())
+    }
+
+    #[test]
+    fn generator_plan_parses_runtime_config() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack_with_files(
+            "onnx-runtime",
+            &[
+                ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+                ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+                (
+                    "generation.json",
+                    "generation_config",
+                    VALID_GENERATION_CONFIG_SHA256,
+                    VALID_GENERATION_CONFIG,
+                ),
+                (
+                    "config.json",
+                    "config",
+                    VALID_ORT_IO_CONFIG_SHA256,
+                    VALID_ORT_IO_CONFIG,
+                ),
+            ],
+        )?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+        let plan = OrtGeneratorPlan::from_pack(&pack)?;
+
+        let runtime_config = plan.parse_runtime_config()?;
+
+        assert_eq!(
+            runtime_config.generation_config().max_new_tokens().value(),
+            32
+        );
+        assert_eq!(
+            runtime_config.ort_io_config().decoder().logits(),
+            "decoder_logits"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generator_plan_requires_generation_config_for_runtime_config()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack_with_files(
+            "onnx-runtime",
+            &[
+                ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+                ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+                (
+                    "config.json",
+                    "config",
+                    VALID_ORT_IO_CONFIG_SHA256,
+                    VALID_ORT_IO_CONFIG,
+                ),
+            ],
+        )?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+        let plan = OrtGeneratorPlan::from_pack(&pack)?;
+
+        let runtime_config = plan.parse_runtime_config();
+
+        assert!(matches!(
+            runtime_config,
+            Err(OrtEngineError::MissingGenerationConfig)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn generator_plan_requires_ort_io_config_for_runtime_config()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack_with_files(
+            "onnx-runtime",
+            &[
+                ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+                ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+                (
+                    "generation.json",
+                    "generation_config",
+                    VALID_GENERATION_CONFIG_SHA256,
+                    VALID_GENERATION_CONFIG,
+                ),
+            ],
+        )?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+        let plan = OrtGeneratorPlan::from_pack(&pack)?;
+
+        let runtime_config = plan.parse_runtime_config();
+
+        assert!(matches!(
+            runtime_config,
+            Err(OrtEngineError::MissingOrtIoConfig)
+        ));
         Ok(())
     }
 
