@@ -277,10 +277,16 @@ session execution remain separate future steps.
 ORT tensor-input binding layer: encoder input ids, encoder attention mask, and
 decoder input ids are owned `i64` row tensors with `[1, N]` shapes, ready for
 future `ort::value::Tensor::from_array` calls.
+With `ort-runtime` enabled, `OrtEngine::run_encoder` is the first real execution
+primitive: it binds named encoder input tensors, runs the mutable encoder
+session, and copies the named `last_hidden_state` output into owned `f32`
+values. Full translation still needs decoder execution and generator mutability
+wiring before `OrtTokenGenerator::generate` can leave the explicit unavailable
+backend path.
 `OrtNextTokenSelector::select_argmax` handles the first logits-selection policy:
 it rejects empty or non-finite logits, chooses the highest vocabulary index as a
-`TokenId`, and keeps the first index on ties. Actual ORT session execution
-still remains the next runtime step.
+`TokenId`, and keeps the first index on ties. Decoder session execution still
+remains the next runtime step.
 
 Accepted local `config.json` fragment for ORT I/O:
 

@@ -462,6 +462,43 @@ impl OrtGenerationTensorInputs {
     }
 }
 
+/// Owned `f32` tensor output copied out of an ONNX Runtime session.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OrtFloatTensorOutput {
+    shape: Vec<usize>,
+    values: Vec<f32>,
+}
+
+impl OrtFloatTensorOutput {
+    /// { true }
+    /// fn shape(&self) -> &[usize]
+    /// { ret is the concrete tensor output shape }
+    pub fn shape(&self) -> &[usize] {
+        &self.shape
+    }
+
+    /// { true }
+    /// fn values(&self) -> &[f32]
+    /// { ret is the contiguous row-major tensor output payload }
+    pub fn values(&self) -> &[f32] {
+        &self.values
+    }
+
+    #[cfg(feature = "ort-runtime")]
+    fn from_ort_tensor(
+        output_name: &str,
+        shape: &[i64],
+        values: &[f32],
+    ) -> Result<Self, OrtEngineError> {
+        let shape = ort_output_shape_to_usize(output_name, shape)?;
+
+        Ok(Self {
+            shape,
+            values: values.to_vec(),
+        })
+    }
+}
+
 /// { tokens is a non-empty bounded tokenizer sequence }
 /// fn token_sequence_to_i64(tokens: &TokenSequence) -> Vec<i64>
 /// { ret preserves token order while converting ids for ONNX tensors }
@@ -957,6 +994,15 @@ pub enum OrtEngineError {
     MissingGenerationConfig,
     /// Runtime generation requires ort_io config but the pack lacks one.
     MissingOrtIoConfig,
+    /// ORT session did not return an expected named output.
+    MissingOrtOutput(String),
+    /// ORT session returned an output shape that cannot become a concrete Rust shape.
+    InvalidOrtOutputShape {
+        /// Output tensor name.
+        output: String,
+        /// Invalid output dimension.
+        dimension: i64,
+    },
     /// Crate was compiled without the `ort-runtime` feature.
     OrtRuntimeFeatureDisabled,
     /// ONNX Runtime failed to create a session.
@@ -979,6 +1025,11 @@ impl fmt::Display for OrtEngineError {
             Self::MissingOrtIoConfig => {
                 formatter.write_str("missing ort_io config for ORT runtime")
             }
+            Self::MissingOrtOutput(output) => write!(formatter, "missing ORT output: {output}"),
+            Self::InvalidOrtOutputShape { output, dimension } => write!(
+                formatter,
+                "ORT output {output} has invalid shape dimension {dimension}"
+            ),
             Self::OrtRuntimeFeatureDisabled => {
                 formatter.write_str("ort-runtime feature is not enabled")
             }
@@ -1143,6 +1194,56 @@ impl OrtEngine {
     pub fn output_count(&self) -> usize {
         self.session.outputs().len()
     }
+
+    /// { self was loaded successfully and names match the encoder graph contract }
+    /// fn run_encoder(&mut self, names: &OrtEncoderIoNames, inputs: &OrtGenerationTensorInputs) -> Result<OrtFloatTensorOutput, OrtEngineError>
+    /// { ret is Ok only when encoder execution returns named f32 last_hidden_state }
+    pub fn run_encoder(
+        &mut self,
+        names: &OrtEncoderIoNames,
+        inputs: &OrtGenerationTensorInputs,
+    ) -> Result<OrtFloatTensorOutput, OrtEngineError> {
+        let input_ids = ort_i64_tensor(inputs.encoder_input_ids())?;
+        let attention_mask = ort_i64_tensor(inputs.encoder_attention_mask())?;
+        let outputs = self
+            .session
+            .run(ort::inputs! {
+                names.input_ids() => input_ids,
+                names.attention_mask() => attention_mask,
+            })
+            .map_err(|source| OrtEngineError::Ort(source.to_string()))?;
+        let output = outputs.get(names.last_hidden_state()).ok_or_else(|| {
+            OrtEngineError::MissingOrtOutput(names.last_hidden_state().to_owned())
+        })?;
+        let (shape, values) = output
+            .try_extract_tensor::<f32>()
+            .map_err(|source| OrtEngineError::Ort(source.to_string()))?;
+
+        OrtFloatTensorOutput::from_ort_tensor(names.last_hidden_state(), shape, values)
+    }
+}
+
+#[cfg(feature = "ort-runtime")]
+fn ort_i64_tensor(input: &OrtI64TensorInput) -> Result<ort::value::Tensor<i64>, OrtEngineError> {
+    ort::value::Tensor::from_array((input.shape(), input.values().to_vec()))
+        .map_err(|source| OrtEngineError::Ort(source.to_string()))
+}
+
+#[cfg(feature = "ort-runtime")]
+fn ort_output_shape_to_usize(
+    output_name: &str,
+    shape: &[i64],
+) -> Result<Vec<usize>, OrtEngineError> {
+    shape
+        .iter()
+        .copied()
+        .map(|dimension| {
+            usize::try_from(dimension).map_err(|_error| OrtEngineError::InvalidOrtOutputShape {
+                output: output_name.to_owned(),
+                dimension,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1156,6 +1257,8 @@ mod tests {
     use localmt_pipeline::TokenGeneratorError;
     use localmt_tokenizer::TokenId;
 
+    #[cfg(feature = "ort-runtime")]
+    use crate::{OrtEncoderIoNames, OrtEngine, OrtFloatTensorOutput, OrtGenerationTensorInputs};
     #[cfg(not(feature = "ort-runtime"))]
     use crate::{OrtEngine, OrtTokenGenerator};
     use crate::{
@@ -1259,6 +1362,24 @@ mod tests {
             token,
             Err(OrtNextTokenSelectionError::NonFiniteLogit { index: 1 })
         ));
+    }
+
+    #[test]
+    #[ignore = "compile-only signature guard; execution requires a real ONNX encoder model"]
+    #[cfg(feature = "ort-runtime")]
+    fn encoder_run_method_accepts_tensor_inputs() {
+        fn assert_signature(
+            engine: &mut OrtEngine,
+            names: &OrtEncoderIoNames,
+            inputs: &OrtGenerationTensorInputs,
+        ) {
+            let result: Result<OrtFloatTensorOutput, OrtEngineError> =
+                engine.run_encoder(names, inputs);
+            let _ = result;
+        }
+
+        let _signature: fn(&mut OrtEngine, &OrtEncoderIoNames, &OrtGenerationTensorInputs) =
+            assert_signature;
     }
 
     #[test]
