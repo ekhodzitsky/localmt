@@ -23,7 +23,7 @@ extern "C" {
 #define LOCALMT_FFI_TOKENIZER_ERROR 12
 #define LOCALMT_FFI_RUNTIME_NOT_CONFIGURED 13
 
-#define LOCALMT_FFI_ABI_VERSION 11
+#define LOCALMT_FFI_ABI_VERSION 12
 #define LOCALMT_FFI_ANDROID_ABI_ARM64_V8A 1
 #define LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK 1
 
@@ -139,6 +139,31 @@ uint16_t localmt_ffi_xiaomi17_preferred_runtime_code(void);
  * and output is not written.
  */
 int32_t localmt_ffi_model_pack_summary(
+    const uint8_t *path_ptr,
+    size_t path_len,
+    uint8_t *output_ptr,
+    size_t output_capacity,
+    size_t *written_len);
+
+/*
+ * Fully verifies a model pack and writes its local trust artifact.
+ *
+ * This is the install/update-time path: it performs checksum verification and
+ * records a trusted metadata snapshot beside the model pack. Runtime hot paths
+ * can later use the trusted APIs below to avoid re-hashing large model files.
+ */
+int32_t localmt_ffi_model_pack_trust(
+    const uint8_t *path_ptr,
+    size_t path_len);
+
+/*
+ * Plans a model pack through the local trust artifact, then writes a summary.
+ *
+ * This does not re-hash model files. It requires a trust artifact previously
+ * written by localmt_ffi_model_pack_trust and validates manifest hash plus
+ * file metadata before planning.
+ */
+int32_t localmt_ffi_model_pack_trusted_summary(
     const uint8_t *path_ptr,
     size_t path_len,
     uint8_t *output_ptr,
@@ -325,6 +350,18 @@ void localmt_ffi_ort_generator_close(LocalmtFfiOrtGenerator *generator);
  * to LOCALMT_FFI_ORT_ERROR or LOCALMT_FFI_TRANSLATION_ERROR.
  */
 int32_t localmt_ffi_ort_translator_open(
+    const uint8_t *path_ptr,
+    size_t path_len,
+    LocalmtFfiOrtTranslator **out_translator);
+
+/*
+ * Opens a trusted local model pack and constructs the ORT-backed translator.
+ *
+ * This uses the local trust artifact instead of full checksum verification on
+ * the hot path. The status mapping and handle lifetime are identical to
+ * localmt_ffi_ort_translator_open.
+ */
+int32_t localmt_ffi_ort_translator_open_trusted(
     const uint8_t *path_ptr,
     size_t path_len,
     LocalmtFfiOrtTranslator **out_translator);

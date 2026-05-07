@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const MANIFEST_FILE_NAME: &str = "manifest.json";
+const TRUST_FILE_NAME: &str = ".localmt-trust.json";
 const SCHEMA_VERSION: u16 = 0;
+const TRUST_SCHEMA_VERSION: u16 = 0;
 const REQUIRED_LANGUAGES: [Language; 5] = [
     Language::English,
     Language::Russian,
@@ -74,6 +76,20 @@ impl ModelPack<Discovered> {
         })
     }
 
+    /// { self was discovered successfully and a trust file may exist }
+    /// fn verify_trusted(self) -> Result<`ModelPack<Verified>`, ModelPackError>
+    /// { ret is Ok only when required languages and the trust artifact are valid }
+    pub fn verify_trusted(self) -> Result<ModelPack<Verified>, ModelPackError> {
+        self.verify_required_languages()?;
+        self.verify_trust_file()?;
+
+        Ok(ModelPack {
+            root: self.root,
+            manifest: self.manifest,
+            state: PhantomData,
+        })
+    }
+
     fn verify_required_languages(&self) -> Result<(), ModelPackError> {
         for language in REQUIRED_LANGUAGES {
             if !self.manifest.supports(language) {
@@ -99,9 +115,31 @@ impl ModelPack<Discovered> {
 
         Ok(())
     }
+
+    fn verify_trust_file(&self) -> Result<(), ModelPackError> {
+        let trust = ModelPackTrust::read(self.root())?;
+        trust.verify_manifest_hash(self.root())?;
+        trust.verify_manifest_files(self.manifest())?;
+        trust.verify_file_metadata(self.root())
+    }
 }
 
 impl ModelPack<Verified> {
+    /// { self has verified manifest, files, and checksums }
+    /// fn write_trust_file(&self) -> Result<PathBuf, ModelPackError>
+    /// { ret is Ok only when a local trust artifact is written for this exact pack state }
+    pub fn write_trust_file(&self) -> Result<PathBuf, ModelPackError> {
+        let trust = ModelPackTrust::from_verified_pack(self)?;
+        let path = self.trust_file_path();
+        let json = trust.to_json_string_pretty()?;
+        fs::write(&path, json).map_err(|source| ModelPackError::WriteTrust {
+            path: path.clone(),
+            source,
+        })?;
+
+        Ok(path)
+    }
+
     /// { self has verified manifest, files, and checksums }
     /// fn file_path(&self, role: ModelFileRole) -> `Option<PathBuf>`
     /// { ret is Some root-joined file path only when the manifest declares role }
@@ -120,6 +158,13 @@ impl<State> ModelPack<State> {
     /// { ret is the model-pack root directory }
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// { true }
+    /// fn trust_file_path(&self) -> PathBuf
+    /// { ret is the conventional local trust artifact path for this pack }
+    pub fn trust_file_path(&self) -> PathBuf {
+        self.root.join(TRUST_FILE_NAME)
     }
 
     /// { true }
@@ -517,8 +562,28 @@ pub enum ModelPackError {
     ParseManifest(serde_json::Error),
     /// Manifest JSON could not be serialized.
     SerializeManifest(serde_json::Error),
+    /// Trust artifact JSON could not be read.
+    ReadTrust {
+        /// Trust artifact path.
+        path: PathBuf,
+        /// I/O source error.
+        source: std::io::Error,
+    },
+    /// Trust artifact JSON could not be parsed.
+    ParseTrust(serde_json::Error),
+    /// Trust artifact JSON could not be serialized.
+    SerializeTrust(serde_json::Error),
+    /// Trust artifact JSON could not be written.
+    WriteTrust {
+        /// Trust artifact path.
+        path: PathBuf,
+        /// I/O source error.
+        source: std::io::Error,
+    },
     /// Manifest schema is not supported.
     UnsupportedSchema(u16),
+    /// Trust artifact schema is not supported.
+    UnsupportedTrustSchema(u16),
     /// Required string field is empty.
     EmptyField(&'static str),
     /// Language code is not supported by localmt.
@@ -553,6 +618,19 @@ pub enum ModelPackError {
         /// Actual digest.
         actual: Sha256Digest,
     },
+    /// Trust artifact does not match manifest.json.
+    TrustManifestMismatch,
+    /// Trust artifact file entries do not match manifest files.
+    TrustFileListMismatch,
+    /// Trust artifact file metadata does not match the filesystem.
+    TrustFileMetadataMismatch {
+        /// Model-pack file path.
+        path: PathBuf,
+        /// Trusted byte length.
+        expected: u64,
+        /// Current byte length.
+        actual: u64,
+    },
 }
 
 impl fmt::Display for ModelPackError {
@@ -565,7 +643,28 @@ impl fmt::Display for ModelPackError {
             Self::SerializeManifest(source) => {
                 write!(formatter, "failed to serialize manifest: {source}")
             }
+            Self::ReadTrust { path, source } => {
+                write!(
+                    formatter,
+                    "failed to read trust file {}: {source}",
+                    path.display()
+                )
+            }
+            Self::ParseTrust(source) => write!(formatter, "failed to parse trust file: {source}"),
+            Self::SerializeTrust(source) => {
+                write!(formatter, "failed to serialize trust file: {source}")
+            }
+            Self::WriteTrust { path, source } => {
+                write!(
+                    formatter,
+                    "failed to write trust file {}: {source}",
+                    path.display()
+                )
+            }
             Self::UnsupportedSchema(version) => write!(formatter, "unsupported schema: {version}"),
+            Self::UnsupportedTrustSchema(version) => {
+                write!(formatter, "unsupported trust schema: {version}")
+            }
             Self::EmptyField(field) => write!(formatter, "manifest field is empty: {field}"),
             Self::InvalidLanguage(error) => write!(formatter, "{error}"),
             Self::DuplicateLanguage(language) => {
@@ -593,6 +692,21 @@ impl fmt::Display for ModelPackError {
                 "checksum mismatch for {}: expected {expected}, got {actual}",
                 path.display()
             ),
+            Self::TrustManifestMismatch => {
+                formatter.write_str("trust file does not match manifest.json")
+            }
+            Self::TrustFileListMismatch => {
+                formatter.write_str("trust file entries do not match manifest files")
+            }
+            Self::TrustFileMetadataMismatch {
+                path,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "trust metadata mismatch for {}: expected {expected} bytes, got {actual}",
+                path.display()
+            ),
         }
     }
 }
@@ -600,10 +714,17 @@ impl fmt::Display for ModelPackError {
 impl std::error::Error for ModelPackError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::ReadManifest { source, .. } | Self::ReadModelFile { source, .. } => Some(source),
-            Self::ParseManifest(source) | Self::SerializeManifest(source) => Some(source),
+            Self::ReadManifest { source, .. }
+            | Self::ReadTrust { source, .. }
+            | Self::WriteTrust { source, .. }
+            | Self::ReadModelFile { source, .. } => Some(source),
+            Self::ParseManifest(source)
+            | Self::SerializeManifest(source)
+            | Self::ParseTrust(source)
+            | Self::SerializeTrust(source) => Some(source),
             Self::InvalidLanguage(error) => Some(error),
             Self::UnsupportedSchema(_)
+            | Self::UnsupportedTrustSchema(_)
             | Self::EmptyField(_)
             | Self::DuplicateLanguage(_)
             | Self::EmptyFileList
@@ -612,7 +733,10 @@ impl std::error::Error for ModelPackError {
             | Self::InvalidRelativePath(_)
             | Self::InvalidSha256(_)
             | Self::MissingRequiredLanguage(_)
-            | Self::ChecksumMismatch { .. } => None,
+            | Self::ChecksumMismatch { .. }
+            | Self::TrustManifestMismatch
+            | Self::TrustFileListMismatch
+            | Self::TrustFileMetadataMismatch { .. } => None,
         }
     }
 }
@@ -655,12 +779,258 @@ struct SerializableModelFile<'a> {
     sha256: &'a str,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ModelFileByteLen(u64);
+
+impl ModelFileByteLen {
+    /// { path points to a readable model-pack file }
+    /// fn from_path(path: impl `AsRef<Path>`) -> Result<Self, ModelPackError>
+    /// { ret is the current file byte length reported by the filesystem }
+    fn from_path(path: impl AsRef<Path>) -> Result<Self, ModelPackError> {
+        let path = path.as_ref();
+        let metadata = fs::metadata(path).map_err(|source| ModelPackError::ReadModelFile {
+            path: path.to_path_buf(),
+            source,
+        })?;
+
+        Ok(Self(metadata.len()))
+    }
+
+    /// { true }
+    /// fn value(self) -> u64
+    /// { ret is the stored byte length }
+    const fn value(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ModelPackTrustedFile {
+    path: ModelRelativePath,
+    role: ModelFileRole,
+    sha256: Sha256Digest,
+    byte_len: ModelFileByteLen,
+}
+
+impl ModelPackTrustedFile {
+    /// { root/file came from a verified model pack }
+    /// fn from_model_file(root: &Path, file: &ModelFile) -> Result<Self, ModelPackError>
+    /// { ret snapshots manifest identity plus current filesystem byte length }
+    fn from_model_file(root: &Path, file: &ModelFile) -> Result<Self, ModelPackError> {
+        let path = file.path().clone();
+        let byte_len = ModelFileByteLen::from_path(root.join(path.as_path()))?;
+
+        Ok(Self {
+            path,
+            role: file.role(),
+            sha256: file.sha256().clone(),
+            byte_len,
+        })
+    }
+
+    /// { self and file describe one manifest role }
+    /// fn matches_manifest_file(&self, file: &ModelFile) -> bool
+    /// { ret is true only when path, role, and sha256 match }
+    fn matches_manifest_file(&self, file: &ModelFile) -> bool {
+        self.path == *file.path() && self.role == file.role() && self.sha256 == *file.sha256()
+    }
+
+    /// { root is the model-pack root }
+    /// fn verify_metadata(&self, root: &Path) -> Result<(), ModelPackError>
+    /// { ret is Ok only when the current file byte length matches the trust snapshot }
+    fn verify_metadata(&self, root: &Path) -> Result<(), ModelPackError> {
+        let path = root.join(self.path.as_path());
+        let actual = ModelFileByteLen::from_path(&path)?;
+        if actual == self.byte_len {
+            return Ok(());
+        }
+
+        Err(ModelPackError::TrustFileMetadataMismatch {
+            path,
+            expected: self.byte_len.value(),
+            actual: actual.value(),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ModelPackTrust {
+    manifest_sha256: Sha256Digest,
+    files: Vec<ModelPackTrustedFile>,
+}
+
+impl ModelPackTrust {
+    /// { pack has verified manifest, files, and checksums }
+    /// fn from_verified_pack(pack: &`ModelPack<Verified>`) -> Result<Self, ModelPackError>
+    /// { ret snapshots the trust metadata for pack without changing pack files }
+    fn from_verified_pack(pack: &ModelPack<Verified>) -> Result<Self, ModelPackError> {
+        let manifest_sha256 = Sha256Digest::from_file(pack.root().join(MANIFEST_FILE_NAME))?;
+        let files = trusted_files_from_manifest(pack.root(), pack.manifest().files())?;
+
+        Ok(Self {
+            manifest_sha256,
+            files,
+        })
+    }
+
+    /// { root points to a discovered model-pack root }
+    /// fn read(root: &Path) -> Result<Self, ModelPackError>
+    /// { ret is Ok only when the local trust artifact parses and validates structurally }
+    fn read(root: &Path) -> Result<Self, ModelPackError> {
+        let path = root.join(TRUST_FILE_NAME);
+        let json = fs::read_to_string(&path).map_err(|source| ModelPackError::ReadTrust {
+            path: path.clone(),
+            source,
+        })?;
+        let raw: RawTrust = serde_json::from_str(&json).map_err(ModelPackError::ParseTrust)?;
+
+        Self::from_raw(raw)
+    }
+
+    /// { value came from a trust artifact }
+    /// fn from_raw(value: RawTrust) -> Result<Self, ModelPackError>
+    /// { ret is Ok only when schema, digest, and file entries are supported }
+    fn from_raw(value: RawTrust) -> Result<Self, ModelPackError> {
+        if value.schema_version != TRUST_SCHEMA_VERSION {
+            return Err(ModelPackError::UnsupportedTrustSchema(value.schema_version));
+        }
+
+        Ok(Self {
+            manifest_sha256: Sha256Digest::new(value.manifest_sha256)?,
+            files: parse_trust_files(value.files)?,
+        })
+    }
+
+    /// { root points to the model-pack root }
+    /// fn verify_manifest_hash(&self, root: &Path) -> Result<(), ModelPackError>
+    /// { ret is Ok only when manifest.json still matches the trust artifact }
+    fn verify_manifest_hash(&self, root: &Path) -> Result<(), ModelPackError> {
+        let actual = Sha256Digest::from_file(root.join(MANIFEST_FILE_NAME))?;
+        if actual == self.manifest_sha256 {
+            return Ok(());
+        }
+
+        Err(ModelPackError::TrustManifestMismatch)
+    }
+
+    /// { manifest was parsed from the same model-pack root }
+    /// fn verify_manifest_files(&self, manifest: &ModelManifest) -> Result<(), ModelPackError>
+    /// { ret is Ok only when trust file entries match manifest file identity }
+    fn verify_manifest_files(&self, manifest: &ModelManifest) -> Result<(), ModelPackError> {
+        if self.files.len() != manifest.files().len() {
+            return Err(ModelPackError::TrustFileListMismatch);
+        }
+        for (trusted, file) in self.files.iter().zip(manifest.files()) {
+            if !trusted.matches_manifest_file(file) {
+                return Err(ModelPackError::TrustFileListMismatch);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// { root points to the model-pack root }
+    /// fn verify_file_metadata(&self, root: &Path) -> Result<(), ModelPackError>
+    /// { ret is Ok only when every trusted file metadata snapshot still matches }
+    fn verify_file_metadata(&self, root: &Path) -> Result<(), ModelPackError> {
+        for file in &self.files {
+            file.verify_metadata(root)?;
+        }
+
+        Ok(())
+    }
+
+    /// { self contains validated trust fields }
+    /// fn to_json_string_pretty(&self) -> Result<String, ModelPackError>
+    /// { ret is a pretty JSON trust document that can be parsed by verify_trusted }
+    fn to_json_string_pretty(&self) -> Result<String, ModelPackError> {
+        let trust = SerializableTrust {
+            schema_version: TRUST_SCHEMA_VERSION,
+            manifest_sha256: self.manifest_sha256.as_str(),
+            files: self.files.iter().map(serializable_trust_file).collect(),
+        };
+
+        serde_json::to_string_pretty(&trust).map_err(ModelPackError::SerializeTrust)
+    }
+}
+
+#[derive(Deserialize)]
+struct RawTrust {
+    schema_version: u16,
+    manifest_sha256: String,
+    files: Vec<RawTrustFile>,
+}
+
+#[derive(Deserialize)]
+struct RawTrustFile {
+    path: String,
+    kind: String,
+    sha256: String,
+    byte_len: u64,
+}
+
+#[derive(Serialize)]
+struct SerializableTrust<'a> {
+    schema_version: u16,
+    manifest_sha256: &'a str,
+    files: Vec<SerializableTrustFile<'a>>,
+}
+
+#[derive(Serialize)]
+struct SerializableTrustFile<'a> {
+    path: String,
+    kind: &'static str,
+    sha256: &'a str,
+    byte_len: u64,
+}
+
 fn serializable_file(file: &ModelFile) -> SerializableModelFile<'_> {
     SerializableModelFile {
         path: file.path().to_string(),
         kind: file.role().as_str(),
         sha256: file.sha256().as_str(),
     }
+}
+
+fn serializable_trust_file(file: &ModelPackTrustedFile) -> SerializableTrustFile<'_> {
+    SerializableTrustFile {
+        path: file.path.to_string(),
+        kind: file.role.as_str(),
+        sha256: file.sha256.as_str(),
+        byte_len: file.byte_len.value(),
+    }
+}
+
+fn trusted_files_from_manifest(
+    root: &Path,
+    files: &[ModelFile],
+) -> Result<Vec<ModelPackTrustedFile>, ModelPackError> {
+    let mut trusted = Vec::with_capacity(files.len());
+    for file in files {
+        trusted.push(ModelPackTrustedFile::from_model_file(root, file)?);
+    }
+
+    Ok(trusted)
+}
+
+fn parse_trust_files(
+    values: Vec<RawTrustFile>,
+) -> Result<Vec<ModelPackTrustedFile>, ModelPackError> {
+    let mut files = Vec::with_capacity(values.len());
+    for value in values {
+        files.push(parse_trust_file(value)?);
+    }
+
+    Ok(files)
+}
+
+fn parse_trust_file(value: RawTrustFile) -> Result<ModelPackTrustedFile, ModelPackError> {
+    Ok(ModelPackTrustedFile {
+        path: ModelRelativePath::new(value.path)?,
+        role: ModelFileRole::new(value.kind)?,
+        sha256: Sha256Digest::new(value.sha256)?,
+        byte_len: ModelFileByteLen(value.byte_len),
+    })
 }
 
 fn parse_languages(values: Vec<String>) -> Result<Vec<Language>, ModelPackError> {
@@ -998,6 +1368,59 @@ mod tests {
         assert!(matches!(
             error,
             Err(ModelPackError::ChecksumMismatch { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_pack_loads_after_full_verify_writes_trust_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&["en", "ru", "th", "vi", "ja"], ENCODER_SHA256)?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+
+        pack.write_trust_file()?;
+        let trusted = ModelPack::<Discovered>::discover(&root)?.verify_trusted()?;
+
+        assert_eq!(trusted.manifest().model_id().as_str(), "m2m100-418m-int8");
+        assert_eq!(
+            trusted.file_path(ModelFileRole::Encoder),
+            Some(root.join("encoder.onnx"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_pack_rejects_changed_manifest() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&["en", "ru", "th", "vi", "ja"], ENCODER_SHA256)?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+        pack.write_trust_file()?;
+        fs::write(
+            root.join("manifest.json"),
+            manifest_json(
+                &["en", "ru", "th", "vi", "ja"],
+                "encoder.onnx",
+                TOKENIZER_SHA256,
+            ),
+        )?;
+
+        let error = ModelPack::<Discovered>::discover(&root)?.verify_trusted();
+
+        assert!(matches!(error, Err(ModelPackError::TrustManifestMismatch)));
+        Ok(())
+    }
+
+    #[test]
+    fn trusted_pack_rejects_changed_model_file_size() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&["en", "ru", "th", "vi", "ja"], ENCODER_SHA256)?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+        pack.write_trust_file()?;
+        fs::write(root.join("encoder.onnx"), "encoder changed\n")?;
+
+        let error = ModelPack::<Discovered>::discover(&root)?.verify_trusted();
+
+        assert!(matches!(
+            error,
+            Err(ModelPackError::TrustFileMetadataMismatch { .. })
         ));
         Ok(())
     }

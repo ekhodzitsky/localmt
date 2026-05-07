@@ -22,6 +22,7 @@ usage:
   localmt model hash FILE
   localmt model inspect PACK
   localmt model verify PACK
+  localmt model trust PACK
   localmt model plan PACK
   localmt model doctor PACK
   localmt model runtime-config PACK
@@ -31,10 +32,12 @@ usage:
   localmt ffi startup
   localmt ffi header
   localmt ffi runtime-config PACK
+  localmt ffi trusted-summary PACK
   localmt ffi hf-smoke PACK FROM TO TEXT
   localmt ffi ort-smoke PACK
   localmt ffi ort-translate-smoke PACK FROM TO TEXT
   localmt ffi ort-translate-bench PACK FROM TO TEXT RUNS
+  localmt ffi ort-translate-bench-trusted PACK FROM TO TEXT RUNS
   localmt bench --profile xiaomi17 --model-pack PACK
 ";
 
@@ -46,10 +49,12 @@ usage:
   localmt ffi startup
   localmt ffi header
   localmt ffi runtime-config PACK
+  localmt ffi trusted-summary PACK
   localmt ffi hf-smoke PACK FROM TO TEXT
   localmt ffi ort-smoke PACK
   localmt ffi ort-translate-smoke PACK FROM TO TEXT
   localmt ffi ort-translate-bench PACK FROM TO TEXT RUNS
+  localmt ffi ort-translate-bench-trusted PACK FROM TO TEXT RUNS
 ";
 
 const MODEL_HELP_TEXT: &str = "\
@@ -59,6 +64,7 @@ usage:
   localmt model hash FILE
   localmt model inspect PACK
   localmt model verify PACK
+  localmt model trust PACK
   localmt model plan PACK
   localmt model doctor PACK
   localmt model runtime-config PACK
@@ -160,6 +166,7 @@ fn run_model(mut args: impl Iterator<Item = String>) -> Result<String, CliError>
     match command.as_str() {
         "inspect" => inspect_model(single_model_path(args)?),
         "verify" => verify_model(single_model_path(args)?),
+        "trust" => trust_model(single_model_path(args)?),
         "plan" => plan_model(single_model_path(args)?),
         "doctor" => doctor_model(single_model_path(args)?),
         "runtime-config" => runtime_config_model(single_model_path(args)?),
@@ -190,10 +197,12 @@ fn run_ffi(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
         "startup" => ffi_startup(args),
         "header" => ffi_header(args),
         "runtime-config" => run_ffi_runtime_config(args),
+        "trusted-summary" => run_ffi_trusted_summary(args),
         "hf-smoke" => run_ffi_hf_smoke(args),
         "ort-smoke" => run_ffi_ort_smoke(args),
         "ort-translate-smoke" => run_ffi_ort_translate_smoke(args),
         "ort-translate-bench" => run_ffi_ort_translate_bench(args),
+        "ort-translate-bench-trusted" => run_ffi_ort_translate_bench_trusted(args),
         _ => Err(CliError::UnknownFfiCommand(command)),
     }
 }
@@ -270,6 +279,22 @@ fn verify_model(path: String) -> Result<String, CliError> {
         .map_err(CliError::ModelPack)?;
 
     Ok(format!("verified: {}", pack.manifest().model_id()))
+}
+
+/// { path is a model-pack root candidate }
+/// fn trust_model(path: String) -> Result<String, CliError>
+/// { ret is Ok only when full verification succeeds and a trust artifact is written }
+fn trust_model(path: String) -> Result<String, CliError> {
+    let pack = ModelPack::<Discovered>::discover(path)
+        .and_then(ModelPack::verify)
+        .map_err(CliError::ModelPack)?;
+    let model_id = pack.manifest().model_id().as_str().to_owned();
+    let trust_path = pack.write_trust_file().map_err(CliError::ModelPack)?;
+
+    Ok(format!(
+        "trusted: {model_id}\ntrust_file: {}",
+        trust_path.display()
+    ))
 }
 
 /// { path is a local model-pack file candidate }
@@ -824,6 +849,26 @@ fn run_ffi_ort_translate_bench(args: impl Iterator<Item = String>) -> Result<Str
     Ok(report.format(total_start.elapsed().as_millis()))
 }
 
+/// { args contains FFI trusted ORT translation benchmark command arguments }
+/// fn run_ffi_ort_translate_bench_trusted(args: impl Iterator<Item = String>) -> Result<String, CliError>
+/// { ret is Ok only when trusted ORT-backed FFI translation succeeds for every requested run }
+fn run_ffi_ort_translate_bench_trusted(
+    args: impl Iterator<Item = String>,
+) -> Result<String, CliError> {
+    let args = OrtTranslateBenchArgs::parse(args)?;
+    let total_start = Instant::now();
+    let path_bytes = args.path.as_bytes();
+    let model_pack_summary_ms = measure_model_pack_trusted_summary(path_bytes)?;
+    let source_id = ffi_language_id(args.source)?;
+    let target_id = ffi_language_id(args.target)?;
+    let (translator, open_ms) = open_ort_translator_trusted(path_bytes)?;
+    let loop_report = run_ort_translation_bench(&translator, source_id, target_id, &args)?;
+    let report =
+        OrtTranslateBenchReport::new(args.runs, model_pack_summary_ms, open_ms, loop_report);
+
+    Ok(report.format(total_start.elapsed().as_millis()))
+}
+
 /// { args contains one model path argument }
 /// fn run_ffi_runtime_config(args: impl Iterator<Item = String>) -> Result<String, CliError>
 /// { ret is Ok only when strict ORT runtime config is summarized through FFI }
@@ -852,6 +897,29 @@ fn run_ffi_runtime_config(args: impl Iterator<Item = String>) -> Result<String, 
 
     Ok(format!(
         "ffi_abi: {}\nmodel_pack_summary: ok\nruntime_config_summary: ok\n{runtime_summary}",
+        localmt_ffi::localmt_ffi_abi_version()
+    ))
+}
+
+/// { args contains one trusted model path argument }
+/// fn run_ffi_trusted_summary(args: impl Iterator<Item = String>) -> Result<String, CliError>
+/// { ret is Ok only when trusted-pack summary is returned through FFI }
+fn run_ffi_trusted_summary(args: impl Iterator<Item = String>) -> Result<String, CliError> {
+    let path = single_model_path(args)?;
+    let path_bytes = path.as_bytes();
+    let summary = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_model_pack_trusted_summary(
+            path_bytes.as_ptr(),
+            path_bytes.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
+    })?;
+    let summary = String::from_utf8(summary).map_err(CliError::FfiOutputUtf8)?;
+
+    Ok(format!(
+        "ffi_abi: {}\nmodel_pack_trusted_summary: ok\n{summary}",
         localmt_ffi::localmt_ffi_abi_version()
     ))
 }
@@ -1048,6 +1116,24 @@ fn measure_model_pack_summary(path_bytes: &[u8]) -> Result<u128, CliError> {
     Ok(summary_start.elapsed().as_millis())
 }
 
+/// { path_bytes points to a UTF-8 trusted model-pack path }
+/// fn measure_model_pack_trusted_summary(path_bytes: &[u8]) -> Result<u128, CliError>
+/// { ret is Ok with elapsed milliseconds only when FFI trusted-pack summary succeeds }
+fn measure_model_pack_trusted_summary(path_bytes: &[u8]) -> Result<u128, CliError> {
+    let summary_start = Instant::now();
+    let _summary = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_model_pack_trusted_summary(
+            path_bytes.as_ptr(),
+            path_bytes.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
+    })?;
+
+    Ok(summary_start.elapsed().as_millis())
+}
+
 /// { path_bytes points to a UTF-8 model-pack path }
 /// fn open_ort_translator(path_bytes: &[u8]) -> Result<(OrtTranslatorHandle, u128), CliError>
 /// { ret is Ok only when the ORT translator opens and is owned by an RAII handle }
@@ -1055,6 +1141,24 @@ fn open_ort_translator(path_bytes: &[u8]) -> Result<(OrtTranslatorHandle, u128),
     let open_start = Instant::now();
     let mut translator: *mut localmt_ffi::LocalmtFfiOrtTranslator = ptr::null_mut();
     ffi_ok(localmt_ffi::localmt_ffi_ort_translator_open(
+        path_bytes.as_ptr(),
+        path_bytes.len(),
+        &mut translator,
+    ))?;
+
+    Ok((
+        OrtTranslatorHandle::new(translator),
+        open_start.elapsed().as_millis(),
+    ))
+}
+
+/// { path_bytes points to a UTF-8 trusted model-pack path }
+/// fn open_ort_translator_trusted(path_bytes: &[u8]) -> Result<(OrtTranslatorHandle, u128), CliError>
+/// { ret is Ok only when a trusted ORT translator opens and is owned by an RAII handle }
+fn open_ort_translator_trusted(path_bytes: &[u8]) -> Result<(OrtTranslatorHandle, u128), CliError> {
+    let open_start = Instant::now();
+    let mut translator: *mut localmt_ffi::LocalmtFfiOrtTranslator = ptr::null_mut();
+    ffi_ok(localmt_ffi::localmt_ffi_ort_translator_open_trusted(
         path_bytes.as_ptr(),
         path_bytes.len(),
         &mut translator,
@@ -1548,7 +1652,7 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 11"));
+        assert!(output.contains("ffi_abi: 12"));
         assert!(output.contains("model_pack_summary: ok"));
         assert!(output.contains("mock_translator_open: ok"));
         assert!(output.contains("mock_translate: ok"));
@@ -1596,13 +1700,16 @@ mod tests {
         let output = run(args.into_iter())?;
 
         assert!(output.contains("#ifndef LOCALMT_FFI_H"));
-        assert!(output.contains("#define LOCALMT_FFI_ABI_VERSION 11"));
+        assert!(output.contains("#define LOCALMT_FFI_ABI_VERSION 12"));
         assert!(output.contains("int32_t localmt_ffi_ort_runtime_configure("));
         assert!(output.contains("int32_t localmt_ffi_model_pack_summary("));
+        assert!(output.contains("int32_t localmt_ffi_model_pack_trust("));
+        assert!(output.contains("int32_t localmt_ffi_model_pack_trusted_summary("));
         assert!(output.contains("int32_t localmt_ffi_runtime_config_summary("));
         assert!(output.contains("int32_t localmt_ffi_mock_translate("));
         assert!(output.contains("int32_t localmt_ffi_ort_generator_open("));
         assert!(output.contains("int32_t localmt_ffi_ort_translator_open("));
+        assert!(output.contains("int32_t localmt_ffi_ort_translator_open_trusted("));
         assert!(output.contains("int32_t localmt_ffi_ort_translate("));
         Ok(())
     }
@@ -1613,7 +1720,7 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 11"));
+        assert!(output.contains("ffi_abi: 12"));
         assert!(output.contains("max_text_chars: 4096"));
         assert!(output.contains("xiaomi17_android_abi: arm64-v8a"));
         assert!(output.contains("languages: en, ru, th, vi, ja"));
@@ -1633,10 +1740,67 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 11"));
+        assert!(output.contains("ffi_abi: 12"));
         assert!(output.contains("runtime_config_summary: ok"));
         assert!(output.contains("runtime_config: ok"));
         assert!(output.contains("decoder_logits: decoder_logits"));
+        Ok(())
+    }
+
+    #[test]
+    fn cli_model_trust_writes_trust_file() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_plannable_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "model".to_owned(),
+            "trust".to_owned(),
+            root.display().to_string(),
+        ];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("trusted: m2m100-418m-int8"));
+        assert!(root.join(".localmt-trust.json").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn cli_ffi_trusted_summary_reports_trusted_assets() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_plannable_pack()?;
+        let trust_args = [
+            "localmt".to_owned(),
+            "model".to_owned(),
+            "trust".to_owned(),
+            root.display().to_string(),
+        ];
+        let args = [
+            "localmt".to_owned(),
+            "ffi".to_owned(),
+            "trusted-summary".to_owned(),
+            root.display().to_string(),
+        ];
+
+        run(trust_args.into_iter())?;
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("model_pack_trusted_summary: ok"));
+        assert!(output.contains("planned: m2m100-418m-int8"));
+        Ok(())
+    }
+
+    #[test]
+    fn cli_ffi_trusted_summary_requires_trust_file() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_plannable_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "ffi".to_owned(),
+            "trusted-summary".to_owned(),
+            root.display().to_string(),
+        ];
+
+        let result = run(args.into_iter());
+
+        assert!(matches!(result, Err(ref error) if error.to_string().contains("model pack error")));
         Ok(())
     }
 
@@ -1680,7 +1844,7 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 11"));
+        assert!(output.contains("ffi_abi: 12"));
         assert!(output.contains("model_pack_summary: ok"));
         assert!(output.contains("hf_mock_translator_open: ok"));
         assert!(output.contains("hf_mock_translate: ok"));
@@ -1863,6 +2027,7 @@ mod tests {
         assert!(output.contains("localmt FROM TO TEXT"));
         assert!(output.contains("localmt model hash FILE"));
         assert!(output.contains("localmt model doctor PACK"));
+        assert!(output.contains("localmt model trust PACK"));
         assert!(output.contains("localmt model runtime-config PACK"));
         assert!(output.contains(
             "localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE"
@@ -1871,10 +2036,12 @@ mod tests {
         assert!(output.contains("localmt ffi startup"));
         assert!(output.contains("localmt ffi header"));
         assert!(output.contains("localmt ffi runtime-config PACK"));
+        assert!(output.contains("localmt ffi trusted-summary PACK"));
         assert!(output.contains("localmt ffi hf-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-smoke PACK"));
         assert!(output.contains("localmt ffi ort-translate-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-translate-bench PACK FROM TO TEXT RUNS"));
+        assert!(output.contains("localmt ffi ort-translate-bench-trusted PACK FROM TO TEXT RUNS"));
         assert!(output.contains("localmt bench --profile xiaomi17 --model-pack PACK"));
         Ok(())
     }
@@ -1889,10 +2056,12 @@ mod tests {
         assert!(output.contains("localmt ffi startup"));
         assert!(output.contains("localmt ffi header"));
         assert!(output.contains("localmt ffi runtime-config PACK"));
+        assert!(output.contains("localmt ffi trusted-summary PACK"));
         assert!(output.contains("localmt ffi hf-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-smoke PACK"));
         assert!(output.contains("localmt ffi ort-translate-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-translate-bench PACK FROM TO TEXT RUNS"));
+        assert!(output.contains("localmt ffi ort-translate-bench-trusted PACK FROM TO TEXT RUNS"));
         Ok(())
     }
 
@@ -1912,6 +2081,37 @@ mod tests {
             "3".to_owned(),
         ];
 
+        let result = run(args.into_iter());
+
+        assert!(
+            matches!(result, Err(ref error) if error.to_string().contains("tokenizer disabled"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(not(feature = "hf-tokenizers"))]
+    fn cli_ffi_ort_translate_bench_trusted_reports_tokenizer_disabled()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_runtime_config_pack()?;
+        let trust_args = [
+            "localmt".to_owned(),
+            "model".to_owned(),
+            "trust".to_owned(),
+            root.display().to_string(),
+        ];
+        let args = [
+            "localmt".to_owned(),
+            "ffi".to_owned(),
+            "ort-translate-bench-trusted".to_owned(),
+            root.display().to_string(),
+            "en".to_owned(),
+            "ru".to_owned(),
+            "hello offline".to_owned(),
+            "3".to_owned(),
+        ];
+
+        run(trust_args.into_iter())?;
         let result = run(args.into_iter());
 
         assert!(
@@ -1950,6 +2150,7 @@ mod tests {
 
         assert!(output.contains("localmt model inspect PACK"));
         assert!(output.contains("localmt model verify PACK"));
+        assert!(output.contains("localmt model trust PACK"));
         assert!(output.contains("localmt model plan PACK"));
         assert!(output.contains("localmt model doctor PACK"));
         assert!(output.contains("localmt model runtime-config PACK"));

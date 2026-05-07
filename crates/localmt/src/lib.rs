@@ -134,6 +134,19 @@ impl OfflineTranslatorAssets {
         Self::from_pack(&pack).map_err(OfflineTranslatorAssetsError::Plan)
     }
 
+    /// { path points to a model-pack directory with a local trust artifact }
+    /// fn from_trusted_model_pack_path(path: impl `AsRef<Path>`) -> Result<Self, OfflineTranslatorAssetsError>
+    /// { ret is Ok only when discovery, trust verification, planning, and config parsing succeed }
+    pub fn from_trusted_model_pack_path(
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Self, OfflineTranslatorAssetsError> {
+        let pack = ModelPack::<Discovered>::discover(path)
+            .and_then(ModelPack::verify_trusted)
+            .map_err(OfflineTranslatorAssetsError::ModelPack)?;
+
+        Self::from_pack(&pack).map_err(OfflineTranslatorAssetsError::Plan)
+    }
+
     /// { pack has verified manifest, files, and checksums }
     /// fn from_pack(pack: &`ModelPack<Verified>`) -> Result<Self, OfflineTranslatorPlanError>
     /// { ret is Ok only when planning and optional generation-config parsing succeed }
@@ -972,6 +985,41 @@ mod tests {
         ])?;
 
         let assets = OfflineTranslatorAssets::from_model_pack_path(&root)?;
+
+        assert_eq!(assets.plan().generator().model_id(), "m2m100-418m-int8");
+        assert_eq!(
+            assets
+                .generation_config()
+                .map(|config| config.target_language_token(Language::Russian)),
+            Some(TokenId::new(11))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn offline_translator_assets_prepare_from_trusted_model_pack_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&[
+            ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+            ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+            (
+                "generation.json",
+                "generation_config",
+                VALID_GENERATION_CONFIG_SHA256,
+                VALID_GENERATION_CONFIG,
+            ),
+            (
+                "tokenizer.json",
+                "tokenizer",
+                TOKENIZER_SHA256,
+                "tokenizer\n",
+            ),
+        ])?;
+        ModelPack::<Discovered>::discover(&root)?
+            .verify()?
+            .write_trust_file()?;
+
+        let assets = OfflineTranslatorAssets::from_trusted_model_pack_path(&root)?;
 
         assert_eq!(assets.plan().generator().model_id(), "m2m100-418m-int8");
         assert_eq!(

@@ -73,6 +73,7 @@ localmt model write-manifest ./models/m2m100-418m-int8 m2m100-418m-int8 0.1.0 m2
 localmt model hash ./models/m2m100-418m-int8/encoder.onnx
 localmt model inspect ./models/m2m100-418m-int8
 localmt model verify ./models/m2m100-418m-int8
+localmt model trust ./models/m2m100-418m-int8
 localmt model plan ./models/m2m100-418m-int8
 localmt model doctor ./models/m2m100-418m-int8
 localmt model runtime-config ./models/m2m100-418m-int8
@@ -80,11 +81,15 @@ localmt model tokenize ./models/m2m100-418m-int8 en ru "hello offline"
 localmt ffi startup
 localmt ffi header
 localmt ffi runtime-config ./models/m2m100-418m-int8
+localmt ffi trusted-summary ./models/m2m100-418m-int8
 localmt ffi ort-translate-bench ./models/m2m100-418m-int8 en ru "hello offline" 3
+localmt ffi ort-translate-bench-trusted ./models/m2m100-418m-int8 en ru "hello offline" 3
 localmt bench --help
 ```
 
 `model hash` computes the lowercase SHA-256 digest used in `manifest.json`.
+`model trust` performs full model-pack verification and writes the local trust
+artifact used by trusted Android hot-start APIs.
 SDK and tooling code can also build manifests without hand-written JSON:
 `ModelManifest::new_current` accepts validated model metadata, supported
 languages, safe relative file paths, typed file roles, and SHA-256 values, then
@@ -148,15 +153,18 @@ CLI smoke checks:
 
 ```bash
 cargo run -p localmt -- model plan ./models/m2m100-418m-int8
+cargo run -p localmt -- model trust ./models/m2m100-418m-int8
 cargo run -p localmt -- model doctor ./models/m2m100-418m-int8
 cargo run -p localmt -- ffi startup
 cargo run -p localmt -- ffi header
 cargo run -p localmt -- ffi runtime-config ./models/m2m100-418m-int8
+cargo run -p localmt -- ffi trusted-summary ./models/m2m100-418m-int8
 cargo run -p localmt -- ffi smoke ./models/m2m100-418m-int8 en ru "hello offline"
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke ./models/m2m100-418m-int8 en ru "hello offline"
 cargo run -p localmt --features ort-runtime -- ffi ort-smoke ./models/m2m100-418m-int8
 cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-smoke ./models/m2m100-418m-int8 en ru "hello offline"
 cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-bench ./models/m2m100-418m-int8 en ru "hello offline" 3
+cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-bench-trusted ./models/m2m100-418m-int8 en ru "hello offline" 3
 ```
 
 `localmt ffi startup` prints the Android-visible startup contract through the
@@ -168,6 +176,10 @@ metadata, compiled feature flags, and stable language codes.
 `localmt_ffi_runtime_config_summary`: it verifies the pack through the Android
 buffer ABI, requires strict ORT runtime metadata, and still avoids tokenizer or
 ONNX Runtime loading.
+`localmt model trust` is the install/update-time integrity gate: it fully
+verifies the model pack and writes `.localmt-trust.json`. `localmt ffi
+trusted-summary` then validates that trust artifact through the Android ABI so
+hot startup paths do not re-hash large model files.
 `localmt ffi smoke` runs the host-side equivalent of the default JNI call flow:
 ABI query, model-pack summary, mock translator open, mock translate, status
 message mapping on errors, and handle close.
@@ -185,6 +197,8 @@ use.
 bounded repeated translations and reports phase timings for model-pack summary,
 ORT translator open, first translation, total translation time, average
 translation time, and total command time.
+`localmt ffi ort-translate-bench-trusted` runs the same repeated-translation
+loop after trusted-pack planning and `localmt_ffi_ort_translator_open_trusted`.
 
 ## Android FFI Boundary
 
@@ -205,6 +219,14 @@ reporting, but does not load tokenizer backends or ONNX Runtime sessions. The
 CLI and FFI paths share
 `OfflineTranslatorAssetsSummary::to_preflight_text` so adapter-visible summary
 text has one source of truth.
+
+`localmt_ffi_model_pack_trust` is the explicit install/update-time trust step.
+It performs full checksum verification and writes `.localmt-trust.json` beside
+the pack. `localmt_ffi_model_pack_trusted_summary` and
+`localmt_ffi_ort_translator_open_trusted` require that artifact, validate the
+manifest hash and file metadata snapshot, and avoid re-hashing large model
+files on hot startup. The default summary/open functions remain strict and do
+full verification.
 
 `localmt_ffi_runtime_config_summary` is the stricter Android readiness gate for
 real ORT generation. It uses the same output-buffer ABI, requires both
@@ -243,6 +265,9 @@ for Android/JNI callers behind
 `hf-tokenizers + ort-runtime`: open verifies the same model pack and builds the
 real tokenizer plus ORT generator, while `localmt_ffi_ort_translate` uses the
 same UTF-8 output-buffer contract as the mock translator handles.
+After an install/update call to `localmt_ffi_model_pack_trust`, apps can use
+`localmt_ffi_ort_translator_open_trusted` for the same handle contract without
+full model-file hashing on every startup.
 
 ## ONNX Runtime Boundary
 

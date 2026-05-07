@@ -5,8 +5,9 @@ use std::{ptr, slice, str};
 #[cfg(feature = "ort-runtime")]
 use localmt::configure_ort_dylib_path;
 use localmt::{
-    DeviceProfile, Language, LanguagePair, MAX_TEXT_CHARS, MockOfflineTranslator, NonEmptyText,
-    OfflineTranslatorAssets, OrtEngineError, OrtTokenGenerator, TranslateRequest,
+    DeviceProfile, Discovered, Language, LanguagePair, MAX_TEXT_CHARS, MockOfflineTranslator,
+    ModelPack, NonEmptyText, OfflineTranslatorAssets, OrtEngineError, OrtTokenGenerator,
+    TranslateRequest,
 };
 #[cfg(feature = "hf-tokenizers")]
 use localmt::{HfMockOfflineTranslator, HfMockOfflineTranslatorError, HfTokenizer};
@@ -43,7 +44,7 @@ pub const LOCALMT_FFI_TOKENIZER_ERROR: i32 = 12;
 pub const LOCALMT_FFI_RUNTIME_NOT_CONFIGURED: i32 = 13;
 
 /// Pointer-free C ABI version.
-pub const LOCALMT_FFI_ABI_VERSION: u32 = 11;
+pub const LOCALMT_FFI_ABI_VERSION: u32 = 12;
 /// FFI code for Android arm64-v8a.
 pub const LOCALMT_FFI_ANDROID_ABI_ARM64_V8A: u16 = 1;
 /// FFI code for ONNX Runtime Mobile with XNNPACK.
@@ -339,6 +340,69 @@ pub extern "C" fn localmt_ffi_model_pack_summary(
         Err(status) => return status,
     };
     let assets = match OfflineTranslatorAssets::from_model_pack_path(path) {
+        Ok(value) => value,
+        Err(_error) => return LOCALMT_FFI_MODEL_PACK_ERROR,
+    };
+    let summary = assets.summary().to_preflight_text();
+    let output = summary.as_bytes();
+
+    unsafe { *written_len = output.len() }; // SAFETY: non-null writable length pointer.
+
+    if output_capacity < output.len() {
+        return LOCALMT_FFI_BUFFER_TOO_SMALL;
+    }
+    if output_ptr.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, output.len()) }; // SAFETY: output buffer capacity was checked.
+
+    LOCALMT_FFI_OK
+}
+
+/// { path_ptr points to path_len readable bytes }
+/// fn localmt_ffi_model_pack_trust(path_ptr: *const u8, path_len: usize) -> i32
+/// { ret is OK only when the pack fully verifies and the local trust artifact is written }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+pub extern "C" fn localmt_ffi_model_pack_trust(path_ptr: *const u8, path_len: usize) -> i32 {
+    let path = match read_ffi_utf8(path_ptr, path_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let trust = ModelPack::<Discovered>::discover(path)
+        .and_then(ModelPack::verify)
+        .and_then(|pack| pack.write_trust_file().map(|_path| ()));
+
+    if trust.is_ok() {
+        LOCALMT_FFI_OK
+    } else {
+        LOCALMT_FFI_MODEL_PACK_ERROR
+    }
+}
+
+/// { path_ptr points to path_len readable bytes and output/written pointers follow the header contract }
+/// fn localmt_ffi_model_pack_trusted_summary(path_ptr: *const u8, path_len: usize, output_ptr: *mut u8, output_capacity: usize, written_len: *mut usize) -> i32
+/// { ret is OK only when a trusted-pack summary is written through the output buffer }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_model_pack_trusted_summary(
+    path_ptr: *const u8,
+    path_len: usize,
+    output_ptr: *mut u8,
+    output_capacity: usize,
+    written_len: *mut usize,
+) -> i32 {
+    if written_len.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *written_len = 0 }; // SAFETY: non-null writable length pointer.
+
+    let path = match read_ffi_utf8(path_ptr, path_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let assets = match OfflineTranslatorAssets::from_trusted_model_pack_path(path) {
         Ok(value) => value,
         Err(_error) => return LOCALMT_FFI_MODEL_PACK_ERROR,
     };
@@ -839,8 +903,47 @@ pub extern "C" fn localmt_ffi_ort_translator_open(
         Err(_error) => return LOCALMT_FFI_MODEL_PACK_ERROR,
     };
 
+    ffi_ort_translator_open_from_assets(assets, out_translator)
+}
+
+/// { path_ptr points to path_len readable bytes and out_translator is writable }
+/// fn localmt_ffi_ort_translator_open_trusted(path_ptr: *const u8, path_len: usize, out_translator: *mut *mut LocalmtFfiOrtTranslator) -> i32
+/// { ret is OK only when a trusted pack opens as an owned non-null ORT translator handle }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_ort_translator_open_trusted(
+    path_ptr: *const u8,
+    path_len: usize,
+    out_translator: *mut *mut LocalmtFfiOrtTranslator,
+) -> i32 {
+    if out_translator.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *out_translator = ptr::null_mut() }; // SAFETY: non-null writable out pointer.
+
+    let path = match read_ffi_utf8(path_ptr, path_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let assets = match OfflineTranslatorAssets::from_trusted_model_pack_path(path) {
+        Ok(value) => value,
+        Err(_error) => return LOCALMT_FFI_MODEL_PACK_ERROR,
+    };
+
+    ffi_ort_translator_open_from_assets(assets, out_translator)
+}
+
+/// { out_translator is a non-null writable out pointer }
+/// fn ffi_ort_translator_open_from_assets(assets: OfflineTranslatorAssets, out_translator: *mut *mut LocalmtFfiOrtTranslator) -> i32
+/// { ret maps assets into the enabled ORT translator build path }
+fn ffi_ort_translator_open_from_assets(
+    assets: OfflineTranslatorAssets,
+    out_translator: *mut *mut LocalmtFfiOrtTranslator,
+) -> i32 {
     #[cfg(not(feature = "hf-tokenizers"))]
     {
+        let _out_translator = out_translator;
         let _tokenizer_path = assets.plan().tokenizer().tokenizer_path();
         LOCALMT_FFI_TOKENIZER_DISABLED
     }
@@ -1034,13 +1137,15 @@ mod tests {
         localmt_ffi_language_from_iso_639_1, localmt_ffi_max_text_chars,
         localmt_ffi_mock_translate, localmt_ffi_mock_translator_close,
         localmt_ffi_mock_translator_open, localmt_ffi_model_pack_summary,
+        localmt_ffi_model_pack_trust, localmt_ffi_model_pack_trusted_summary,
         localmt_ffi_ort_generator_open, localmt_ffi_ort_runtime_configure,
         localmt_ffi_ort_runtime_enabled, localmt_ffi_ort_translate,
         localmt_ffi_ort_translator_close, localmt_ffi_ort_translator_open,
-        localmt_ffi_runtime_config_summary, localmt_ffi_startup_summary,
-        localmt_ffi_status_message, localmt_ffi_supported_language_count,
-        localmt_ffi_validate_language_pair, localmt_ffi_xiaomi17_android_abi_code,
-        localmt_ffi_xiaomi17_preferred_runtime_code, localmt_ffi_xiaomi17_ram_class_gib,
+        localmt_ffi_ort_translator_open_trusted, localmt_ffi_runtime_config_summary,
+        localmt_ffi_startup_summary, localmt_ffi_status_message,
+        localmt_ffi_supported_language_count, localmt_ffi_validate_language_pair,
+        localmt_ffi_xiaomi17_android_abi_code, localmt_ffi_xiaomi17_preferred_runtime_code,
+        localmt_ffi_xiaomi17_ram_class_gib,
     };
     #[cfg(feature = "hf-tokenizers")]
     use localmt::Sha256Digest;
@@ -1113,7 +1218,7 @@ mod tests {
 
     #[test]
     fn ffi_reports_abi_and_xiaomi17_contract() {
-        assert_eq!(localmt_ffi_abi_version(), 11);
+        assert_eq!(localmt_ffi_abi_version(), 12);
         assert_eq!(localmt_ffi_max_text_chars(), 4096);
         assert_eq!(localmt_ffi_xiaomi17_android_abi_code(), 1);
         assert_eq!(localmt_ffi_xiaomi17_ram_class_gib(), 12);
@@ -1131,7 +1236,7 @@ mod tests {
         );
         let summary = std::str::from_utf8(&output[..written_len])?;
 
-        assert!(summary.contains("ffi_abi: 11"));
+        assert!(summary.contains("ffi_abi: 12"));
         assert!(summary.contains("max_text_chars: 4096"));
         assert!(summary.contains("xiaomi17_android_abi: arm64-v8a"));
         assert!(summary.contains("xiaomi17_ram_class_gib: 12"));
@@ -1429,6 +1534,57 @@ mod tests {
     }
 
     #[test]
+    fn ffi_model_pack_trust_writes_artifact_and_trusted_summary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut output = [0_u8; 512];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_model_pack_trust(path.as_ptr(), path.len()),
+            LOCALMT_FFI_OK
+        );
+        assert_eq!(
+            localmt_ffi_model_pack_trusted_summary(
+                path.as_ptr(),
+                path.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_OK
+        );
+
+        let summary = std::str::from_utf8(&output[..written_len])?;
+        assert!(summary.contains("planned: m2m100-418m-int8"));
+        assert!(root.join(".localmt-trust.json").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_model_pack_trusted_summary_requires_trust_file() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_verified_pack()?;
+        let path = path_bytes(&root)?;
+        let mut output = [0_u8; 512];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_model_pack_trusted_summary(
+                path.as_ptr(),
+                path.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_MODEL_PACK_ERROR
+        );
+        assert_eq!(written_len, 0);
+        Ok(())
+    }
+
+    #[test]
     fn ffi_runtime_config_summary_reports_strict_ort_contract()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = create_runtime_config_pack()?;
@@ -1627,6 +1783,28 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "hf-tokenizers"))]
+    fn ffi_ort_translator_open_trusted_reports_tokenizer_disabled()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_runtime_config_pack()?;
+        let path = path_bytes(&root)?;
+        let mut translator: *mut LocalmtFfiOrtTranslator = ptr::null_mut();
+        assert_eq!(
+            localmt_ffi_model_pack_trust(path.as_ptr(), path.len()),
+            LOCALMT_FFI_OK
+        );
+
+        assert_eq!(
+            localmt_ffi_ort_translator_open_trusted(path.as_ptr(), path.len(), &mut translator),
+            LOCALMT_FFI_TOKENIZER_DISABLED
+        );
+        assert!(translator.is_null());
+
+        localmt_ffi_ort_translator_close(translator);
+        Ok(())
+    }
+
+    #[test]
     fn ffi_ort_translator_open_rejects_nulls_and_invalid_utf8()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = create_runtime_config_pack()?;
@@ -1639,6 +1817,25 @@ mod tests {
         );
         assert_eq!(
             localmt_ffi_ort_translator_open([0xff].as_ptr(), 1, &mut translator),
+            LOCALMT_FFI_INVALID_UTF8
+        );
+        assert!(translator.is_null());
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_ort_translator_open_trusted_rejects_nulls_and_invalid_utf8()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_runtime_config_pack()?;
+        let path = path_bytes(&root)?;
+        let mut translator: *mut LocalmtFfiOrtTranslator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_ort_translator_open_trusted(path.as_ptr(), path.len(), ptr::null_mut()),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_ort_translator_open_trusted([0xff].as_ptr(), 1, &mut translator),
             LOCALMT_FFI_INVALID_UTF8
         );
         assert!(translator.is_null());

@@ -90,7 +90,7 @@ At app startup:
 
 1. Call `localmt_ffi_startup_summary()` for a loggable startup contract, or
    call the individual probes below.
-1. Call `localmt_ffi_abi_version()` and require `LOCALMT_FFI_ABI_VERSION == 11`.
+1. Call `localmt_ffi_abi_version()` and require `LOCALMT_FFI_ABI_VERSION == 12`.
 1. Call `localmt_ffi_xiaomi17_android_abi_code()` and require
    `LOCALMT_FFI_ANDROID_ABI_ARM64_V8A`.
 1. Call `localmt_ffi_supported_language_count()` and map language ids through
@@ -98,12 +98,16 @@ At app startup:
 
 Before opening a translator:
 
-1. Call `localmt_ffi_model_pack_summary()` with a local model-pack directory.
-2. If the buffer is too small, allocate `written_len` bytes and call again.
-3. Call `localmt_ffi_runtime_config_summary()` before opening ORT generation;
+1. On model install/update, call `localmt_ffi_model_pack_trust()` with a local
+   model-pack directory. This performs full checksum verification and writes
+   `.localmt-trust.json`.
+2. On hot startup, call `localmt_ffi_model_pack_trusted_summary()` to validate
+   the trust artifact without re-hashing large model files.
+3. If the buffer is too small, allocate `written_len` bytes and call again.
+4. Call `localmt_ffi_runtime_config_summary()` before opening ORT generation;
    this requires valid `generation_config` and `ort_io` metadata without loading
    ONNX Runtime sessions.
-4. Use `localmt_ffi_status_message()` to turn any non-zero status into a local
+5. Use `localmt_ffi_status_message()` to turn any non-zero status into a local
    log or UI diagnostic.
 
 Smoke translation choices:
@@ -116,9 +120,10 @@ Smoke translation choices:
   mocked.
 - Use `localmt_ffi_ort_generator_open()` when the Rust library is built with
   `ort-runtime`; this verifies ORT session loading without translation.
-- Use `localmt_ffi_ort_translator_open()` and `localmt_ffi_ort_translate()`
-  when the Rust library is built with `hf-tokenizers` and `ort-runtime`; this is
-  the Android-visible real translation path.
+- Use `localmt_ffi_ort_translator_open_trusted()` and
+  `localmt_ffi_ort_translate()` after `localmt_ffi_model_pack_trust()` when the
+  Rust library is built with `hf-tokenizers` and `ort-runtime`; this is the
+  Android-visible real translation path optimized for hot startup.
 
 For ORT-enabled builds, call `localmt_ffi_ort_runtime_configure()` with the
 absolute `nativeLibraryDir/libonnxruntime.so` path before opening the generator
@@ -130,7 +135,7 @@ The ORT translator flow is:
 
 ```c
 LocalmtFfiOrtTranslator *translator = NULL;
-int32_t status = localmt_ffi_ort_translator_open(
+int32_t status = localmt_ffi_ort_translator_open_trusted(
     path_ptr,
     path_len,
     &translator);
@@ -209,14 +214,17 @@ cargo run -p localmt -- model verify <pack-dir>
 cargo run -p localmt -- model plan <pack-dir>
 cargo run -p localmt -- model doctor <pack-dir>
 cargo run -p localmt -- model runtime-config <pack-dir>
+cargo run -p localmt -- model trust <pack-dir>
 cargo run -p localmt -- ffi startup
 cargo run -p localmt -- ffi header
 cargo run -p localmt -- ffi runtime-config <pack-dir>
+cargo run -p localmt -- ffi trusted-summary <pack-dir>
 cargo run -p localmt -- ffi smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features ort-runtime -- ffi ort-smoke <pack-dir>
 cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-bench <pack-dir> en ru "hello offline" 3
+cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-bench-trusted <pack-dir> en ru "hello offline" 3
 ```
 
 `localmt ffi smoke` exercises the same default C ABI flow described above on the
@@ -232,6 +240,9 @@ diagnostics, while feature builds use the compiled backends.
 loading ONNX Runtime sessions.
 `localmt ffi runtime-config` exercises the same strict readiness gate through
 `localmt_ffi_runtime_config_summary`, which is the Android/JNI-facing ABI call.
+`localmt model trust` and `localmt ffi trusted-summary` split install/update
+verification from hot-start trusted planning so app startup does not re-hash
+large ONNX files.
 `localmt ffi hf-smoke` exercises the tokenizer-backed mock translator path
 through the same host-side FFI helpers; it requires `hf-tokenizers`, verifies
 `tokenizer.json` loading, and still keeps token generation mocked.
@@ -241,6 +252,8 @@ requires `ort-runtime`, attempts session loading, and does not run translation.
 it requires `hf-tokenizers` plus `ort-runtime` for real translation.
 `localmt ffi ort-translate-bench` keeps that ORT translator handle open and
 reports bounded repeated-translation timing phases for performance baselines.
+`localmt ffi ort-translate-bench-trusted` measures the same translation loop
+through trusted-pack summary and `localmt_ffi_ort_translator_open_trusted`.
 
 ## Verification
 
