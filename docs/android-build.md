@@ -159,6 +159,7 @@ cargo run -p localmt -- model write-manifest <pack-dir> m2m100-418m-int8 0.1.0 m
 cargo run -p localmt -- model verify <pack-dir>
 cargo run -p localmt -- model plan <pack-dir>
 cargo run -p localmt -- model doctor <pack-dir>
+cargo run -p localmt -- model runtime-config <pack-dir>
 cargo run -p localmt -- ffi startup
 cargo run -p localmt -- ffi header
 cargo run -p localmt -- ffi smoke <pack-dir> en ru "hello offline"
@@ -174,6 +175,9 @@ Android: facade planning, startup ABI summary, shared FFI model-pack summary,
 deterministic mock FFI translation, HF tokenizer status, and ORT runtime status.
 Default builds report disabled HF/ORT features as diagnostics, while feature
 builds use the compiled backends.
+`localmt model runtime-config` is stricter than `model plan`: it requires both
+`generation_config` and `ort_io` to be present and valid, but still avoids
+loading ONNX Runtime sessions.
 `localmt ffi hf-smoke` exercises the tokenizer-backed mock translator path
 through the same host-side FFI helpers; it requires `hf-tokenizers`, verifies
 `tokenizer.json` loading, and still keeps token generation mocked.

@@ -8,8 +8,8 @@ use localmt::{HfTokenizer, TokenizerEngine, TokenizerInput};
 use localmt::{
     Language, LanguagePair, MockTokenGenerator, MockTokenizer, ModelArchitecture, ModelFile,
     ModelFileRole, ModelId, ModelLicense, ModelManifest, ModelPackVersion, ModelRelativePath,
-    ModelRuntime, NonEmptyText, OfflineTranslatorAssets, Sha256Digest, TranslateRequest,
-    TranslationPipeline, Translator,
+    ModelRuntime, NonEmptyText, OfflineTranslatorAssets, OfflineTranslatorPlan, Sha256Digest,
+    TranslateRequest, TranslationPipeline, Translator,
 };
 use localmt_models::{Discovered, ModelPack};
 
@@ -23,6 +23,7 @@ usage:
   localmt model verify PACK
   localmt model plan PACK
   localmt model doctor PACK
+  localmt model runtime-config PACK
   localmt model tokenize PACK FROM TO TEXT
   localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE
   localmt ffi smoke PACK FROM TO TEXT
@@ -53,6 +54,7 @@ usage:
   localmt model verify PACK
   localmt model plan PACK
   localmt model doctor PACK
+  localmt model runtime-config PACK
   localmt model tokenize PACK FROM TO TEXT
   localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE
 ";
@@ -153,6 +155,7 @@ fn run_model(mut args: impl Iterator<Item = String>) -> Result<String, CliError>
         "verify" => verify_model(single_model_path(args)?),
         "plan" => plan_model(single_model_path(args)?),
         "doctor" => doctor_model(single_model_path(args)?),
+        "runtime-config" => runtime_config_model(single_model_path(args)?),
         "tokenize" => tokenize_model(args),
         "hash" => hash_model_file(single_model_path(args)?),
         "write-manifest" => write_manifest(args),
@@ -343,6 +346,27 @@ fn plan_model(path: String) -> Result<String, CliError> {
         OfflineTranslatorAssets::from_model_pack_path(path).map_err(CliError::OfflineAssets)?;
 
     Ok(assets.summary().to_preflight_text())
+}
+
+/// { path is a model-pack root candidate }
+/// fn runtime_config_model(path: String) -> Result<String, CliError>
+/// { ret summarizes strict ORT runtime config without loading ONNX sessions }
+fn runtime_config_model(path: String) -> Result<String, CliError> {
+    let pack = ModelPack::<Discovered>::discover(path)
+        .and_then(ModelPack::verify)
+        .map_err(CliError::ModelPack)?;
+    let plan = OfflineTranslatorPlan::from_pack(&pack).map_err(CliError::OfflinePlan)?;
+    let config = plan.generator().parse_runtime_config().map_err(|error| {
+        CliError::OfflinePlan(localmt::OfflineTranslatorPlanError::Generator(error))
+    })?;
+
+    Ok(format!(
+        "runtime_config: ok\nmax_new_tokens: {}\nencoder_input_ids: {}\ndecoder_input_ids: {}\ndecoder_logits: {}",
+        config.generation_config().max_new_tokens().value(),
+        config.ort_io_config().encoder().input_ids(),
+        config.ort_io_config().decoder().input_ids(),
+        config.ort_io_config().decoder().logits(),
+    ))
 }
 
 /// { path is a model-pack root candidate }
@@ -829,6 +853,7 @@ enum CliError {
     UnknownModelCommand(String),
     UnknownFfiCommand(String),
     ModelPack(localmt_models::ModelPackError),
+    OfflinePlan(localmt::OfflineTranslatorPlanError),
     OfflineAssets(localmt::OfflineTranslatorAssetsError),
     Benchmark(localmt_bench::BenchmarkError),
     InvalidBenchArguments(String),
@@ -865,6 +890,7 @@ impl fmt::Display for CliError {
             }
             Self::UnknownFfiCommand(command) => write!(formatter, "unknown ffi command: {command}"),
             Self::ModelPack(error) => write!(formatter, "{error}"),
+            Self::OfflinePlan(error) => write!(formatter, "{error}"),
             Self::OfflineAssets(error) => write!(formatter, "{error}"),
             Self::Benchmark(error) => write!(formatter, "{error}"),
             Self::InvalidBenchArguments(message) => write!(formatter, "{message}"),
@@ -943,6 +969,8 @@ mod tests {
     const DECODER_SHA256: &str = "eacbeef293be61f2a85d929cadb4cbb5248c8b8a1478b3d4b3180ea365d5e687";
     const GENERATION_CONFIG_SHA256: &str =
         "a8a99326d564beb1fc16cb59526dd5ed7b5fd673f969591f47845e17fbed401d";
+    const ORT_IO_CONFIG_SHA256: &str =
+        "3ed8af0b5a58d51e246f3081e973d8683b89bf3cacf23c26243fec19ab31a721";
     const TOKENIZER_SHA256: &str =
         "38395078aa8c0af1657b8fc788f358d57e5f5fea99c8cdc004198e3c6fffbe71";
     const GENERATION_CONFIG: &str = r#"{
@@ -955,6 +983,27 @@ mod tests {
     "th": 12,
     "vi": 13,
     "ja": 14
+  }
+}"#;
+    const ORT_IO_CONFIG: &str = r#"{
+  "ort_io": {
+    "encoder": {
+      "input_ids": "encoder_input_ids",
+      "attention_mask": "encoder_attention_mask",
+      "last_hidden_state": "encoder_last_hidden_state"
+    },
+    "decoder": {
+      "input_ids": "decoder_input_ids",
+      "encoder_attention_mask": "decoder_encoder_attention_mask",
+      "encoder_hidden_states": "decoder_encoder_hidden_states",
+      "logits": "decoder_logits"
+    },
+    "decoder_with_past": {
+      "input_ids": "past_input_ids",
+      "encoder_attention_mask": "past_encoder_attention_mask",
+      "encoder_hidden_states": "past_encoder_hidden_states",
+      "logits": "past_logits"
+    }
   }
 }"#;
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1346,6 +1395,7 @@ mod tests {
         assert!(output.contains("localmt FROM TO TEXT"));
         assert!(output.contains("localmt model hash FILE"));
         assert!(output.contains("localmt model doctor PACK"));
+        assert!(output.contains("localmt model runtime-config PACK"));
         assert!(output.contains(
             "localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE"
         ));
@@ -1382,11 +1432,32 @@ mod tests {
         assert!(output.contains("localmt model verify PACK"));
         assert!(output.contains("localmt model plan PACK"));
         assert!(output.contains("localmt model doctor PACK"));
+        assert!(output.contains("localmt model runtime-config PACK"));
         assert!(output.contains("localmt model tokenize PACK FROM TO TEXT"));
         assert!(output.contains("localmt model hash FILE"));
         assert!(output.contains(
             "localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE"
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn cli_reports_ort_runtime_config_for_verified_pack() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_runtime_config_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "model".to_owned(),
+            "runtime-config".to_owned(),
+            root.display().to_string(),
+        ];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("runtime_config: ok"));
+        assert!(output.contains("max_new_tokens: 32"));
+        assert!(output.contains("encoder_input_ids: encoder_input_ids"));
+        assert!(output.contains("decoder_logits: decoder_logits"));
         Ok(())
     }
 
@@ -1452,6 +1523,37 @@ mod tests {
     {{ "path": "decoder.onnx", "kind": "decoder", "sha256": "{DECODER_SHA256}" }},
     {{ "path": "tokenizer.json", "kind": "tokenizer", "sha256": "{TOKENIZER_SHA256}" }},
     {{ "path": "generation.json", "kind": "generation_config", "sha256": "{GENERATION_CONFIG_SHA256}" }}
+  ]
+}}"#
+            ),
+        )?;
+        Ok(root)
+    }
+
+    fn create_runtime_config_pack() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        fs::write(root.join("encoder.onnx"), "encoder\n")?;
+        fs::write(root.join("decoder.onnx"), "decoder\n")?;
+        fs::write(root.join("tokenizer.json"), "tokenizer\n")?;
+        fs::write(root.join("generation.json"), GENERATION_CONFIG)?;
+        fs::write(root.join("config.json"), ORT_IO_CONFIG)?;
+        fs::write(
+            root.join("manifest.json"),
+            format!(
+                r#"{{
+  "schema_version": 0,
+  "model_id": "m2m100-418m-int8",
+  "version": "0.1.0",
+  "architecture": "m2m100",
+  "runtime": "onnx-runtime",
+  "license": "MIT",
+  "languages": ["en", "ru", "th", "vi", "ja"],
+  "files": [
+    {{ "path": "encoder.onnx", "kind": "encoder", "sha256": "{ENCODER_SHA256}" }},
+    {{ "path": "decoder.onnx", "kind": "decoder", "sha256": "{DECODER_SHA256}" }},
+    {{ "path": "tokenizer.json", "kind": "tokenizer", "sha256": "{TOKENIZER_SHA256}" }},
+    {{ "path": "generation.json", "kind": "generation_config", "sha256": "{GENERATION_CONFIG_SHA256}" }},
+    {{ "path": "config.json", "kind": "config", "sha256": "{ORT_IO_CONFIG_SHA256}" }}
   ]
 }}"#
             ),

@@ -75,6 +75,7 @@ localmt model inspect ./models/m2m100-418m-int8
 localmt model verify ./models/m2m100-418m-int8
 localmt model plan ./models/m2m100-418m-int8
 localmt model doctor ./models/m2m100-418m-int8
+localmt model runtime-config ./models/m2m100-418m-int8
 localmt model tokenize ./models/m2m100-418m-int8 en ru "hello offline"
 localmt ffi startup
 localmt ffi header
@@ -94,6 +95,9 @@ when present, computes SHA-256 values, and prints JSON to stdout.
 `OfflineTranslatorPlan`, parses an optional `generation_config`, and reports the
 `ort_io_config` readiness status. It is a no-inference smoke command: it does
 not load ONNX Runtime sessions or execute decoder graphs.
+`model runtime-config` is the stricter no-inference gate for future ORT
+generation: it requires both a valid `generation_config` and a valid `ort_io`
+contract, then prints the selected generation limit and tensor names.
 `model doctor` is the single local readiness gate for a pack: it runs facade
 planning, the Android startup ABI summary, the shared FFI model-pack summary,
 deterministic mock FFI translation, and HF/ORT preflight status checks. In
