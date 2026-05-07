@@ -46,13 +46,21 @@ String startup = LocalmtNative.startupSummary();
 LocalmtNative.configureOrtRuntime(
     context.getApplicationInfo().nativeLibraryDir + "/libonnxruntime.so");
 String ready = LocalmtNative.trustedSummary(modelPackDir.getAbsolutePath());
+String sourceCode = LocalmtNative.languageCode(LocalmtNative.LANGUAGE_ENGLISH);
+String targetCode = LocalmtNative.languageCode(LocalmtNative.LANGUAGE_RUSSIAN);
+LocalmtNative.validateLanguagePair(
+    LocalmtNative.LANGUAGE_ENGLISH, LocalmtNative.LANGUAGE_RUSSIAN);
 try (LocalmtNative.Translator translator =
          LocalmtNative.openTrustedTranslator(modelPackDir.getAbsolutePath())) {
-    String translated = translator.translate(0, 1, "hello world");
+    String translated = translator.translate(
+        LocalmtNative.LANGUAGE_ENGLISH,
+        LocalmtNative.LANGUAGE_RUSSIAN,
+        "hello world");
 }
 ```
 
-Language ids are the stable FFI order from `localmt_ffi_language_code()`:
+Language ids are exposed as Java constants and remain the stable FFI order from
+`localmt_ffi_language_code()`:
 
 - `0` - English
 - `1` - Russian

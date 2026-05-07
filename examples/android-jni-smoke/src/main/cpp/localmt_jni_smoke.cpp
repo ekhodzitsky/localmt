@@ -89,6 +89,10 @@ std::string status_message(int32_t status) {
   return output;
 }
 
+void throw_illegal_status(JNIEnv *env, int32_t status) {
+  throw_illegal_argument(env, status_message(status));
+}
+
 void throw_localmt(JNIEnv *env, int32_t status) {
   throw_java(env, "java/lang/IllegalStateException", status_message(status));
 }
@@ -159,6 +163,19 @@ bool ensure_language_id(JNIEnv *env, jint language_id, const char *name) {
   return true;
 }
 
+bool ensure_supported_language_id(JNIEnv *env, jint language_id,
+                                  const char *name) {
+  if (!ensure_language_id(env, language_id, name)) {
+    return false;
+  }
+  if (static_cast<size_t>(language_id) >=
+      localmt_ffi_supported_language_count()) {
+    throw_illegal_argument(env, std::string(name) + " is unsupported");
+    return false;
+  }
+  return true;
+}
+
 jlong to_java_handle(LocalmtFfiOrtTranslator *translator) {
   return static_cast<jlong>(reinterpret_cast<std::intptr_t>(translator));
 }
@@ -175,6 +192,40 @@ Java_dev_localmt_smoke_LocalmtNative_startupSummary(JNIEnv *env, jclass) {
   return call_buffer(env, [](uint8_t *output, size_t capacity, size_t *written) {
     return localmt_ffi_startup_summary(output, capacity, written);
   });
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_dev_localmt_smoke_LocalmtNative_supportedLanguageCount(JNIEnv *, jclass) {
+  return static_cast<jint>(localmt_ffi_supported_language_count());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_dev_localmt_smoke_LocalmtNative_languageCode(JNIEnv *env, jclass,
+                                                 jint language_id) {
+  if (!ensure_supported_language_id(env, language_id, "languageId")) {
+    return nullptr;
+  }
+
+  LocalmtFfiLanguageCode code =
+      localmt_ffi_language_code(static_cast<uint8_t>(language_id));
+  uint8_t output[2] = {code.first, code.second};
+  return new_java_string_from_utf8(env, output, sizeof(output));
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_localmt_smoke_LocalmtNative_validateLanguagePair(
+    JNIEnv *env, jclass, jint source_language_id, jint target_language_id) {
+  if (!ensure_language_id(env, source_language_id, "sourceLanguageId") ||
+      !ensure_language_id(env, target_language_id, "targetLanguageId")) {
+    return;
+  }
+
+  int32_t status = localmt_ffi_validate_language_pair(
+      static_cast<uint8_t>(source_language_id),
+      static_cast<uint8_t>(target_language_id));
+  if (status != LOCALMT_FFI_OK) {
+    throw_illegal_status(env, status);
+  }
 }
 
 extern "C" JNIEXPORT jstring JNICALL

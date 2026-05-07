@@ -1,6 +1,12 @@
 package dev.localmt.smoke;
 
 public final class LocalmtNative {
+    public static final int LANGUAGE_ENGLISH = 0;
+    public static final int LANGUAGE_RUSSIAN = 1;
+    public static final int LANGUAGE_THAI = 2;
+    public static final int LANGUAGE_VIETNAMESE = 3;
+    public static final int LANGUAGE_JAPANESE = 4;
+
     static {
         System.loadLibrary("localmt_jni_smoke");
     }
@@ -9,6 +15,12 @@ public final class LocalmtNative {
     }
 
     public static native String startupSummary();
+
+    public static native int supportedLanguageCount();
+
+    public static native String languageCode(int languageId);
+
+    public static native void validateLanguagePair(int sourceLanguageId, int targetLanguageId);
 
     public static native String trustedSummary(String modelPackPath);
 
@@ -50,6 +62,7 @@ public final class LocalmtNative {
 
         public String translate(int sourceLanguageId, int targetLanguageId, String text) {
             ensureOpen();
+            LocalmtNative.validateLanguagePair(sourceLanguageId, targetLanguageId);
             return LocalmtNative.translate(nativeHandle, sourceLanguageId, targetLanguageId, text);
         }
 
