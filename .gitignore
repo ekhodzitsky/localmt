@@ -5,6 +5,7 @@ kimi-score.svg
 /.vscode/
 *.log
 models/
+examples/android-jni-smoke/src/main/jniLibs/
 *.onnx
 *.ort
 *.safetensors

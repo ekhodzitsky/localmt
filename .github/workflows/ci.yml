@@ -40,6 +40,17 @@ jobs:
       - name: Android arm64 FFI check
         run: cargo check --locked -p localmt-ffi --target aarch64-linux-android
 
+      - name: Android JNI smoke syntax
+        run: |
+          JAVA_HOME_DIR="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+          c++ -std=c++17 -fsyntax-only \
+            -Icrates/localmt-ffi/include \
+            -I"$JAVA_HOME_DIR/include" \
+            -I"$JAVA_HOME_DIR/include/linux" \
+            examples/android-jni-smoke/src/main/cpp/localmt_jni_smoke.cpp
+          javac -d /tmp/localmt-jni-smoke-classes \
+            examples/android-jni-smoke/src/main/java/dev/localmt/smoke/LocalmtNative.java
+
       - name: Release FFI symbol check
         run: |
           cargo build --locked --release -p localmt-ffi --features hf-tokenizers,ort-runtime

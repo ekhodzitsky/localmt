@@ -35,6 +35,8 @@ the app build pipeline.
 The C ABI header is checked in at
 `crates/localmt-ffi/include/localmt_ffi.h`; the development CLI can also print
 the same header with `cargo run -p localmt -- ffi header`.
+`examples/android-jni-smoke` contains a minimal Java/C++ JNI adapter that calls
+the same C ABI from an Android app module.
 
 ## Release Profile
 

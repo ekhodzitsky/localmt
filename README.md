@@ -30,6 +30,7 @@ adapter and contract testing without loading large models.
 
 - `docs/android-build.md` - Android/JNI build notes, feature flags, and FFI call flow
 - `docs/performance.md` - real-model latency baselines and bottleneck notes
+- `examples/android-jni-smoke` - minimal JNI/CMake adapter over `localmt-ffi`
 
 ## Model Packs
 
