@@ -1,5 +1,8 @@
 # localmt
 
+[![CI](https://github.com/ekhodzitsky/localmt/actions/workflows/ci.yml/badge.svg)](https://github.com/ekhodzitsky/localmt/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+
 Offline-first Rust translation library for high-end mobile devices.
 
 The first target profile is Xiaomi 17 on Android arm64-v8a. The library keeps
