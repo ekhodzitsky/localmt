@@ -22,7 +22,7 @@ extern "C" {
 #define LOCALMT_FFI_TOKENIZER_DISABLED 11
 #define LOCALMT_FFI_TOKENIZER_ERROR 12
 
-#define LOCALMT_FFI_ABI_VERSION 8
+#define LOCALMT_FFI_ABI_VERSION 9
 #define LOCALMT_FFI_ANDROID_ABI_ARM64_V8A 1
 #define LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK 1
 
@@ -59,6 +59,15 @@ typedef struct LocalmtFfiHfMockTranslator LocalmtFfiHfMockTranslator;
  * generator sessions loaded; it is not a translation API.
  */
 typedef struct LocalmtFfiOrtGenerator LocalmtFfiOrtGenerator;
+
+/*
+ * Opaque Rust-owned ORT translator handle.
+ *
+ * Handles are created by localmt_ffi_ort_translator_open and must be released
+ * exactly once with localmt_ffi_ort_translator_close. This path uses the
+ * verified tokenizer.json plus ORT encoder/decoder sessions for translation.
+ */
+typedef struct LocalmtFfiOrtTranslator LocalmtFfiOrtTranslator;
 
 /*
  * Opaque Rust-owned HF tokenizer preflight handle.
@@ -283,6 +292,47 @@ int32_t localmt_ffi_ort_generator_open(
  * Releases an ORT generator preflight handle. NULL is accepted as a no-op.
  */
 void localmt_ffi_ort_generator_close(LocalmtFfiOrtGenerator *generator);
+
+/*
+ * Opens a verified local model pack and constructs the ORT-backed translator.
+ *
+ * path_ptr/path_len must be valid UTF-8 bytes for the model-pack directory.
+ * out_translator must point to writable pointer storage. It is set to NULL
+ * before work and receives a non-null handle only on LOCALMT_FFI_OK.
+ *
+ * Default builds return LOCALMT_FFI_TOKENIZER_DISABLED after pack planning.
+ * hf-tokenizers-only builds return LOCALMT_FFI_RUNTIME_DISABLED.
+ * hf-tokenizers + ort-runtime builds map tokenizer load failures to
+ * LOCALMT_FFI_TOKENIZER_ERROR and ORT session/generation failures to
+ * LOCALMT_FFI_ORT_ERROR or LOCALMT_FFI_TRANSLATION_ERROR.
+ */
+int32_t localmt_ffi_ort_translator_open(
+    const uint8_t *path_ptr,
+    size_t path_len,
+    LocalmtFfiOrtTranslator **out_translator);
+
+/*
+ * Releases an ORT translator handle. NULL is accepted as a no-op.
+ */
+void localmt_ffi_ort_translator_close(LocalmtFfiOrtTranslator *translator);
+
+/*
+ * Translates UTF-8 bytes through the ORT-backed translator.
+ *
+ * input_ptr/input_len must be valid UTF-8 bytes. output_ptr/output_capacity is
+ * caller-owned byte storage and is not NUL terminated by Rust. written_len must
+ * point to writable size_t storage. On LOCALMT_FFI_BUFFER_TOO_SMALL,
+ * written_len contains the required byte count and output is not written.
+ */
+int32_t localmt_ffi_ort_translate(
+    const LocalmtFfiOrtTranslator *translator,
+    uint8_t source_id,
+    uint8_t target_id,
+    const uint8_t *input_ptr,
+    size_t input_len,
+    uint8_t *output_ptr,
+    size_t output_capacity,
+    size_t *written_len);
 
 #ifdef __cplusplus
 }

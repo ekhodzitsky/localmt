@@ -222,10 +222,11 @@ generation, so this is stronger adapter coverage but not real translation.
 `localmt_ffi_ort_runtime_enabled` and `LocalmtFfiOrtGenerator` provide runtime
 preflight. Default builds report runtime disabled; `ort-runtime` builds can
 verify a model pack and attempt to load encoder/decoder ONNX sessions. This is
-a model/runtime load check, not translation. `OrtOfflineTranslator` is the
-SDK-level real tokenizer plus ORT generator translator behind
-`hf-tokenizers + ort-runtime`; wrapping that full translator in an FFI handle is
-the next mobile-adapter step.
+a model/runtime load check, not translation. `LocalmtFfiOrtTranslator` wraps
+the SDK-level `OrtOfflineTranslator` for Android/JNI callers behind
+`hf-tokenizers + ort-runtime`: open verifies the same model pack and builds the
+real tokenizer plus ORT generator, while `localmt_ffi_ort_translate` uses the
+same UTF-8 output-buffer contract as the mock translator handles.
 
 ## ONNX Runtime Boundary
 
@@ -375,9 +376,10 @@ source tokens so the SDK can exercise the end-to-end request shape today.
 TranslateRequest -> TokenizerEngine::encode -> TokenGenerator::generate -> TokenizerEngine::decode -> Translation
 ```
 
-Real translation still requires an ONNX-backed generator that consumes tokenizer
-ids and executes the decoder loop; `HfTokenizer` only proves tokenizer JSON
-loading, encoding, and decoding.
+Real translation is wired through `OrtOfflineTranslator` when both
+`hf-tokenizers` and `ort-runtime` are enabled; default builds still use mock
+tokenizer/generator components for deterministic tests and adapter smoke checks.
+Cached decoder execution and real-model quality validation remain future work.
 
 ## Generation Config
 

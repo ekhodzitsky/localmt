@@ -8,6 +8,8 @@ use localmt::{
 };
 #[cfg(feature = "hf-tokenizers")]
 use localmt::{HfMockOfflineTranslator, HfMockOfflineTranslatorError, HfTokenizer};
+#[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
+use localmt::{OrtOfflineTranslator, OrtOfflineTranslatorError};
 
 /// FFI status for successful calls.
 pub const LOCALMT_FFI_OK: i32 = 0;
@@ -37,7 +39,7 @@ pub const LOCALMT_FFI_TOKENIZER_DISABLED: i32 = 11;
 pub const LOCALMT_FFI_TOKENIZER_ERROR: i32 = 12;
 
 /// Pointer-free C ABI version.
-pub const LOCALMT_FFI_ABI_VERSION: u32 = 8;
+pub const LOCALMT_FFI_ABI_VERSION: u32 = 9;
 /// FFI code for Android arm64-v8a.
 pub const LOCALMT_FFI_ANDROID_ABI_ARM64_V8A: u16 = 1;
 /// FFI code for ONNX Runtime Mobile with XNNPACK.
@@ -74,6 +76,12 @@ pub struct LocalmtFfiHfMockTranslator {
 /// Opaque Rust-owned ORT generator preflight handle for FFI callers.
 pub struct LocalmtFfiOrtGenerator {
     _generator: OrtTokenGenerator,
+}
+
+/// Opaque Rust-owned ORT translator handle for FFI callers.
+pub struct LocalmtFfiOrtTranslator {
+    #[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
+    translator: OrtOfflineTranslator,
 }
 
 /// Opaque Rust-owned HF tokenizer preflight handle for FFI callers.
@@ -778,6 +786,164 @@ pub extern "C" fn localmt_ffi_ort_generator_close(generator: *mut LocalmtFfiOrtG
     unsafe { drop(Box::from_raw(generator)) }; // SAFETY: handle came from open and closes once.
 }
 
+/// { path_ptr points to path_len readable bytes and out_translator is writable }
+/// fn localmt_ffi_ort_translator_open(path_ptr: *const u8, path_len: usize, out_translator: *mut *mut LocalmtFfiOrtTranslator) -> i32
+/// { ret is OK only when out_translator receives an owned non-null ORT translator handle }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_ort_translator_open(
+    path_ptr: *const u8,
+    path_len: usize,
+    out_translator: *mut *mut LocalmtFfiOrtTranslator,
+) -> i32 {
+    if out_translator.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *out_translator = ptr::null_mut() }; // SAFETY: non-null writable out pointer.
+
+    let path = match read_ffi_utf8(path_ptr, path_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let assets = match OfflineTranslatorAssets::from_model_pack_path(path) {
+        Ok(value) => value,
+        Err(_error) => return LOCALMT_FFI_MODEL_PACK_ERROR,
+    };
+
+    #[cfg(not(feature = "hf-tokenizers"))]
+    {
+        let _tokenizer_path = assets.plan().tokenizer().tokenizer_path();
+        LOCALMT_FFI_TOKENIZER_DISABLED
+    }
+
+    #[cfg(all(feature = "hf-tokenizers", not(feature = "ort-runtime")))]
+    {
+        let _generator = assets.plan().generator();
+        LOCALMT_FFI_RUNTIME_DISABLED
+    }
+
+    #[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
+    {
+        match OrtOfflineTranslator::from_assets(assets) {
+            Ok(translator) => {
+                let handle = Box::new(LocalmtFfiOrtTranslator { translator });
+                unsafe { *out_translator = Box::into_raw(handle) }; // SAFETY: non-null writable out pointer.
+                LOCALMT_FFI_OK
+            }
+            Err(OrtOfflineTranslatorError::Assets(_error)) => LOCALMT_FFI_MODEL_PACK_ERROR,
+            Err(OrtOfflineTranslatorError::Tokenizer(_error)) => LOCALMT_FFI_TOKENIZER_ERROR,
+            Err(OrtOfflineTranslatorError::Generator(
+                OrtEngineError::OrtRuntimeFeatureDisabled,
+            )) => LOCALMT_FFI_RUNTIME_DISABLED,
+            Err(OrtOfflineTranslatorError::Generator(_error)) => LOCALMT_FFI_ORT_ERROR,
+        }
+    }
+}
+
+/// { translator is null or was returned by localmt_ffi_ort_translator_open }
+/// fn localmt_ffi_ort_translator_close(translator: *mut LocalmtFfiOrtTranslator)
+/// { translator is consumed when non-null }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_ort_translator_close(translator: *mut LocalmtFfiOrtTranslator) {
+    if translator.is_null() {
+        return;
+    }
+
+    unsafe { drop(Box::from_raw(translator)) }; // SAFETY: handle came from open and closes once.
+}
+
+/// { translator is a valid ORT translator handle, input/output/written pointers follow the header contract }
+/// fn localmt_ffi_ort_translate(translator: *const LocalmtFfiOrtTranslator, source_id: u8, target_id: u8, input_ptr: *const u8, input_len: usize, output_ptr: *mut u8, output_capacity: usize, written_len: *mut usize) -> i32
+/// { ret is OK only when output receives written_len UTF-8 bytes }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_ort_translate(
+    translator: *const LocalmtFfiOrtTranslator,
+    source_id: u8,
+    target_id: u8,
+    input_ptr: *const u8,
+    input_len: usize,
+    output_ptr: *mut u8,
+    output_capacity: usize,
+    written_len: *mut usize,
+) -> i32 {
+    if translator.is_null() || written_len.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *written_len = 0 }; // SAFETY: non-null writable length pointer.
+
+    #[cfg(not(feature = "hf-tokenizers"))]
+    {
+        let _ = (
+            source_id,
+            target_id,
+            input_ptr,
+            input_len,
+            output_ptr,
+            output_capacity,
+        );
+        LOCALMT_FFI_TOKENIZER_DISABLED
+    }
+
+    #[cfg(all(feature = "hf-tokenizers", not(feature = "ort-runtime")))]
+    {
+        let _ = (
+            source_id,
+            target_id,
+            input_ptr,
+            input_len,
+            output_ptr,
+            output_capacity,
+        );
+        LOCALMT_FFI_RUNTIME_DISABLED
+    }
+
+    #[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
+    {
+        let Some(source) = language_from_id(source_id) else {
+            return LOCALMT_FFI_INVALID_LANGUAGE;
+        };
+        let Some(target) = language_from_id(target_id) else {
+            return LOCALMT_FFI_INVALID_LANGUAGE;
+        };
+
+        let input = match read_ffi_utf8(input_ptr, input_len) {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        let text = match NonEmptyText::new(input.to_owned()) {
+            Ok(value) => value,
+            Err(_error) => return LOCALMT_FFI_TEXT_ERROR,
+        };
+        let request = match TranslateRequest::new(source, target, text) {
+            Ok(value) => value,
+            Err(_error) => return LOCALMT_FFI_INVALID_PAIR,
+        };
+        let translator = unsafe { &*translator }; // SAFETY: non-null live handle pointer.
+        let translation = match translator.translator.translate(&request) {
+            Ok(value) => value,
+            Err(_error) => return LOCALMT_FFI_TRANSLATION_ERROR,
+        };
+        let output = translation.text().as_str().as_bytes();
+
+        unsafe { *written_len = output.len() }; // SAFETY: non-null writable length pointer.
+
+        if output_capacity < output.len() {
+            return LOCALMT_FFI_BUFFER_TOO_SMALL;
+        }
+        if output_ptr.is_null() {
+            return LOCALMT_FFI_NULL_POINTER;
+        }
+
+        unsafe { ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, output.len()) }; // SAFETY: output buffer capacity was checked.
+
+        LOCALMT_FFI_OK
+    }
+}
+
 /// { language_id may be any u8 }
 /// fn language_from_id(language_id: u8) -> Option<Language>
 /// { ret is Some only when language_id is in the stable FFI language table }
@@ -821,14 +987,16 @@ mod tests {
         LOCALMT_FFI_BUFFER_TOO_SMALL, LOCALMT_FFI_INVALID_LANGUAGE, LOCALMT_FFI_INVALID_PAIR,
         LOCALMT_FFI_INVALID_UTF8, LOCALMT_FFI_MODEL_PACK_ERROR, LOCALMT_FFI_NULL_POINTER,
         LOCALMT_FFI_OK, LOCALMT_FFI_TEXT_ERROR, LocalmtFfiHfMockTranslator, LocalmtFfiHfTokenizer,
-        LocalmtFfiOrtGenerator, LocalmtFfiTranslator, localmt_ffi_abi_version,
-        localmt_ffi_hf_mock_translate, localmt_ffi_hf_mock_translator_close,
-        localmt_ffi_hf_mock_translator_open, localmt_ffi_hf_tokenizer_close,
-        localmt_ffi_hf_tokenizer_enabled, localmt_ffi_hf_tokenizer_open, localmt_ffi_language_code,
+        LocalmtFfiOrtGenerator, LocalmtFfiOrtTranslator, LocalmtFfiTranslator,
+        localmt_ffi_abi_version, localmt_ffi_hf_mock_translate,
+        localmt_ffi_hf_mock_translator_close, localmt_ffi_hf_mock_translator_open,
+        localmt_ffi_hf_tokenizer_close, localmt_ffi_hf_tokenizer_enabled,
+        localmt_ffi_hf_tokenizer_open, localmt_ffi_language_code,
         localmt_ffi_language_from_iso_639_1, localmt_ffi_max_text_chars,
         localmt_ffi_mock_translate, localmt_ffi_mock_translator_close,
         localmt_ffi_mock_translator_open, localmt_ffi_model_pack_summary,
-        localmt_ffi_ort_generator_open, localmt_ffi_ort_runtime_enabled,
+        localmt_ffi_ort_generator_open, localmt_ffi_ort_runtime_enabled, localmt_ffi_ort_translate,
+        localmt_ffi_ort_translator_close, localmt_ffi_ort_translator_open,
         localmt_ffi_runtime_config_summary, localmt_ffi_startup_summary,
         localmt_ffi_status_message, localmt_ffi_supported_language_count,
         localmt_ffi_validate_language_pair, localmt_ffi_xiaomi17_android_abi_code,
@@ -905,7 +1073,7 @@ mod tests {
 
     #[test]
     fn ffi_reports_abi_and_xiaomi17_contract() {
-        assert_eq!(localmt_ffi_abi_version(), 8);
+        assert_eq!(localmt_ffi_abi_version(), 9);
         assert_eq!(localmt_ffi_max_text_chars(), 4096);
         assert_eq!(localmt_ffi_xiaomi17_android_abi_code(), 1);
         assert_eq!(localmt_ffi_xiaomi17_ram_class_gib(), 12);
@@ -923,7 +1091,7 @@ mod tests {
         );
         let summary = std::str::from_utf8(&output[..written_len])?;
 
-        assert!(summary.contains("ffi_abi: 8"));
+        assert!(summary.contains("ffi_abi: 9"));
         assert!(summary.contains("max_text_chars: 4096"));
         assert!(summary.contains("xiaomi17_android_abi: arm64-v8a"));
         assert!(summary.contains("xiaomi17_ram_class_gib: 12"));
@@ -1335,6 +1503,68 @@ mod tests {
         assert!(generator.is_null());
 
         Ok(())
+    }
+
+    #[test]
+    #[cfg(not(feature = "hf-tokenizers"))]
+    fn ffi_ort_translator_open_reports_tokenizer_disabled() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_runtime_config_pack()?;
+        let path = path_bytes(&root)?;
+        let mut translator: *mut LocalmtFfiOrtTranslator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_ort_translator_open(path.as_ptr(), path.len(), &mut translator),
+            LOCALMT_FFI_TOKENIZER_DISABLED
+        );
+        assert!(translator.is_null());
+
+        localmt_ffi_ort_translator_close(translator);
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_ort_translator_open_rejects_nulls_and_invalid_utf8()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_runtime_config_pack()?;
+        let path = path_bytes(&root)?;
+        let mut translator: *mut LocalmtFfiOrtTranslator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_ort_translator_open(path.as_ptr(), path.len(), ptr::null_mut()),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_ort_translator_open([0xff].as_ptr(), 1, &mut translator),
+            LOCALMT_FFI_INVALID_UTF8
+        );
+        assert!(translator.is_null());
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_ort_translator_close_accepts_null_handle() {
+        localmt_ffi_ort_translator_close(ptr::null_mut());
+    }
+
+    #[test]
+    fn ffi_ort_translate_rejects_null_handle() {
+        let mut output = [0_u8; 32];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_ort_translate(
+                ptr::null(),
+                0,
+                1,
+                b"hello".as_ptr(),
+                5,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
     }
 
     #[test]
