@@ -235,7 +235,8 @@ the pack. `localmt_ffi_model_pack_trusted_summary` and
 manifest hash, manifest file identity, byte length, and modified timestamp, and
 avoid re-hashing large model files on hot startup. The default summary/open
 functions remain strict and do full verification. Regenerate the trust artifact
-after any model-pack update or localmt trust-schema change.
+after any model-pack update or when `localmt_ffi_model_pack_trust_schema_version()`
+changes.
 
 `localmt_ffi_runtime_config_summary` is the stricter Android readiness gate for
 real ORT generation. It uses the same output-buffer ABI, requires both

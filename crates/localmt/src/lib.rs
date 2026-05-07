@@ -19,9 +19,9 @@ pub use localmt_engine_ort::{
 #[cfg(feature = "ort-runtime")]
 pub use localmt_engine_ort::{OrtEngineSlot, configure_ort_dylib_path};
 pub use localmt_models::{
-    Discovered, ModelArchitecture, ModelFile, ModelFileKind, ModelFileRole, ModelId, ModelLicense,
-    ModelManifest, ModelPack, ModelPackError, ModelPackVersion, ModelRelativePath, ModelRuntime,
-    Sha256Digest, Verified,
+    Discovered, MODEL_PACK_TRUST_SCHEMA_VERSION, ModelArchitecture, ModelFile, ModelFileKind,
+    ModelFileRole, ModelId, ModelLicense, ModelManifest, ModelPack, ModelPackError,
+    ModelPackVersion, ModelRelativePath, ModelRuntime, Sha256Digest, Verified,
 };
 pub use localmt_pipeline::{
     DEFAULT_MAX_NEW_TOKENS, GenerationConfig, GenerationConfigError, GenerationConfigParseError,

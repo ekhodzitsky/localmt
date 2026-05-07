@@ -94,7 +94,9 @@ At app startup:
 
 1. Call `localmt_ffi_startup_summary()` for a loggable startup contract, or
    call the individual probes below.
-1. Call `localmt_ffi_abi_version()` and require `LOCALMT_FFI_ABI_VERSION == 12`.
+1. Call `localmt_ffi_abi_version()` and require `LOCALMT_FFI_ABI_VERSION == 13`.
+1. Call `localmt_ffi_model_pack_trust_schema_version()` and require
+   `LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION == 1`.
 1. Call `localmt_ffi_xiaomi17_android_abi_code()` and require
    `LOCALMT_FFI_ANDROID_ABI_ARM64_V8A`.
 1. Call `localmt_ffi_supported_language_count()` and map language ids through
@@ -108,8 +110,8 @@ Before opening a translator:
 2. On hot startup, call `localmt_ffi_model_pack_trusted_summary()` to validate
    the trust artifact without re-hashing large model files. The trust artifact
    pins the manifest hash, manifest file identity, byte length, and modified
-   timestamp; regenerate it after every model-pack update or localmt
-   trust-schema change.
+   timestamp; regenerate it after every model-pack update or when
+   `localmt_ffi_model_pack_trust_schema_version()` changes.
 3. If the buffer is too small, allocate `written_len` bytes and call again.
 4. Call `localmt_ffi_runtime_config_summary()` before opening ORT generation;
    this requires valid `generation_config` and `ort_io` metadata without loading

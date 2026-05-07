@@ -5,9 +5,9 @@ use std::{ptr, slice, str};
 #[cfg(feature = "ort-runtime")]
 use localmt::configure_ort_dylib_path;
 use localmt::{
-    DeviceProfile, Discovered, Language, LanguagePair, MAX_TEXT_CHARS, MockOfflineTranslator,
-    ModelPack, NonEmptyText, OfflineTranslatorAssets, OrtEngineError, OrtTokenGenerator,
-    TranslateRequest,
+    DeviceProfile, Discovered, Language, LanguagePair, MAX_TEXT_CHARS,
+    MODEL_PACK_TRUST_SCHEMA_VERSION, MockOfflineTranslator, ModelPack, NonEmptyText,
+    OfflineTranslatorAssets, OrtEngineError, OrtTokenGenerator, TranslateRequest,
 };
 #[cfg(feature = "hf-tokenizers")]
 use localmt::{HfMockOfflineTranslator, HfMockOfflineTranslatorError, HfTokenizer};
@@ -44,7 +44,9 @@ pub const LOCALMT_FFI_TOKENIZER_ERROR: i32 = 12;
 pub const LOCALMT_FFI_RUNTIME_NOT_CONFIGURED: i32 = 13;
 
 /// Pointer-free C ABI version.
-pub const LOCALMT_FFI_ABI_VERSION: u32 = 12;
+pub const LOCALMT_FFI_ABI_VERSION: u32 = 13;
+/// Local trust-artifact schema version expected by trusted model-pack APIs.
+pub const LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION: u16 = MODEL_PACK_TRUST_SCHEMA_VERSION;
 /// FFI code for Android arm64-v8a.
 pub const LOCALMT_FFI_ANDROID_ABI_ARM64_V8A: u16 = 1;
 /// FFI code for ONNX Runtime Mobile with XNNPACK.
@@ -117,6 +119,14 @@ impl LocalmtFfiLanguageCode {
 #[unsafe(no_mangle)] // SAFETY: pointer-free C export.
 pub extern "C" fn localmt_ffi_abi_version() -> u32 {
     LOCALMT_FFI_ABI_VERSION
+}
+
+/// { true }
+/// fn localmt_ffi_model_pack_trust_schema_version() -> u16
+/// { ret is the local trust-artifact schema version expected by trusted APIs }
+#[unsafe(no_mangle)] // SAFETY: pointer-free C export.
+pub extern "C" fn localmt_ffi_model_pack_trust_schema_version() -> u16 {
+    LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION
 }
 
 /// { true }
@@ -269,8 +279,9 @@ fn ffi_startup_summary() -> String {
         .join(", ");
 
     format!(
-        "ffi_abi: {}\nmax_text_chars: {}\nxiaomi17_android_abi: {}\nxiaomi17_ram_class_gib: {}\nxiaomi17_preferred_runtime: {}\nhf_tokenizers: {}\nort_runtime: {}\nlanguages: {languages}",
+        "ffi_abi: {}\nmodel_pack_trust_schema: {}\nmax_text_chars: {}\nxiaomi17_android_abi: {}\nxiaomi17_ram_class_gib: {}\nxiaomi17_preferred_runtime: {}\nhf_tokenizers: {}\nort_runtime: {}\nlanguages: {languages}",
         LOCALMT_FFI_ABI_VERSION,
+        LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION,
         MAX_TEXT_CHARS,
         DeviceProfile::Xiaomi17.android_abi(),
         DeviceProfile::Xiaomi17.ram_class_gib(),
@@ -1126,26 +1137,26 @@ mod tests {
     use super::LOCALMT_FFI_TOKENIZER_ERROR;
     use super::{
         LOCALMT_FFI_BUFFER_TOO_SMALL, LOCALMT_FFI_INVALID_LANGUAGE, LOCALMT_FFI_INVALID_PAIR,
-        LOCALMT_FFI_INVALID_UTF8, LOCALMT_FFI_MODEL_PACK_ERROR, LOCALMT_FFI_NULL_POINTER,
-        LOCALMT_FFI_OK, LOCALMT_FFI_RUNTIME_NOT_CONFIGURED, LOCALMT_FFI_TEXT_ERROR,
-        LocalmtFfiHfMockTranslator, LocalmtFfiHfTokenizer, LocalmtFfiOrtGenerator,
-        LocalmtFfiOrtTranslator, LocalmtFfiTranslator, OrtEngineError, ffi_ort_engine_error_status,
-        localmt_ffi_abi_version, localmt_ffi_hf_mock_translate,
-        localmt_ffi_hf_mock_translator_close, localmt_ffi_hf_mock_translator_open,
-        localmt_ffi_hf_tokenizer_close, localmt_ffi_hf_tokenizer_enabled,
-        localmt_ffi_hf_tokenizer_open, localmt_ffi_language_code,
+        LOCALMT_FFI_INVALID_UTF8, LOCALMT_FFI_MODEL_PACK_ERROR,
+        LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION, LOCALMT_FFI_NULL_POINTER, LOCALMT_FFI_OK,
+        LOCALMT_FFI_RUNTIME_NOT_CONFIGURED, LOCALMT_FFI_TEXT_ERROR, LocalmtFfiHfMockTranslator,
+        LocalmtFfiHfTokenizer, LocalmtFfiOrtGenerator, LocalmtFfiOrtTranslator,
+        LocalmtFfiTranslator, OrtEngineError, ffi_ort_engine_error_status, localmt_ffi_abi_version,
+        localmt_ffi_hf_mock_translate, localmt_ffi_hf_mock_translator_close,
+        localmt_ffi_hf_mock_translator_open, localmt_ffi_hf_tokenizer_close,
+        localmt_ffi_hf_tokenizer_enabled, localmt_ffi_hf_tokenizer_open, localmt_ffi_language_code,
         localmt_ffi_language_from_iso_639_1, localmt_ffi_max_text_chars,
         localmt_ffi_mock_translate, localmt_ffi_mock_translator_close,
         localmt_ffi_mock_translator_open, localmt_ffi_model_pack_summary,
-        localmt_ffi_model_pack_trust, localmt_ffi_model_pack_trusted_summary,
-        localmt_ffi_ort_generator_open, localmt_ffi_ort_runtime_configure,
-        localmt_ffi_ort_runtime_enabled, localmt_ffi_ort_translate,
-        localmt_ffi_ort_translator_close, localmt_ffi_ort_translator_open,
-        localmt_ffi_ort_translator_open_trusted, localmt_ffi_runtime_config_summary,
-        localmt_ffi_startup_summary, localmt_ffi_status_message,
-        localmt_ffi_supported_language_count, localmt_ffi_validate_language_pair,
-        localmt_ffi_xiaomi17_android_abi_code, localmt_ffi_xiaomi17_preferred_runtime_code,
-        localmt_ffi_xiaomi17_ram_class_gib,
+        localmt_ffi_model_pack_trust, localmt_ffi_model_pack_trust_schema_version,
+        localmt_ffi_model_pack_trusted_summary, localmt_ffi_ort_generator_open,
+        localmt_ffi_ort_runtime_configure, localmt_ffi_ort_runtime_enabled,
+        localmt_ffi_ort_translate, localmt_ffi_ort_translator_close,
+        localmt_ffi_ort_translator_open, localmt_ffi_ort_translator_open_trusted,
+        localmt_ffi_runtime_config_summary, localmt_ffi_startup_summary,
+        localmt_ffi_status_message, localmt_ffi_supported_language_count,
+        localmt_ffi_validate_language_pair, localmt_ffi_xiaomi17_android_abi_code,
+        localmt_ffi_xiaomi17_preferred_runtime_code, localmt_ffi_xiaomi17_ram_class_gib,
     };
     #[cfg(feature = "hf-tokenizers")]
     use localmt::Sha256Digest;
@@ -1218,7 +1229,9 @@ mod tests {
 
     #[test]
     fn ffi_reports_abi_and_xiaomi17_contract() {
-        assert_eq!(localmt_ffi_abi_version(), 12);
+        assert_eq!(localmt_ffi_abi_version(), 13);
+        assert_eq!(LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION, 1);
+        assert_eq!(localmt_ffi_model_pack_trust_schema_version(), 1);
         assert_eq!(localmt_ffi_max_text_chars(), 4096);
         assert_eq!(localmt_ffi_xiaomi17_android_abi_code(), 1);
         assert_eq!(localmt_ffi_xiaomi17_ram_class_gib(), 12);
@@ -1236,7 +1249,8 @@ mod tests {
         );
         let summary = std::str::from_utf8(&output[..written_len])?;
 
-        assert!(summary.contains("ffi_abi: 12"));
+        assert!(summary.contains("ffi_abi: 13"));
+        assert!(summary.contains("model_pack_trust_schema: 1"));
         assert!(summary.contains("max_text_chars: 4096"));
         assert!(summary.contains("xiaomi17_android_abi: arm64-v8a"));
         assert!(summary.contains("xiaomi17_ram_class_gib: 12"));

@@ -23,7 +23,8 @@ extern "C" {
 #define LOCALMT_FFI_TOKENIZER_ERROR 12
 #define LOCALMT_FFI_RUNTIME_NOT_CONFIGURED 13
 
-#define LOCALMT_FFI_ABI_VERSION 12
+#define LOCALMT_FFI_ABI_VERSION 13
+#define LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION 1
 #define LOCALMT_FFI_ANDROID_ABI_ARM64_V8A 1
 #define LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK 1
 
@@ -81,6 +82,8 @@ typedef struct LocalmtFfiHfTokenizer LocalmtFfiHfTokenizer;
 
 /* Returns LOCALMT_FFI_ABI_VERSION. */
 uint32_t localmt_ffi_abi_version(void);
+/* Returns LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION. */
+uint16_t localmt_ffi_model_pack_trust_schema_version(void);
 /* Returns the number of stable language ids. */
 size_t localmt_ffi_supported_language_count(void);
 /* Maps a stable language id to a two-byte ISO 639-1 code. */
@@ -109,11 +112,12 @@ int32_t localmt_ffi_status_message(
 /*
  * Writes the Android startup contract for this localmt-ffi build.
  *
- * The summary includes ABI version, max text length, Xiaomi 17 metadata,
- * feature flags, and stable language codes. output_ptr/output_capacity is
- * caller-owned byte storage and is not NUL terminated by Rust. written_len must
- * point to writable size_t storage. On LOCALMT_FFI_BUFFER_TOO_SMALL,
- * written_len contains the required byte count and output is not written.
+ * The summary includes ABI version, trust-artifact schema version, max text
+ * length, Xiaomi 17 metadata, feature flags, and stable language codes.
+ * output_ptr/output_capacity is caller-owned byte storage and is not NUL
+ * terminated by Rust. written_len must point to writable size_t storage. On
+ * LOCALMT_FFI_BUFFER_TOO_SMALL, written_len contains the required byte count
+ * and output is not written.
  */
 int32_t localmt_ffi_startup_summary(
     uint8_t *output_ptr,
@@ -151,6 +155,7 @@ int32_t localmt_ffi_model_pack_summary(
  * This is the install/update-time path: it performs checksum verification and
  * records a trusted metadata snapshot beside the model pack. Runtime hot paths
  * can later use the trusted APIs below to avoid re-hashing large model files.
+ * The artifact schema is LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION.
  */
 int32_t localmt_ffi_model_pack_trust(
     const uint8_t *path_ptr,
@@ -160,8 +165,8 @@ int32_t localmt_ffi_model_pack_trust(
  * Plans a model pack through the local trust artifact, then writes a summary.
  *
  * This does not re-hash model files. It requires a trust artifact previously
- * written by localmt_ffi_model_pack_trust and validates manifest hash plus
- * file metadata before planning.
+ * written by localmt_ffi_model_pack_trust and validates manifest hash,
+ * manifest file identity, byte length, and modified timestamp before planning.
  */
 int32_t localmt_ffi_model_pack_trusted_summary(
     const uint8_t *path_ptr,
@@ -358,8 +363,9 @@ int32_t localmt_ffi_ort_translator_open(
  * Opens a trusted local model pack and constructs the ORT-backed translator.
  *
  * This uses the local trust artifact instead of full checksum verification on
- * the hot path. The status mapping and handle lifetime are identical to
- * localmt_ffi_ort_translator_open.
+ * the hot path. Regenerate the artifact when
+ * localmt_ffi_model_pack_trust_schema_version() changes. The status mapping
+ * and handle lifetime are identical to localmt_ffi_ort_translator_open.
  */
 int32_t localmt_ffi_ort_translator_open_trusted(
     const uint8_t *path_ptr,

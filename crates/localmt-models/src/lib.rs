@@ -25,6 +25,9 @@ const REQUIRED_LANGUAGES: [Language; 5] = [
     Language::Japanese,
 ];
 
+/// Current local trust-artifact schema version.
+pub const MODEL_PACK_TRUST_SCHEMA_VERSION: u16 = TRUST_SCHEMA_VERSION;
+
 /// Model pack state before file checksums have been verified.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Discovered;
@@ -1219,9 +1222,9 @@ mod tests {
     use localmt_core::Language;
 
     use crate::{
-        Discovered, ModelArchitecture, ModelFile, ModelFileRole, ModelId, ModelLicense,
-        ModelManifest, ModelPack, ModelPackError, ModelPackVersion, ModelRelativePath,
-        ModelRuntime, Sha256Digest,
+        Discovered, MODEL_PACK_TRUST_SCHEMA_VERSION, ModelArchitecture, ModelFile, ModelFileRole,
+        ModelId, ModelLicense, ModelManifest, ModelPack, ModelPackError, ModelPackVersion,
+        ModelRelativePath, ModelRuntime, Sha256Digest,
     };
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
@@ -1239,6 +1242,11 @@ mod tests {
         assert_eq!(pack.manifest().languages().len(), 5);
         assert!(pack.manifest().supports(Language::Japanese));
         Ok(())
+    }
+
+    #[test]
+    fn trust_schema_version_is_public_contract() {
+        assert_eq!(MODEL_PACK_TRUST_SCHEMA_VERSION, 1);
     }
 
     #[test]

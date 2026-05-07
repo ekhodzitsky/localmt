@@ -1652,7 +1652,7 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 12"));
+        assert!(output.contains("ffi_abi: 13"));
         assert!(output.contains("model_pack_summary: ok"));
         assert!(output.contains("mock_translator_open: ok"));
         assert!(output.contains("mock_translate: ok"));
@@ -1700,7 +1700,9 @@ mod tests {
         let output = run(args.into_iter())?;
 
         assert!(output.contains("#ifndef LOCALMT_FFI_H"));
-        assert!(output.contains("#define LOCALMT_FFI_ABI_VERSION 12"));
+        assert!(output.contains("#define LOCALMT_FFI_ABI_VERSION 13"));
+        assert!(output.contains("#define LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION 1"));
+        assert!(output.contains("uint16_t localmt_ffi_model_pack_trust_schema_version(void);"));
         assert!(output.contains("int32_t localmt_ffi_ort_runtime_configure("));
         assert!(output.contains("int32_t localmt_ffi_model_pack_summary("));
         assert!(output.contains("int32_t localmt_ffi_model_pack_trust("));
@@ -1720,7 +1722,8 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 12"));
+        assert!(output.contains("ffi_abi: 13"));
+        assert!(output.contains("model_pack_trust_schema: 1"));
         assert!(output.contains("max_text_chars: 4096"));
         assert!(output.contains("xiaomi17_android_abi: arm64-v8a"));
         assert!(output.contains("languages: en, ru, th, vi, ja"));
@@ -1740,7 +1743,7 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 12"));
+        assert!(output.contains("ffi_abi: 13"));
         assert!(output.contains("runtime_config_summary: ok"));
         assert!(output.contains("runtime_config: ok"));
         assert!(output.contains("decoder_logits: decoder_logits"));
@@ -1844,7 +1847,7 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 12"));
+        assert!(output.contains("ffi_abi: 13"));
         assert!(output.contains("model_pack_summary: ok"));
         assert!(output.contains("hf_mock_translator_open: ok"));
         assert!(output.contains("hf_mock_translate: ok"));
