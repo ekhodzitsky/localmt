@@ -24,6 +24,16 @@ NDK toolchain. If `cargo-ndk` is installed, the expected command shape is:
 cargo ndk -t arm64-v8a -o target/android-jniLibs build -p localmt-ffi --release
 ```
 
+For the checked-in JNI smoke adapter, use the repository packaging script:
+
+```bash
+scripts/package-android-ffi.sh
+```
+
+It builds `localmt-ffi` for `arm64-v8a` with `hf-tokenizers` and `ort-runtime`,
+writes `examples/android-jni-smoke/src/main/jniLibs/arm64-v8a/liblocalmt_ffi.so`,
+and checks the exported ABI and ORT translator symbols with `llvm-nm`.
+
 This writes the JNI library under:
 
 ```text

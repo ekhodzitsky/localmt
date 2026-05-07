@@ -26,8 +26,7 @@ the host runner, so missing C ABI symbols fail before device testing.
 Build the Rust library for Android:
 
 ```bash
-cargo ndk -t arm64-v8a -o examples/android-jni-smoke/src/main/jniLibs \
-  build -p localmt-ffi --release --features "hf-tokenizers ort-runtime"
+scripts/package-android-ffi.sh
 ```
 
 The expected artifact path is:
