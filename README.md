@@ -91,9 +91,9 @@ requires `encoder.onnx`, `decoder.onnx`, and `tokenizer.json`, includes optional
 `decoder-with-past.onnx`, `vocab.txt`, `config.json`, and `generation.json`
 when present, computes SHA-256 values, and prints JSON to stdout.
 `model plan` verifies the pack, builds the facade-level
-`OfflineTranslatorPlan`, and parses an optional `generation_config`. It is a
-no-inference smoke command: it does not load ONNX Runtime sessions or execute
-decoder graphs.
+`OfflineTranslatorPlan`, parses an optional `generation_config`, and reports the
+`ort_io_config` readiness status. It is a no-inference smoke command: it does
+not load ONNX Runtime sessions or execute decoder graphs.
 `model doctor` is the single local readiness gate for a pack: it runs facade
 planning, the Android startup ABI summary, the shared FFI model-pack summary,
 deterministic mock FFI translation, and HF/ORT preflight status checks. In
@@ -178,8 +178,9 @@ message `unknown status`.
 `localmt_ffi_model_pack_summary` lets Android/JNI adapters verify and plan a
 local model pack through the Rust facade, then read the same stable newline
 summary as `localmt model plan`. This does checksum verification, asset
-planning, and optional `generation_config` parsing, but does not load tokenizer
-backends or ONNX Runtime sessions. The CLI and FFI paths share
+planning, optional `generation_config` parsing, and `ort_io_config` readiness
+reporting, but does not load tokenizer backends or ONNX Runtime sessions. The
+CLI and FFI paths share
 `OfflineTranslatorAssetsSummary::to_preflight_text` so adapter-visible summary
 text has one source of truth.
 
@@ -238,6 +239,9 @@ the config yet.
 asset when present and expects an `ort_io` object with the tensor names that the
 future decoder loop will bind. Packs without `config` return `Ok(None)`;
 packs with `config` but without `ort_io` fail the explicit ORT I/O parse.
+The facade converts that missing-object case into the stable preflight line
+`ort_io_config: missing`; valid contracts print `ort_io_config: parsed`, and
+packs with no `config` role print `ort_io_config: absent`.
 
 Accepted local `config.json` fragment for ORT I/O:
 

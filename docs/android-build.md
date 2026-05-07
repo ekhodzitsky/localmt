@@ -146,6 +146,11 @@ boundary, not a network dependency:
 }
 ```
 
+`localmt model plan` and `localmt_ffi_model_pack_summary` report this readiness
+as `ort_io_config: parsed`, `ort_io_config: absent`, or
+`ort_io_config: missing`. `missing` means a valid `config.json` exists but has
+no `ort_io` object; malformed JSON or empty tensor names still fail preflight.
+
 Use the development CLI to prepare and inspect packs locally:
 
 ```bash

@@ -10,7 +10,8 @@ pub use localmt_core::{
 };
 pub use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
 pub use localmt_engine_ort::{
-    OrtEngine, OrtEngineError, OrtGeneratorPlan, OrtModelRole, OrtSessionPlan, OrtTokenGenerator,
+    OrtEngine, OrtEngineError, OrtGeneratorPlan, OrtIoConfig, OrtIoConfigError,
+    OrtIoConfigParseError, OrtModelRole, OrtSessionPlan, OrtTokenGenerator,
 };
 pub use localmt_models::{
     Discovered, ModelArchitecture, ModelFile, ModelFileKind, ModelFileRole, ModelId, ModelLicense,
@@ -77,6 +78,33 @@ impl OfflineTranslatorPlan {
             .parse_generation_config()
             .map_err(OfflineTranslatorPlanError::Generator)
     }
+
+    /// { self was built from a verified model pack }
+    /// fn parse_ort_io_config_status(&self) -> Result<OrtIoConfigStatus, OfflineTranslatorPlanError>
+    /// { ret distinguishes absent, missing, and parsed ORT I/O config states }
+    pub fn parse_ort_io_config_status(
+        &self,
+    ) -> Result<OrtIoConfigStatus, OfflineTranslatorPlanError> {
+        match self.generator.parse_ort_io_config() {
+            Ok(Some(config)) => Ok(OrtIoConfigStatus::Parsed(Box::new(config))),
+            Ok(None) => Ok(OrtIoConfigStatus::Absent),
+            Err(OrtEngineError::IoConfig(OrtIoConfigParseError::MissingOrtIoConfig)) => {
+                Ok(OrtIoConfigStatus::Missing)
+            }
+            Err(error) => Err(OfflineTranslatorPlanError::Generator(error)),
+        }
+    }
+}
+
+/// Facade-level status for optional ORT I/O tensor-name config.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OrtIoConfigStatus {
+    /// Model pack declares no config file.
+    Absent,
+    /// Model pack declares config but it has no ort_io object.
+    Missing,
+    /// Model pack declares valid ORT I/O tensor names.
+    Parsed(Box<OrtIoConfig>),
 }
 
 /// Prepared no-inference assets for constructing a future offline translator.
@@ -84,6 +112,7 @@ impl OfflineTranslatorPlan {
 pub struct OfflineTranslatorAssets {
     plan: OfflineTranslatorPlan,
     generation_config: Option<GenerationConfig>,
+    ort_io_config_status: OrtIoConfigStatus,
 }
 
 impl OfflineTranslatorAssets {
@@ -109,13 +138,15 @@ impl OfflineTranslatorAssets {
 
     /// { plan was built from a verified model pack }
     /// fn from_plan(plan: OfflineTranslatorPlan) -> Result<Self, OfflineTranslatorPlanError>
-    /// { ret is Ok only when optional generation-config parsing succeeds }
+    /// { ret is Ok only when optional config parsing succeeds }
     pub fn from_plan(plan: OfflineTranslatorPlan) -> Result<Self, OfflineTranslatorPlanError> {
         let generation_config = plan.parse_generation_config()?;
+        let ort_io_config_status = plan.parse_ort_io_config_status()?;
 
         Ok(Self {
             plan,
             generation_config,
+            ort_io_config_status,
         })
     }
 
@@ -133,6 +164,13 @@ impl OfflineTranslatorAssets {
         self.generation_config
     }
 
+    /// { true }
+    /// fn ort_io_config_status(&self) -> &OrtIoConfigStatus
+    /// { ret is the ORT I/O tensor-name readiness status }
+    pub const fn ort_io_config_status(&self) -> &OrtIoConfigStatus {
+        &self.ort_io_config_status
+    }
+
     /// { self was prepared successfully }
     /// fn summary(&self) -> OfflineTranslatorAssetsSummary
     /// { ret is an owned no-inference preflight summary for adapters }
@@ -148,6 +186,7 @@ impl OfflineTranslatorAssets {
                 .decoder_with_past()
                 .map(|session| session.model_path().to_path_buf()),
             generation_config: self.generation_config,
+            ort_io_config_status: self.ort_io_config_status.clone(),
         }
     }
 }
@@ -299,6 +338,7 @@ pub struct OfflineTranslatorAssetsSummary {
     decoder_path: PathBuf,
     decoder_with_past_path: Option<PathBuf>,
     generation_config: Option<GenerationConfig>,
+    ort_io_config_status: OrtIoConfigStatus,
 }
 
 impl OfflineTranslatorAssetsSummary {
@@ -345,6 +385,13 @@ impl OfflineTranslatorAssetsSummary {
     }
 
     /// { true }
+    /// fn ort_io_config_status(&self) -> &OrtIoConfigStatus
+    /// { ret is the ORT I/O tensor-name readiness status }
+    pub const fn ort_io_config_status(&self) -> &OrtIoConfigStatus {
+        &self.ort_io_config_status
+    }
+
+    /// { true }
     /// fn to_preflight_text(&self) -> String
     /// { ret is the stable newline summary for CLI and FFI preflight adapters }
     pub fn to_preflight_text(&self) -> String {
@@ -369,6 +416,18 @@ impl OfflineTranslatorAssetsSummary {
                 ));
             }
             None => lines.push("generation_config: absent".to_owned()),
+        }
+        match self.ort_io_config_status() {
+            OrtIoConfigStatus::Absent => lines.push("ort_io_config: absent".to_owned()),
+            OrtIoConfigStatus::Missing => lines.push("ort_io_config: missing".to_owned()),
+            OrtIoConfigStatus::Parsed(config) => {
+                lines.push("ort_io_config: parsed".to_owned());
+                lines.push(format!(
+                    "encoder_input_ids: {}",
+                    config.encoder().input_ids()
+                ));
+                lines.push(format!("decoder_logits: {}", config.decoder().logits()));
+            }
         }
 
         lines.join("\n")
@@ -464,8 +523,8 @@ mod tests {
     use super::{
         Discovered, Language, MockEngine, MockOfflineTranslator, ModelFileRole, ModelPack,
         NonEmptyText, OfflineTranslatorAssets, OfflineTranslatorPlan, OfflineTranslatorPlanError,
-        OrtEngineError, OrtModelRole, TokenGeneratorError, TokenId, TokenizerError,
-        TranslateRequest, Translator,
+        OrtEngineError, OrtIoConfigStatus, OrtModelRole, TokenGeneratorError, TokenId,
+        TokenizerError, TranslateRequest, Translator,
     };
     #[cfg(feature = "hf-tokenizers")]
     use super::{HfMockOfflineTranslator, HfMockOfflineTranslatorError, Sha256Digest};
@@ -485,6 +544,32 @@ mod tests {
     const VOCABULARY_SHA256: &str =
         "9e5e90102c699455e9039ff903284e0689394dd345bb11456706f087984d2eb7";
     const CONFIG_SHA256: &str = "f612b89bcdbc401379f644d7e48572e3470f77dcd4c39416405d80952ad7089e";
+    const MISSING_ORT_IO_CONFIG_SHA256: &str =
+        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
+    const MISSING_ORT_IO_CONFIG: &str = "{}";
+    const VALID_ORT_IO_CONFIG_SHA256: &str =
+        "3ed8af0b5a58d51e246f3081e973d8683b89bf3cacf23c26243fec19ab31a721";
+    const VALID_ORT_IO_CONFIG: &str = r#"{
+  "ort_io": {
+    "encoder": {
+      "input_ids": "encoder_input_ids",
+      "attention_mask": "encoder_attention_mask",
+      "last_hidden_state": "encoder_last_hidden_state"
+    },
+    "decoder": {
+      "input_ids": "decoder_input_ids",
+      "encoder_attention_mask": "decoder_encoder_attention_mask",
+      "encoder_hidden_states": "decoder_encoder_hidden_states",
+      "logits": "decoder_logits"
+    },
+    "decoder_with_past": {
+      "input_ids": "past_input_ids",
+      "encoder_attention_mask": "past_encoder_attention_mask",
+      "encoder_hidden_states": "past_encoder_hidden_states",
+      "logits": "past_logits"
+    }
+  }
+}"#;
     const VALID_GENERATION_CONFIG: &str = r#"{
   "max_new_tokens": 32,
   "bos_token_id": 0,
@@ -667,6 +752,70 @@ mod tests {
     }
 
     #[test]
+    fn offline_translator_plan_reports_missing_ort_io_config_object()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&[
+            ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+            ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+            (
+                "tokenizer.json",
+                "tokenizer",
+                TOKENIZER_SHA256,
+                "tokenizer\n",
+            ),
+            (
+                "config.json",
+                "config",
+                MISSING_ORT_IO_CONFIG_SHA256,
+                MISSING_ORT_IO_CONFIG,
+            ),
+        ])?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+        let plan = OfflineTranslatorPlan::from_pack(&pack)?;
+
+        let status = plan.parse_ort_io_config_status()?;
+
+        assert_eq!(status, OrtIoConfigStatus::Missing);
+        Ok(())
+    }
+
+    #[test]
+    fn offline_translator_assets_summary_reports_ort_io_config()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_pack(&[
+            ("encoder.onnx", "encoder", ENCODER_SHA256, "encoder\n"),
+            ("decoder.onnx", "decoder", DECODER_SHA256, "decoder\n"),
+            (
+                "tokenizer.json",
+                "tokenizer",
+                TOKENIZER_SHA256,
+                "tokenizer\n",
+            ),
+            (
+                "config.json",
+                "config",
+                VALID_ORT_IO_CONFIG_SHA256,
+                VALID_ORT_IO_CONFIG,
+            ),
+        ])?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+
+        let summary = OfflineTranslatorAssets::from_pack(&pack)?.summary();
+
+        assert!(matches!(
+            summary.ort_io_config_status(),
+            OrtIoConfigStatus::Parsed(config)
+                if config.encoder().input_ids() == "encoder_input_ids"
+                    && config.decoder().logits() == "decoder_logits"
+        ));
+        let text = summary.to_preflight_text();
+        assert!(text.contains("ort_io_config: parsed"));
+        assert!(text.contains("encoder_input_ids: encoder_input_ids"));
+        assert!(text.contains("decoder_logits: decoder_logits"));
+        Ok(())
+    }
+
+    #[test]
     fn offline_translator_assets_prepare_plan_and_generation_config()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = create_pack(&[
@@ -789,6 +938,7 @@ mod tests {
         assert!(text.contains("decoder_with_past:"));
         assert!(text.contains("generation_config: parsed"));
         assert!(text.contains("max_new_tokens: 32"));
+        assert!(text.contains("ort_io_config: absent"));
         Ok(())
     }
 

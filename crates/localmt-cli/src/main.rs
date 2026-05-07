@@ -1068,6 +1068,7 @@ mod tests {
         assert!(output.contains("decoder.onnx"));
         assert!(output.contains("generation_config: parsed"));
         assert!(output.contains("max_new_tokens: 32"));
+        assert!(output.contains("ort_io_config: absent"));
         Ok(())
     }
 

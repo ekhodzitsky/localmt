@@ -43,30 +43,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<String, PreflightError>
 /// fn format_summary(summary: &OfflineTranslatorAssetsSummary) -> String
 /// { ret is a stable human-readable no-inference preflight summary }
 fn format_summary(summary: &OfflineTranslatorAssetsSummary) -> String {
-    let decoder_with_past = summary
-        .decoder_with_past_path()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "absent".to_owned());
-    let mut lines = vec![
-        format!("planned: {}", summary.model_id()),
-        format!("tokenizer: {}", summary.tokenizer_path().display()),
-        format!("encoder: {}", summary.encoder_path().display()),
-        format!("decoder: {}", summary.decoder_path().display()),
-        format!("decoder_with_past: {decoder_with_past}"),
-    ];
-
-    match summary.generation_config() {
-        Some(config) => {
-            lines.push("generation_config: parsed".to_owned());
-            lines.push(format!(
-                "max_new_tokens: {}",
-                config.max_new_tokens().value()
-            ));
-        }
-        None => lines.push("generation_config: absent".to_owned()),
-    }
-
-    lines.join("\n")
+    summary.to_preflight_text()
 }
 
 #[derive(Debug)]
@@ -140,6 +117,7 @@ mod tests {
         assert!(output.contains("decoder:"));
         assert!(output.contains("generation_config: parsed"));
         assert!(output.contains("max_new_tokens: 32"));
+        assert!(output.contains("ort_io_config: absent"));
         Ok(())
     }
 

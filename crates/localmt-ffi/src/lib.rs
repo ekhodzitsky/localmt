@@ -977,6 +977,7 @@ mod tests {
         assert!(summary.contains("decoder:"));
         assert!(summary.contains("decoder_with_past: absent"));
         assert!(summary.contains("generation_config: absent"));
+        assert!(summary.contains("ort_io_config: absent"));
         Ok(())
     }
 
