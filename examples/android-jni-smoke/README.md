@@ -10,6 +10,9 @@ owns Gradle, UI, permissions, and model-pack storage.
 - `src/main/java/dev/localmt/smoke/LocalmtNative.java` - Java declarations.
 - `CMakeLists.txt` - NDK build snippet that links `liblocalmt_ffi.so`.
 
+The bridge converts Java UTF-16 strings to standard UTF-8 for Rust and converts
+Rust UTF-8 output back to Java UTF-16. It does not rely on JNI modified UTF-8.
+
 ## Packaging
 
 Build the Rust library for Android:
@@ -38,8 +41,10 @@ String startup = LocalmtNative.startupSummary();
 LocalmtNative.configureOrtRuntime(
     context.getApplicationInfo().nativeLibraryDir + "/libonnxruntime.so");
 String ready = LocalmtNative.trustedSummary(modelPackDir.getAbsolutePath());
-String translated = LocalmtNative.translateTrusted(
-    modelPackDir.getAbsolutePath(), 0, 1, "hello world");
+try (LocalmtNative.Translator translator =
+         LocalmtNative.openTrustedTranslator(modelPackDir.getAbsolutePath())) {
+    String translated = translator.translate(0, 1, "hello world");
+}
 ```
 
 Language ids are the stable FFI order from `localmt_ffi_language_code()`:

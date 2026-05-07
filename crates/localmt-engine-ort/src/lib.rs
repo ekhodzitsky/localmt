@@ -1409,7 +1409,7 @@ impl fmt::Display for OrtEngineError {
 impl std::error::Error for OrtEngineError {}
 
 /// { path is a candidate ONNX Runtime dynamic library path }
-/// fn configure_ort_dylib_path(path: impl Into<PathBuf>) -> Result<(), OrtEngineError>
+/// `fn configure_ort_dylib_path(path: impl Into<PathBuf>) -> Result<(), OrtEngineError>`
 /// { ret is Ok only when future ORT session loads may use path as the explicit dylib }
 #[cfg(feature = "ort-runtime")]
 pub fn configure_ort_dylib_path(path: impl Into<PathBuf>) -> Result<(), OrtEngineError> {
@@ -1461,7 +1461,7 @@ impl OrtEngineSlot {
     }
 
     /// { self owns a loaded ORT session }
-    /// fn with_mut<T>(&self, operation: impl FnOnce(&mut OrtEngine) -> Result<T, OrtEngineError>) -> Result<T, OrtEngineError>
+    /// `fn with_mut<T>(&self, operation: impl FnOnce(&mut OrtEngine) -> Result<T, OrtEngineError>) -> Result<T, OrtEngineError>`
     /// { ret is operation result only when the mutable session lock is available }
     pub fn with_mut<T>(
         &self,

@@ -14,9 +14,58 @@ public final class LocalmtNative {
 
     public static native void configureOrtRuntime(String absoluteLibraryPath);
 
-    public static native String translateTrusted(
+    public static Translator openTrustedTranslator(String modelPackPath) {
+        return new Translator(openTrusted(modelPackPath));
+    }
+
+    public static String translateTrusted(
             String modelPackPath,
             int sourceLanguageId,
             int targetLanguageId,
+            String text) {
+        try (Translator translator = openTrustedTranslator(modelPackPath)) {
+            return translator.translate(sourceLanguageId, targetLanguageId, text);
+        }
+    }
+
+    private static native long openTrusted(String modelPackPath);
+
+    private static native String translate(
+            long nativeTranslatorHandle,
+            int sourceLanguageId,
+            int targetLanguageId,
             String text);
+
+    private static native void close(long nativeTranslatorHandle);
+
+    public static final class Translator implements AutoCloseable {
+        private long nativeHandle;
+
+        private Translator(long nativeHandle) {
+            if (nativeHandle == 0) {
+                throw new IllegalStateException("localmt translator open returned a null handle");
+            }
+            this.nativeHandle = nativeHandle;
+        }
+
+        public String translate(int sourceLanguageId, int targetLanguageId, String text) {
+            ensureOpen();
+            return LocalmtNative.translate(nativeHandle, sourceLanguageId, targetLanguageId, text);
+        }
+
+        @Override
+        public void close() {
+            long handle = nativeHandle;
+            nativeHandle = 0;
+            if (handle != 0) {
+                LocalmtNative.close(handle);
+            }
+        }
+
+        private void ensureOpen() {
+            if (nativeHandle == 0) {
+                throw new IllegalStateException("localmt translator is closed");
+            }
+        }
+    }
 }
