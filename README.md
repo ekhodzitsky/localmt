@@ -222,8 +222,10 @@ generation, so this is stronger adapter coverage but not real translation.
 `localmt_ffi_ort_runtime_enabled` and `LocalmtFfiOrtGenerator` provide runtime
 preflight. Default builds report runtime disabled; `ort-runtime` builds can
 verify a model pack and attempt to load encoder/decoder ONNX sessions. This is
-a model/runtime load check, not translation. Wiring tokenizer output into ONNX
-decoder execution remains future work.
+a model/runtime load check, not translation. `OrtOfflineTranslator` is the
+SDK-level real tokenizer plus ORT generator translator behind
+`hf-tokenizers + ort-runtime`; wrapping that full translator in an FFI handle is
+the next mobile-adapter step.
 
 ## ONNX Runtime Boundary
 
@@ -242,10 +244,11 @@ cargo check -p localmt --features ort-runtime
 verified encoder/decoder assets into ORT session plans. `OrtTokenGenerator`
 loads the required ORT sessions only when `ort-runtime` is enabled; the default
 build returns `OrtRuntimeFeatureDisabled`. `OrtTokenGenerator` now satisfies the
-pipeline `TokenGenerator` trait, but `generate` returns
-`BackendUnavailable("ONNX token generation loop is not implemented")` until
-encoder/decoder tensor I/O is implemented. Real tokenization, decoder graph
-execution, and translation are intentionally future work.
+pipeline `TokenGenerator` trait: default builds still report
+`BackendUnavailable("ONNX token generation loop is not implemented")`, while
+`ort-runtime` builds run encoder execution plus the non-cached decoder loop.
+`OrtOfflineTranslator` combines that generator with `HfTokenizer` when both
+runtime features are enabled.
 
 `OrtGeneratorPlan::parse_generation_config` parses the optional verified
 `generation_config` asset into `GenerationConfig`. Packs without that role
@@ -253,7 +256,7 @@ return `Ok(None)`. Session loading and decoder execution still do not consume
 the config yet.
 `OrtGeneratorPlan::parse_ort_io_config` parses the optional verified `config`
 asset when present and expects an `ort_io` object with the tensor names that the
-future decoder loop will bind. Packs without `config` return `Ok(None)`;
+decoder loop binds. Packs without `config` return `Ok(None)`;
 packs with `config` but without `ort_io` fail the explicit ORT I/O parse.
 The facade converts that missing-object case into the stable preflight line
 `ort_io_config: missing`; valid contracts print `ort_io_config: parsed`, and
@@ -267,8 +270,7 @@ before any model execution starts.
 it converts tokenizer source ids into ONNX-friendly `i64` encoder ids, builds
 the encoder attention mask, seeds decoder input ids with the configured target
 language token, and carries `max_new_tokens` plus EOS. `OrtTokenGenerator`
-still returns the explicit unavailable-backend error until ORT encoder/decoder
-session execution is wired.
+uses those inputs to seed feature-enabled encoder and decoder execution.
 `OrtGenerationState` now owns the deterministic decoder-loop state on top of
 those inputs: it appends accepted token ids, extends decoder input ids, and
 marks the loop finished on EOS or the max-new-token limit. Logits selection and
@@ -280,9 +282,8 @@ future `ort::value::Tensor::from_array` calls.
 With `ort-runtime` enabled, `OrtEngine::run_encoder` is the first real execution
 primitive: it binds named encoder input tensors, runs the mutable encoder
 session, and copies the named `last_hidden_state` output into owned `f32`
-values. Full translation still needs decoder execution and generator mutability
-wiring before `OrtTokenGenerator::generate` can leave the explicit unavailable
-backend path.
+values. `OrtEngine::run_decoder` then consumes growing decoder ids plus encoder
+hidden states for the non-cached decoder loop.
 Runtime-enabled `OrtTokenGenerator` stores encoder, decoder, and optional cached
 decoder sessions in `OrtEngineSlot`. The slot uses a standard mutex to provide
 mutable ORT session access behind the shared `TokenGenerator::generate(&self)`

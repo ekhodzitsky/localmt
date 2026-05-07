@@ -334,6 +334,96 @@ impl std::error::Error for HfMockOfflineTranslatorError {
     }
 }
 
+/// Facade-level translator that uses a real HF tokenizer and ORT generation.
+#[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
+pub struct OrtOfflineTranslator {
+    assets: OfflineTranslatorAssets,
+    pipeline: TranslationPipeline<HfTokenizer, OrtTokenGenerator>,
+}
+
+#[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
+impl OrtOfflineTranslator {
+    /// { path points to a model-pack directory candidate }
+    /// fn from_model_pack_path(path: impl `AsRef<Path>`) -> Result<Self, OrtOfflineTranslatorError>
+    /// { ret is Ok only when assets prepare, tokenizer loads, and ORT sessions load }
+    pub fn from_model_pack_path(path: impl AsRef<Path>) -> Result<Self, OrtOfflineTranslatorError> {
+        let assets = OfflineTranslatorAssets::from_model_pack_path(path)
+            .map_err(OrtOfflineTranslatorError::Assets)?;
+
+        Self::from_assets(assets)
+    }
+
+    /// { assets were prepared from a verified model pack }
+    /// fn from_assets(assets: OfflineTranslatorAssets) -> Result<Self, OrtOfflineTranslatorError>
+    /// { ret is Ok only when tokenizer and ORT generator load from verified paths }
+    pub fn from_assets(assets: OfflineTranslatorAssets) -> Result<Self, OrtOfflineTranslatorError> {
+        let tokenizer = HfTokenizer::from_file(assets.plan().tokenizer().tokenizer_path())
+            .map_err(OrtOfflineTranslatorError::Tokenizer)?;
+        let generator = OrtTokenGenerator::load(assets.plan().generator().clone())
+            .map_err(OrtOfflineTranslatorError::Generator)?;
+
+        Ok(Self {
+            assets,
+            pipeline: TranslationPipeline::new(tokenizer, generator),
+        })
+    }
+
+    /// { true }
+    /// fn assets(&self) -> &OfflineTranslatorAssets
+    /// { ret is the prepared assets backing this ORT translator }
+    pub const fn assets(&self) -> &OfflineTranslatorAssets {
+        &self.assets
+    }
+
+    /// { request has a valid language pair and non-empty text }
+    /// fn translate(&self, request: &TranslateRequest) -> Result<Translation, TranslationError>
+    /// { ret is delegated to the HF-tokenizer plus ORT-generator pipeline }
+    pub fn translate(&self, request: &TranslateRequest) -> Result<Translation, TranslationError> {
+        <Self as TranslatorEngine>::translate(self, request)
+    }
+}
+
+#[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
+impl TranslatorEngine for OrtOfflineTranslator {
+    fn translate(&self, request: &TranslateRequest) -> Result<Translation, TranslationError> {
+        self.pipeline.translate(request)
+    }
+}
+
+/// Facade-level ORT translator loading error.
+#[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
+#[derive(Debug)]
+pub enum OrtOfflineTranslatorError {
+    /// Prepared asset loading failed.
+    Assets(OfflineTranslatorAssetsError),
+    /// Hugging Face tokenizer loading failed.
+    Tokenizer(TokenizerError),
+    /// ORT generator loading failed.
+    Generator(OrtEngineError),
+}
+
+#[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
+impl fmt::Display for OrtOfflineTranslatorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Assets(error) => write!(formatter, "{error}"),
+            Self::Tokenizer(error) => write!(formatter, "{error}"),
+            Self::Generator(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+#[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
+impl std::error::Error for OrtOfflineTranslatorError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Assets(error) => Some(error),
+            Self::Tokenizer(error) => Some(error),
+            Self::Generator(error) => Some(error),
+        }
+    }
+}
+
 /// Owned no-inference summary of prepared offline translator assets.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OfflineTranslatorAssetsSummary {
@@ -536,6 +626,8 @@ mod tests {
     };
     #[cfg(feature = "hf-tokenizers")]
     use super::{HfMockOfflineTranslator, HfMockOfflineTranslatorError, Sha256Digest};
+    #[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
+    use super::{OrtOfflineTranslator, OrtOfflineTranslatorError, Translation, TranslationError};
     #[cfg(not(feature = "ort-runtime"))]
     use super::{OrtTokenGenerator, TokenGenerator};
 
@@ -1029,6 +1121,33 @@ mod tests {
             ))
         ));
         Ok(())
+    }
+
+    #[test]
+    #[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
+    fn ort_offline_translator_maps_missing_pack_to_assets_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = create_temp_dir()?.join("missing-pack");
+
+        let translator = OrtOfflineTranslator::from_model_pack_path(&path);
+
+        assert!(matches!(
+            translator,
+            Err(OrtOfflineTranslatorError::Assets(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "compile-only signature guard; construction requires tokenizer and ONNX model assets"]
+    #[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
+    fn ort_offline_translator_exposes_translate_boundary() {
+        fn assert_signature(translator: &OrtOfflineTranslator, request: &TranslateRequest) {
+            let result: Result<Translation, TranslationError> = translator.translate(request);
+            let _ = result;
+        }
+
+        let _signature: fn(&OrtOfflineTranslator, &TranslateRequest) = assert_signature;
     }
 
     #[test]
