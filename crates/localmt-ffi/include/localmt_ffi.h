@@ -22,7 +22,7 @@ extern "C" {
 #define LOCALMT_FFI_TOKENIZER_DISABLED 11
 #define LOCALMT_FFI_TOKENIZER_ERROR 12
 
-#define LOCALMT_FFI_ABI_VERSION 6
+#define LOCALMT_FFI_ABI_VERSION 7
 #define LOCALMT_FFI_ANDROID_ABI_ARM64_V8A 1
 #define LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK 1
 
@@ -95,6 +95,21 @@ int32_t localmt_ffi_status_message(
     uint8_t *output_ptr,
     size_t output_capacity,
     size_t *written_len);
+
+/*
+ * Writes the Android startup contract for this localmt-ffi build.
+ *
+ * The summary includes ABI version, max text length, Xiaomi 17 metadata,
+ * feature flags, and stable language codes. output_ptr/output_capacity is
+ * caller-owned byte storage and is not NUL terminated by Rust. written_len must
+ * point to writable size_t storage. On LOCALMT_FFI_BUFFER_TOO_SMALL,
+ * written_len contains the required byte count and output is not written.
+ */
+int32_t localmt_ffi_startup_summary(
+    uint8_t *output_ptr,
+    size_t output_capacity,
+    size_t *written_len);
+
 /* Xiaomi 17 target metadata encoded as stable small integers. */
 uint16_t localmt_ffi_xiaomi17_android_abi_code(void);
 uint16_t localmt_ffi_xiaomi17_ram_class_gib(void);

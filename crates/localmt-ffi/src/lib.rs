@@ -37,7 +37,7 @@ pub const LOCALMT_FFI_TOKENIZER_DISABLED: i32 = 11;
 pub const LOCALMT_FFI_TOKENIZER_ERROR: i32 = 12;
 
 /// Pointer-free C ABI version.
-pub const LOCALMT_FFI_ABI_VERSION: u32 = 6;
+pub const LOCALMT_FFI_ABI_VERSION: u32 = 7;
 /// FFI code for Android arm64-v8a.
 pub const LOCALMT_FFI_ANDROID_ABI_ARM64_V8A: u16 = 1;
 /// FFI code for ONNX Runtime Mobile with XNNPACK.
@@ -212,6 +212,65 @@ pub extern "C" fn localmt_ffi_status_message(
     unsafe { ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, output.len()) }; // SAFETY: output buffer capacity was checked.
 
     LOCALMT_FFI_OK
+}
+
+/// { output/written pointers follow the header contract }
+/// fn localmt_ffi_startup_summary(output_ptr: *mut u8, output_capacity: usize, written_len: *mut usize) -> i32
+/// { ret is OK only when output receives written_len UTF-8 startup summary bytes }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_startup_summary(
+    output_ptr: *mut u8,
+    output_capacity: usize,
+    written_len: *mut usize,
+) -> i32 {
+    if written_len.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    let summary = ffi_startup_summary();
+    let output = summary.as_bytes();
+    unsafe { *written_len = output.len() }; // SAFETY: non-null writable length pointer.
+
+    if output_capacity < output.len() {
+        return LOCALMT_FFI_BUFFER_TOO_SMALL;
+    }
+    if output_ptr.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, output.len()) }; // SAFETY: output buffer capacity was checked.
+
+    LOCALMT_FFI_OK
+}
+
+/// { true }
+/// fn ffi_startup_summary() -> String
+/// { ret is the stable Android startup contract summary for this build }
+fn ffi_startup_summary() -> String {
+    let languages = LANGUAGES
+        .iter()
+        .map(|language| language.iso_639_1())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "ffi_abi: {}\nmax_text_chars: {}\nxiaomi17_android_abi: {}\nxiaomi17_ram_class_gib: {}\nxiaomi17_preferred_runtime: {}\nhf_tokenizers: {}\nort_runtime: {}\nlanguages: {languages}",
+        LOCALMT_FFI_ABI_VERSION,
+        MAX_TEXT_CHARS,
+        DeviceProfile::Xiaomi17.android_abi(),
+        DeviceProfile::Xiaomi17.ram_class_gib(),
+        DeviceProfile::Xiaomi17.preferred_runtime(),
+        feature_status(cfg!(feature = "hf-tokenizers")),
+        feature_status(cfg!(feature = "ort-runtime")),
+    )
+}
+
+/// { true }
+/// fn feature_status(enabled: bool) -> &'static str
+/// { ret is enabled only when enabled is true }
+const fn feature_status(enabled: bool) -> &'static str {
+    if enabled { "enabled" } else { "disabled" }
 }
 
 /// { true }
@@ -707,9 +766,10 @@ mod tests {
         localmt_ffi_mock_translate, localmt_ffi_mock_translator_close,
         localmt_ffi_mock_translator_open, localmt_ffi_model_pack_summary,
         localmt_ffi_ort_generator_open, localmt_ffi_ort_runtime_enabled,
-        localmt_ffi_status_message, localmt_ffi_supported_language_count,
-        localmt_ffi_validate_language_pair, localmt_ffi_xiaomi17_android_abi_code,
-        localmt_ffi_xiaomi17_preferred_runtime_code, localmt_ffi_xiaomi17_ram_class_gib,
+        localmt_ffi_startup_summary, localmt_ffi_status_message,
+        localmt_ffi_supported_language_count, localmt_ffi_validate_language_pair,
+        localmt_ffi_xiaomi17_android_abi_code, localmt_ffi_xiaomi17_preferred_runtime_code,
+        localmt_ffi_xiaomi17_ram_class_gib,
     };
     #[cfg(feature = "hf-tokenizers")]
     use localmt::Sha256Digest;
@@ -745,11 +805,69 @@ mod tests {
 
     #[test]
     fn ffi_reports_abi_and_xiaomi17_contract() {
-        assert_eq!(localmt_ffi_abi_version(), 6);
+        assert_eq!(localmt_ffi_abi_version(), 7);
         assert_eq!(localmt_ffi_max_text_chars(), 4096);
         assert_eq!(localmt_ffi_xiaomi17_android_abi_code(), 1);
         assert_eq!(localmt_ffi_xiaomi17_ram_class_gib(), 12);
         assert_eq!(localmt_ffi_xiaomi17_preferred_runtime_code(), 1);
+    }
+
+    #[test]
+    fn ffi_startup_summary_reports_android_contract() -> Result<(), Box<dyn std::error::Error>> {
+        let mut output = [0_u8; 512];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_startup_summary(output.as_mut_ptr(), output.len(), &mut written_len),
+            LOCALMT_FFI_OK
+        );
+        let summary = std::str::from_utf8(&output[..written_len])?;
+
+        assert!(summary.contains("ffi_abi: 7"));
+        assert!(summary.contains("max_text_chars: 4096"));
+        assert!(summary.contains("xiaomi17_android_abi: arm64-v8a"));
+        assert!(summary.contains("xiaomi17_ram_class_gib: 12"));
+        assert!(summary.contains("xiaomi17_preferred_runtime: onnx-runtime-mobile-xnnpack"));
+        assert!(summary.contains("languages: en, ru, th, vi, ja"));
+
+        #[cfg(not(feature = "hf-tokenizers"))]
+        assert!(summary.contains("hf_tokenizers: disabled"));
+        #[cfg(feature = "hf-tokenizers")]
+        assert!(summary.contains("hf_tokenizers: enabled"));
+        #[cfg(not(feature = "ort-runtime"))]
+        assert!(summary.contains("ort_runtime: disabled"));
+        #[cfg(feature = "ort-runtime")]
+        assert!(summary.contains("ort_runtime: enabled"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_startup_summary_reports_required_buffer_len() {
+        let mut output = [0_u8; 3];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_startup_summary(output.as_mut_ptr(), output.len(), &mut written_len),
+            LOCALMT_FFI_BUFFER_TOO_SMALL
+        );
+        assert!(written_len > output.len());
+    }
+
+    #[test]
+    fn ffi_startup_summary_rejects_nulls() {
+        let mut output = [0_u8; 512];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_startup_summary(output.as_mut_ptr(), output.len(), ptr::null_mut()),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_startup_summary(ptr::null_mut(), output.len(), &mut written_len),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert!(written_len > 0);
     }
 
     #[test]

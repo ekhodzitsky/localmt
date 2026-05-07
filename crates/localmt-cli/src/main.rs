@@ -26,6 +26,7 @@ usage:
   localmt model tokenize PACK FROM TO TEXT
   localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE
   localmt ffi smoke PACK FROM TO TEXT
+  localmt ffi startup
   localmt ffi header
   localmt ffi hf-smoke PACK FROM TO TEXT
   localmt ffi ort-smoke PACK
@@ -37,6 +38,7 @@ localmt ffi commands
 
 usage:
   localmt ffi smoke PACK FROM TO TEXT
+  localmt ffi startup
   localmt ffi header
   localmt ffi hf-smoke PACK FROM TO TEXT
   localmt ffi ort-smoke PACK
@@ -175,11 +177,27 @@ fn run_ffi(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
 
     match command.as_str() {
         "smoke" => run_ffi_smoke(args),
+        "startup" => ffi_startup(args),
         "header" => ffi_header(args),
         "hf-smoke" => run_ffi_hf_smoke(args),
         "ort-smoke" => run_ffi_ort_smoke(args),
         _ => Err(CliError::UnknownFfiCommand(command)),
     }
+}
+
+/// { args contains no remaining arguments }
+/// fn ffi_startup(args: impl Iterator<Item = String>) -> Result<String, CliError>
+/// { ret is the Android startup contract visible through the FFI buffer ABI }
+fn ffi_startup(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
+    if args.next().is_some() {
+        return Err(CliError::TooManyArguments);
+    }
+
+    let output = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_startup_summary(output_ptr, output_capacity, written_len)
+    })?;
+
+    String::from_utf8(output).map_err(CliError::FfiOutputUtf8)
 }
 
 /// { args contains no remaining arguments }
@@ -1055,7 +1073,7 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 6"));
+        assert!(output.contains("ffi_abi: 7"));
         assert!(output.contains("model_pack_summary: ok"));
         assert!(output.contains("mock_translator_open: ok"));
         assert!(output.contains("mock_translate: ok"));
@@ -1093,10 +1111,23 @@ mod tests {
         let output = run(args.into_iter())?;
 
         assert!(output.contains("#ifndef LOCALMT_FFI_H"));
-        assert!(output.contains("#define LOCALMT_FFI_ABI_VERSION 6"));
+        assert!(output.contains("#define LOCALMT_FFI_ABI_VERSION 7"));
         assert!(output.contains("int32_t localmt_ffi_model_pack_summary("));
         assert!(output.contains("int32_t localmt_ffi_mock_translate("));
         assert!(output.contains("int32_t localmt_ffi_ort_generator_open("));
+        Ok(())
+    }
+
+    #[test]
+    fn cli_ffi_startup_prints_android_contract() -> Result<(), Box<dyn std::error::Error>> {
+        let args = ["localmt".to_owned(), "ffi".to_owned(), "startup".to_owned()];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("ffi_abi: 7"));
+        assert!(output.contains("max_text_chars: 4096"));
+        assert!(output.contains("xiaomi17_android_abi: arm64-v8a"));
+        assert!(output.contains("languages: en, ru, th, vi, ja"));
         Ok(())
     }
 
@@ -1140,7 +1171,7 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 6"));
+        assert!(output.contains("ffi_abi: 7"));
         assert!(output.contains("model_pack_summary: ok"));
         assert!(output.contains("hf_mock_translator_open: ok"));
         assert!(output.contains("hf_mock_translate: ok"));
@@ -1304,6 +1335,7 @@ mod tests {
             "localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE"
         ));
         assert!(output.contains("localmt ffi smoke PACK FROM TO TEXT"));
+        assert!(output.contains("localmt ffi startup"));
         assert!(output.contains("localmt ffi header"));
         assert!(output.contains("localmt ffi hf-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-smoke PACK"));
@@ -1318,6 +1350,7 @@ mod tests {
         let output = run(args.into_iter())?;
 
         assert!(output.contains("localmt ffi smoke PACK FROM TO TEXT"));
+        assert!(output.contains("localmt ffi startup"));
         assert!(output.contains("localmt ffi header"));
         assert!(output.contains("localmt ffi hf-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-smoke PACK"));

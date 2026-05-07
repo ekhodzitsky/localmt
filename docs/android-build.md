@@ -76,10 +76,12 @@ matching ONNX Runtime Mobile library expected by the runtime loader.
 
 At app startup:
 
-1. Call `localmt_ffi_abi_version()` and require `LOCALMT_FFI_ABI_VERSION == 6`.
-2. Call `localmt_ffi_xiaomi17_android_abi_code()` and require
+1. Call `localmt_ffi_startup_summary()` for a loggable startup contract, or
+   call the individual probes below.
+1. Call `localmt_ffi_abi_version()` and require `LOCALMT_FFI_ABI_VERSION == 7`.
+1. Call `localmt_ffi_xiaomi17_android_abi_code()` and require
    `LOCALMT_FFI_ANDROID_ABI_ARM64_V8A`.
-3. Call `localmt_ffi_supported_language_count()` and map language ids through
+1. Call `localmt_ffi_supported_language_count()` and map language ids through
    `localmt_ffi_language_code()`.
 
 Before opening a translator:
@@ -130,6 +132,7 @@ cargo run -p localmt -- model write-manifest <pack-dir> m2m100-418m-int8 0.1.0 m
 cargo run -p localmt -- model verify <pack-dir>
 cargo run -p localmt -- model plan <pack-dir>
 cargo run -p localmt -- model doctor <pack-dir>
+cargo run -p localmt -- ffi startup
 cargo run -p localmt -- ffi header
 cargo run -p localmt -- ffi smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke <pack-dir> en ru "hello offline"
