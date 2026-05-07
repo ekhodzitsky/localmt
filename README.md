@@ -272,11 +272,15 @@ session execution is wired.
 `OrtGenerationState` now owns the deterministic decoder-loop state on top of
 those inputs: it appends accepted token ids, extends decoder input ids, and
 marks the loop finished on EOS or the max-new-token limit. Logits selection and
-real ORT tensor binding remain separate future steps.
+session execution remain separate future steps.
+`OrtGenerationTensorInputs::from_generation_inputs` prepares the first concrete
+ORT tensor-input binding layer: encoder input ids, encoder attention mask, and
+decoder input ids are owned `i64` row tensors with `[1, N]` shapes, ready for
+future `ort::value::Tensor::from_array` calls.
 `OrtNextTokenSelector::select_argmax` handles the first logits-selection policy:
 it rejects empty or non-finite logits, chooses the highest vocabulary index as a
-`TokenId`, and keeps the first index on ties. Real ORT tensor binding still
-remains the next execution step.
+`TokenId`, and keeps the first index on ties. Actual ORT session execution
+still remains the next runtime step.
 
 Accepted local `config.json` fragment for ORT I/O:
 

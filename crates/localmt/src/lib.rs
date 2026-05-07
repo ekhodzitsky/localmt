@@ -11,8 +11,9 @@ pub use localmt_core::{
 pub use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
 pub use localmt_engine_ort::{
     OrtEngine, OrtEngineError, OrtGenerationInputs, OrtGenerationState, OrtGenerationStateError,
-    OrtGeneratorPlan, OrtGeneratorRuntimeConfig, OrtIoConfig, OrtIoConfigError,
-    OrtIoConfigParseError, OrtModelRole, OrtSessionPlan, OrtTokenGenerator,
+    OrtGenerationTensorInputs, OrtGeneratorPlan, OrtGeneratorRuntimeConfig, OrtI64TensorInput,
+    OrtIoConfig, OrtIoConfigError, OrtIoConfigParseError, OrtModelRole, OrtSessionPlan,
+    OrtTokenGenerator,
 };
 pub use localmt_models::{
     Discovered, ModelArchitecture, ModelFile, ModelFileKind, ModelFileRole, ModelId, ModelLicense,
@@ -526,8 +527,9 @@ mod tests {
         LanguageTokenIds, MaxNewTokens, MockEngine, MockOfflineTranslator, ModelFileRole,
         ModelPack, NonEmptyText, OfflineTranslatorAssets, OfflineTranslatorPlan,
         OfflineTranslatorPlanError, OrtEngineError, OrtGenerationInputs, OrtGenerationState,
-        OrtGenerationStateError, OrtIoConfigStatus, OrtModelRole, TokenGeneratorError, TokenId,
-        TokenSequence, TokenizerError, TokenizerOutput, TranslateRequest, Translator,
+        OrtGenerationStateError, OrtGenerationTensorInputs, OrtI64TensorInput, OrtIoConfigStatus,
+        OrtModelRole, TokenGeneratorError, TokenId, TokenSequence, TokenizerError, TokenizerOutput,
+        TranslateRequest, Translator,
     };
     #[cfg(feature = "hf-tokenizers")]
     use super::{HfMockOfflineTranslator, HfMockOfflineTranslatorError, Sha256Digest};
@@ -1075,6 +1077,33 @@ mod tests {
         assert_eq!(inputs.encoder_attention_mask(), &[1, 1, 1]);
         assert_eq!(inputs.decoder_input_ids(), &[11]);
         Ok(())
+    }
+
+    #[test]
+    fn generation_tensor_inputs_prepare_row_shapes() -> Result<(), Box<dyn std::error::Error>> {
+        let pair = LanguagePair::new(Language::English, Language::Japanese)?;
+        let tokens = TokenSequence::new(vec![TokenId::new(7), TokenId::new(8)])?;
+        let input = TokenizerOutput::new(pair, tokens);
+        let config = generation_config_with_limit(3)?;
+        let inputs = OrtGenerationInputs::from_tokenizer_output(&input, config);
+
+        let tensor_inputs = OrtGenerationTensorInputs::from_generation_inputs(&inputs);
+
+        assert_eq!(tensor_inputs.encoder_input_ids().shape(), [1, 2]);
+        assert_eq!(tensor_inputs.encoder_input_ids().values(), &[7, 8]);
+        assert_eq!(tensor_inputs.encoder_attention_mask().shape(), [1, 2]);
+        assert_eq!(tensor_inputs.encoder_attention_mask().values(), &[1, 1]);
+        assert_eq!(tensor_inputs.decoder_input_ids().shape(), [1, 1]);
+        assert_eq!(tensor_inputs.decoder_input_ids().values(), &[14]);
+        Ok(())
+    }
+
+    #[test]
+    fn generation_tensor_input_row_preserves_decoder_growth() {
+        let input = OrtI64TensorInput::row(&[14, 21]);
+
+        assert_eq!(input.shape(), [1, 2]);
+        assert_eq!(input.values(), &[14, 21]);
     }
 
     #[test]

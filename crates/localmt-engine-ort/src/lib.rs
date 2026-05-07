@@ -387,6 +387,81 @@ impl OrtGenerationInputs {
     }
 }
 
+/// Owned row-shaped `i64` tensor payload for ONNX Runtime inputs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrtI64TensorInput {
+    shape: [usize; 2],
+    values: Vec<i64>,
+}
+
+impl OrtI64TensorInput {
+    /// { values is the contiguous scalar payload for one batch row }
+    /// fn row(values: &[i64]) -> Self
+    /// { ret has shape [1, values.len()] and preserves all scalar values }
+    pub fn row(values: &[i64]) -> Self {
+        Self {
+            shape: [1, values.len()],
+            values: values.to_vec(),
+        }
+    }
+
+    /// { true }
+    /// fn shape(&self) -> [usize; 2]
+    /// { ret is the ORT tensor shape for the owned values }
+    pub const fn shape(&self) -> [usize; 2] {
+        self.shape
+    }
+
+    /// { true }
+    /// fn values(&self) -> &[i64]
+    /// { ret is the contiguous row-major tensor payload }
+    pub fn values(&self) -> &[i64] {
+        &self.values
+    }
+}
+
+/// ONNX Runtime row tensors prepared from semantic generation inputs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrtGenerationTensorInputs {
+    encoder_input_ids: OrtI64TensorInput,
+    encoder_attention_mask: OrtI64TensorInput,
+    decoder_input_ids: OrtI64TensorInput,
+}
+
+impl OrtGenerationTensorInputs {
+    /// { inputs contains ONNX-friendly generation vectors }
+    /// fn from_generation_inputs(inputs: &OrtGenerationInputs) -> Self
+    /// { ret maps every generation vector into a [1, N] ORT row tensor payload }
+    pub fn from_generation_inputs(inputs: &OrtGenerationInputs) -> Self {
+        Self {
+            encoder_input_ids: OrtI64TensorInput::row(inputs.encoder_input_ids()),
+            encoder_attention_mask: OrtI64TensorInput::row(inputs.encoder_attention_mask()),
+            decoder_input_ids: OrtI64TensorInput::row(inputs.decoder_input_ids()),
+        }
+    }
+
+    /// { true }
+    /// fn encoder_input_ids(&self) -> &OrtI64TensorInput
+    /// { ret is the encoder token-id tensor payload }
+    pub const fn encoder_input_ids(&self) -> &OrtI64TensorInput {
+        &self.encoder_input_ids
+    }
+
+    /// { true }
+    /// fn encoder_attention_mask(&self) -> &OrtI64TensorInput
+    /// { ret is the encoder attention-mask tensor payload }
+    pub const fn encoder_attention_mask(&self) -> &OrtI64TensorInput {
+        &self.encoder_attention_mask
+    }
+
+    /// { true }
+    /// fn decoder_input_ids(&self) -> &OrtI64TensorInput
+    /// { ret is the decoder input-id tensor payload }
+    pub const fn decoder_input_ids(&self) -> &OrtI64TensorInput {
+        &self.decoder_input_ids
+    }
+}
+
 /// { tokens is a non-empty bounded tokenizer sequence }
 /// fn token_sequence_to_i64(tokens: &TokenSequence) -> Vec<i64>
 /// { ret preserves token order while converting ids for ONNX tensors }
