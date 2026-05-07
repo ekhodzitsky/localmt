@@ -126,6 +126,7 @@ cargo run -p localmt -- model hash <file>
 cargo run -p localmt -- model write-manifest <pack-dir> m2m100-418m-int8 0.1.0 m2m100 onnx-runtime MIT
 cargo run -p localmt -- model verify <pack-dir>
 cargo run -p localmt -- model plan <pack-dir>
+cargo run -p localmt -- model doctor <pack-dir>
 cargo run -p localmt -- ffi smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features ort-runtime -- ffi ort-smoke <pack-dir>
@@ -134,6 +135,11 @@ cargo run -p localmt --features ort-runtime -- ffi ort-smoke <pack-dir>
 `localmt ffi smoke` exercises the same default C ABI flow described above on the
 host: ABI query, model-pack summary, mock translator open, mock translate,
 status-message lookup on errors, and handle close.
+`localmt model doctor` is the combined preflight gate before handing a pack to
+Android: facade planning, shared FFI summary, deterministic mock FFI
+translation, HF tokenizer status, and ORT runtime status. Default builds report
+disabled HF/ORT features as diagnostics, while feature builds use the compiled
+backends.
 `localmt ffi hf-smoke` exercises the tokenizer-backed mock translator path
 through the same host-side FFI helpers; it requires `hf-tokenizers`, verifies
 `tokenizer.json` loading, and still keeps token generation mocked.

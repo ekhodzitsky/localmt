@@ -22,6 +22,7 @@ usage:
   localmt model inspect PACK
   localmt model verify PACK
   localmt model plan PACK
+  localmt model doctor PACK
   localmt model tokenize PACK FROM TO TEXT
   localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE
   localmt ffi smoke PACK FROM TO TEXT
@@ -47,6 +48,7 @@ usage:
   localmt model inspect PACK
   localmt model verify PACK
   localmt model plan PACK
+  localmt model doctor PACK
   localmt model tokenize PACK FROM TO TEXT
   localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE
 ";
@@ -61,6 +63,7 @@ notes:
   runtime: mock-pipeline
 ";
 
+const DOCTOR_SMOKE_TEXT: &str = "hello offline";
 const STANDARD_MODEL_FILES: [StandardModelFile; 7] = [
     StandardModelFile::required("encoder.onnx", ModelFileRole::Encoder),
     StandardModelFile::required("decoder.onnx", ModelFileRole::Decoder),
@@ -144,6 +147,7 @@ fn run_model(mut args: impl Iterator<Item = String>) -> Result<String, CliError>
         "inspect" => inspect_model(single_model_path(args)?),
         "verify" => verify_model(single_model_path(args)?),
         "plan" => plan_model(single_model_path(args)?),
+        "doctor" => doctor_model(single_model_path(args)?),
         "tokenize" => tokenize_model(args),
         "hash" => hash_model_file(single_model_path(args)?),
         "write-manifest" => write_manifest(args),
@@ -306,6 +310,123 @@ fn plan_model(path: String) -> Result<String, CliError> {
         OfflineTranslatorAssets::from_model_pack_path(path).map_err(CliError::OfflineAssets)?;
 
     Ok(assets.summary().to_preflight_text())
+}
+
+/// { path is a model-pack root candidate }
+/// fn doctor_model(path: String) -> Result<String, CliError>
+/// { ret reports Ok only when required no-network preflight checks complete }
+fn doctor_model(path: String) -> Result<String, CliError> {
+    OfflineTranslatorAssets::from_model_pack_path(path.clone()).map_err(CliError::OfflineAssets)?;
+    let path_bytes = path.as_bytes();
+    let _summary = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_model_pack_summary(
+            path_bytes.as_ptr(),
+            path_bytes.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
+    })?;
+    let source_id = ffi_language_id(Language::English)?;
+    let target_id = ffi_language_id(Language::Russian)?;
+    let mock_status = doctor_mock_translate(path_bytes, source_id, target_id)?;
+    let hf_status = doctor_hf_mock_translate(path_bytes, source_id, target_id)?;
+    let ort_status = doctor_ort_generator(path_bytes)?;
+
+    Ok(format!(
+        "doctor: ok\nmodel_plan: ok\nffi_model_pack_summary: ok\nffi_mock_translate: {mock_status}\nffi_hf_mock_translate: {hf_status}\nffi_ort_generator: {ort_status}"
+    ))
+}
+
+/// { path_bytes is a UTF-8 model-pack path and source_id/target_id form a valid FFI pair }
+/// fn doctor_mock_translate(path_bytes: &[u8], source_id: u8, target_id: u8) -> Result<&'static str, CliError>
+/// { ret is Ok only when the deterministic mock FFI translator opens and translates }
+fn doctor_mock_translate(
+    path_bytes: &[u8],
+    source_id: u8,
+    target_id: u8,
+) -> Result<&'static str, CliError> {
+    let mut translator: *mut localmt_ffi::LocalmtFfiTranslator = ptr::null_mut();
+    ffi_ok(localmt_ffi::localmt_ffi_mock_translator_open(
+        path_bytes.as_ptr(),
+        path_bytes.len(),
+        &mut translator,
+    ))?;
+
+    let input = DOCTOR_SMOKE_TEXT.as_bytes();
+    let translation = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_mock_translate(
+            translator,
+            source_id,
+            target_id,
+            input.as_ptr(),
+            input.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
+    });
+    localmt_ffi::localmt_ffi_mock_translator_close(translator);
+    let _translation = String::from_utf8(translation?).map_err(CliError::FfiOutputUtf8)?;
+
+    Ok("ok")
+}
+
+/// { path_bytes is a UTF-8 model-pack path and source_id/target_id form a valid FFI pair }
+/// fn doctor_hf_mock_translate(path_bytes: &[u8], source_id: u8, target_id: u8) -> Result<String, CliError>
+/// { ret is Ok only when HF FFI mock translation succeeds or the tokenizer feature is disabled }
+fn doctor_hf_mock_translate(
+    path_bytes: &[u8],
+    source_id: u8,
+    target_id: u8,
+) -> Result<String, CliError> {
+    let mut translator: *mut localmt_ffi::LocalmtFfiHfMockTranslator = ptr::null_mut();
+    let status = localmt_ffi::localmt_ffi_hf_mock_translator_open(
+        path_bytes.as_ptr(),
+        path_bytes.len(),
+        &mut translator,
+    );
+    if status == localmt_ffi::LOCALMT_FFI_TOKENIZER_DISABLED {
+        return Ok(ffi_status_text(status));
+    }
+    ffi_ok(status)?;
+
+    let input = DOCTOR_SMOKE_TEXT.as_bytes();
+    let translation = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_hf_mock_translate(
+            translator,
+            source_id,
+            target_id,
+            input.as_ptr(),
+            input.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
+    });
+    localmt_ffi::localmt_ffi_hf_mock_translator_close(translator);
+    let _translation = String::from_utf8(translation?).map_err(CliError::FfiOutputUtf8)?;
+
+    Ok("ok".to_owned())
+}
+
+/// { path_bytes is a UTF-8 model-pack path }
+/// fn doctor_ort_generator(path_bytes: &[u8]) -> Result<String, CliError>
+/// { ret is Ok only when ORT opens or the runtime feature is disabled }
+fn doctor_ort_generator(path_bytes: &[u8]) -> Result<String, CliError> {
+    let mut generator: *mut localmt_ffi::LocalmtFfiOrtGenerator = ptr::null_mut();
+    let status = localmt_ffi::localmt_ffi_ort_generator_open(
+        path_bytes.as_ptr(),
+        path_bytes.len(),
+        &mut generator,
+    );
+    if status == localmt_ffi::LOCALMT_FFI_RUNTIME_DISABLED {
+        return Ok(ffi_status_text(status));
+    }
+    ffi_ok(status)?;
+    localmt_ffi::localmt_ffi_ort_generator_close(generator);
+
+    Ok("ok".to_owned())
 }
 
 /// { args contains tokenize command arguments }
@@ -928,6 +1049,29 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(not(feature = "hf-tokenizers"), not(feature = "ort-runtime")))]
+    fn cli_model_doctor_reports_default_readiness_for_verified_pack()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_plannable_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "model".to_owned(),
+            "doctor".to_owned(),
+            root.display().to_string(),
+        ];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("doctor: ok"));
+        assert!(output.contains("model_plan: ok"));
+        assert!(output.contains("ffi_model_pack_summary: ok"));
+        assert!(output.contains("ffi_mock_translate: ok"));
+        assert!(output.contains("ffi_hf_mock_translate: tokenizer disabled"));
+        assert!(output.contains("ffi_ort_generator: runtime disabled"));
+        Ok(())
+    }
+
+    #[test]
     #[cfg(not(feature = "hf-tokenizers"))]
     fn cli_ffi_hf_smoke_reports_tokenizer_feature_disabled_after_pack_planning()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1126,6 +1270,7 @@ mod tests {
 
         assert!(output.contains("localmt FROM TO TEXT"));
         assert!(output.contains("localmt model hash FILE"));
+        assert!(output.contains("localmt model doctor PACK"));
         assert!(output.contains(
             "localmt model write-manifest PACK MODEL_ID VERSION ARCHITECTURE RUNTIME LICENSE"
         ));
@@ -1145,6 +1290,7 @@ mod tests {
         assert!(output.contains("localmt model inspect PACK"));
         assert!(output.contains("localmt model verify PACK"));
         assert!(output.contains("localmt model plan PACK"));
+        assert!(output.contains("localmt model doctor PACK"));
         assert!(output.contains("localmt model tokenize PACK FROM TO TEXT"));
         assert!(output.contains("localmt model hash FILE"));
         assert!(output.contains(

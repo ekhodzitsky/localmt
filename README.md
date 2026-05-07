@@ -72,6 +72,7 @@ localmt model hash ./models/m2m100-418m-int8/encoder.onnx
 localmt model inspect ./models/m2m100-418m-int8
 localmt model verify ./models/m2m100-418m-int8
 localmt model plan ./models/m2m100-418m-int8
+localmt model doctor ./models/m2m100-418m-int8
 localmt model tokenize ./models/m2m100-418m-int8 en ru "hello offline"
 localmt bench --help
 ```
@@ -89,6 +90,10 @@ when present, computes SHA-256 values, and prints JSON to stdout.
 `OfflineTranslatorPlan`, and parses an optional `generation_config`. It is a
 no-inference smoke command: it does not load ONNX Runtime sessions or execute
 decoder graphs.
+`model doctor` is the single local readiness gate for a pack: it runs facade
+planning, the shared FFI model-pack summary, deterministic mock FFI translation,
+and HF/ORT preflight status checks. In default builds, disabled tokenizer and
+runtime features are reported as diagnostic lines instead of command failures.
 
 ## Facade Planning
 
@@ -131,6 +136,7 @@ CLI smoke checks:
 
 ```bash
 cargo run -p localmt -- model plan ./models/m2m100-418m-int8
+cargo run -p localmt -- model doctor ./models/m2m100-418m-int8
 cargo run -p localmt -- ffi smoke ./models/m2m100-418m-int8 en ru "hello offline"
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke ./models/m2m100-418m-int8 en ru "hello offline"
 cargo run -p localmt --features ort-runtime -- ffi ort-smoke ./models/m2m100-418m-int8
