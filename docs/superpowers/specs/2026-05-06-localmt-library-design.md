@@ -72,7 +72,10 @@ localmt-owned `TokenId`, `TokenSequence`, `TokenizerInput`, and
 `TokenizerOutput` types so SentencePiece/BPE implementations can be added later
 without changing the public translation pipeline shape. `TokenizerAssetPlan`
 bridges verified model packs to future tokenizer implementations by requiring a
-`tokenizer` role and preserving optional `vocab` and `config` paths.
+`tokenizer` role and preserving optional `vocab` and `config` paths. The
+Hugging Face tokenizer backend detects the first supported NLLB language tokens
+and prefixes source text with the request source language instead of the
+serialized tokenizer default.
 
 The pipeline layer is the first end-to-end SDK shape. It composes a
 `TokenizerEngine` and a `TokenGenerator`, then adapts pipeline errors into
@@ -86,15 +89,15 @@ optional `decoder_with_past` and `generation_config` paths.
 assets into encoder/decoder session plans before any session is loaded.
 `OrtTokenGenerator::load` loads those sessions behind `ort-runtime`; default
 builds still return an explicit disabled-runtime error.
-`OrtTokenGenerator` implements the pipeline `TokenGenerator` contract now, but
-`generate` returns an explicit unavailable-backend error until encoder/decoder
-tensor I/O and decoding semantics are implemented.
+`OrtTokenGenerator` implements the pipeline `TokenGenerator` contract now.
+Feature-enabled builds load encoder/decoder sessions and run a non-cached
+decoder loop; default builds return an explicit unavailable-backend error.
 `GenerationConfig` provides typed generation-loop settings: bounded
-`max_new_tokens`, BOS/EOS token ids, and target-language token ids for the first
-language set. It validates duplicate or colliding token roles before any decoder
-loop consumes those values. The pipeline crate parses the local
-`generation_config` JSON schema into that type; `max_new_tokens` is optional and
-defaults to `DEFAULT_MAX_NEW_TOKENS`.
+`max_new_tokens`, BOS/EOS token ids, an optional decoder-start token, and
+target-language token ids for the first language set. It validates duplicate or
+colliding token roles before any decoder loop consumes those values. The
+pipeline crate parses the local `generation_config` JSON schema into that type;
+`max_new_tokens` is optional and defaults to `DEFAULT_MAX_NEW_TOKENS`.
 `OrtGeneratorPlan::parse_generation_config` bridges the verified optional
 `generation_config` model-pack asset into this typed config while keeping ORT
 session loading and decoder execution separate.

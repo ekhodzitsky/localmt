@@ -288,6 +288,7 @@ impl TokenizerEngine for MockTokenizer {
 #[derive(Debug)]
 pub struct HfTokenizer {
     tokenizer: tokenizers::Tokenizer,
+    nllb_language_tokens: Option<HfNllbLanguageTokens>,
 }
 
 #[cfg(feature = "hf-tokenizers")]
@@ -304,23 +305,108 @@ impl HfTokenizer {
             }
         })?;
 
-        Ok(Self { tokenizer })
+        let nllb_language_tokens = HfNllbLanguageTokens::from_tokenizer(&tokenizer);
+
+        Ok(Self {
+            tokenizer,
+            nllb_language_tokens,
+        })
+    }
+
+    /// { input has validated text and language-pair invariants }
+    /// fn encode_ids(&self, input: &TokenizerInput) -> Result<Vec<TokenId>, TokenizerError>
+    /// { ret contains source-specialized token ids when tokenizer exposes NLLB language tokens }
+    fn encode_ids(&self, input: &TokenizerInput) -> Result<Vec<TokenId>, TokenizerError> {
+        match self.nllb_language_tokens {
+            Some(language_tokens) => self.encode_nllb_ids(input, language_tokens),
+            None => self.encode_default_ids(input.text().as_str(), true),
+        }
+    }
+
+    /// { input has validated text and language-pair invariants }
+    /// fn encode_nllb_ids(&self, input: &TokenizerInput, language_tokens: HfNllbLanguageTokens) -> Result<Vec<TokenId>, TokenizerError>
+    /// { ret is prefixed with the input source language token and suffixed with EOS }
+    fn encode_nllb_ids(
+        &self,
+        input: &TokenizerInput,
+        language_tokens: HfNllbLanguageTokens,
+    ) -> Result<Vec<TokenId>, TokenizerError> {
+        let encoding = self.encode_default_ids(input.text().as_str(), false)?;
+        let mut tokens = Vec::with_capacity(encoding.len() + 2);
+        tokens.push(language_tokens.token_for(input.source()));
+        tokens.extend(encoding);
+        tokens.push(language_tokens.eos);
+
+        Ok(tokens)
+    }
+
+    /// { text is non-empty and bounded }
+    /// fn encode_default_ids(&self, text: &str, add_special_tokens: bool) -> Result<Vec<TokenId>, TokenizerError>
+    /// { ret contains ids emitted by the loaded Hugging Face tokenizer }
+    fn encode_default_ids(
+        &self,
+        text: &str,
+        add_special_tokens: bool,
+    ) -> Result<Vec<TokenId>, TokenizerError> {
+        let encoding = self
+            .tokenizer
+            .encode(text, add_special_tokens)
+            .map_err(|source| TokenizerError::TokenizerEncode(source.to_string()))?;
+
+        Ok(encoding
+            .get_ids()
+            .iter()
+            .copied()
+            .map(TokenId::new)
+            .collect())
+    }
+}
+
+#[cfg(feature = "hf-tokenizers")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HfNllbLanguageTokens {
+    english: TokenId,
+    russian: TokenId,
+    thai: TokenId,
+    vietnamese: TokenId,
+    japanese: TokenId,
+    eos: TokenId,
+}
+
+#[cfg(feature = "hf-tokenizers")]
+impl HfNllbLanguageTokens {
+    /// { tokenizer is a loaded Hugging Face tokenizer }
+    /// fn from_tokenizer(tokenizer: &tokenizers::Tokenizer) -> Option<Self>
+    /// { ret is Some only when the tokenizer exposes all first-set NLLB language tokens and EOS }
+    fn from_tokenizer(tokenizer: &tokenizers::Tokenizer) -> Option<Self> {
+        Some(Self {
+            english: TokenId::new(tokenizer.token_to_id("eng_Latn")?),
+            russian: TokenId::new(tokenizer.token_to_id("rus_Cyrl")?),
+            thai: TokenId::new(tokenizer.token_to_id("tha_Thai")?),
+            vietnamese: TokenId::new(tokenizer.token_to_id("vie_Latn")?),
+            japanese: TokenId::new(tokenizer.token_to_id("jpn_Jpan")?),
+            eos: TokenId::new(tokenizer.token_to_id("</s>")?),
+        })
+    }
+
+    /// { true }
+    /// fn token_for(self, language: Language) -> TokenId
+    /// { ret is the NLLB source language token for language }
+    const fn token_for(self, language: Language) -> TokenId {
+        match language {
+            Language::English => self.english,
+            Language::Russian => self.russian,
+            Language::Thai => self.thai,
+            Language::Vietnamese => self.vietnamese,
+            Language::Japanese => self.japanese,
+        }
     }
 }
 
 #[cfg(feature = "hf-tokenizers")]
 impl TokenizerEngine for HfTokenizer {
     fn encode(&self, input: &TokenizerInput) -> Result<TokenizerOutput, TokenizerError> {
-        let encoding = self
-            .tokenizer
-            .encode(input.text().as_str(), true)
-            .map_err(|source| TokenizerError::TokenizerEncode(source.to_string()))?;
-        let tokens = encoding
-            .get_ids()
-            .iter()
-            .copied()
-            .map(TokenId::new)
-            .collect::<Vec<_>>();
+        let tokens = self.encode_ids(input)?;
         let sequence = TokenSequence::new(tokens)?;
 
         Ok(TokenizerOutput::new(input.pair(), sequence))
@@ -593,6 +679,32 @@ mod tests {
 
     #[test]
     #[cfg(feature = "hf-tokenizers")]
+    fn hf_tokenizer_prefixes_nllb_source_language_token() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_temp_dir()?;
+        let tokenizer_path = root.join("tokenizer.json");
+        write_nllb_wordlevel_tokenizer(&tokenizer_path)?;
+
+        let tokenizer = super::HfTokenizer::from_file(&tokenizer_path)?;
+        let text = NonEmptyText::new("hello offline")?;
+        let input = TokenizerInput::new(Language::Russian, Language::English, text)?;
+        let encoded = tokenizer.encode(&input)?;
+
+        assert_eq!(
+            encoded
+                .tokens()
+                .as_slice()
+                .iter()
+                .map(|token| token.value())
+                .collect::<Vec<_>>(),
+            vec![5, 1, 2, 3]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "hf-tokenizers")]
     fn hf_tokenizer_reports_load_errors() -> Result<(), Box<dyn std::error::Error>> {
         let root = create_temp_dir()?;
         let missing_path = root.join("missing-tokenizer.json");
@@ -627,6 +739,47 @@ mod tests {
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         let mut tokenizer = Tokenizer::new(model);
         tokenizer.with_pre_tokenizer(Some(WhitespaceSplit));
+        tokenizer
+            .save(path, false)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "hf-tokenizers")]
+    fn write_nllb_wordlevel_tokenizer(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        use tokenizers::Tokenizer;
+        use tokenizers::models::wordlevel::WordLevel;
+        use tokenizers::pre_tokenizers::whitespace::WhitespaceSplit;
+        use tokenizers::processors::template::TemplateProcessing;
+
+        let vocab = [
+            ("[UNK]".to_owned(), 0),
+            ("hello".to_owned(), 1),
+            ("offline".to_owned(), 2),
+            ("</s>".to_owned(), 3),
+            ("eng_Latn".to_owned(), 4),
+            ("rus_Cyrl".to_owned(), 5),
+            ("tha_Thai".to_owned(), 6),
+            ("vie_Latn".to_owned(), 7),
+            ("jpn_Jpan".to_owned(), 8),
+        ]
+        .into_iter()
+        .collect();
+        let model = WordLevel::builder()
+            .vocab(vocab)
+            .unk_token("[UNK]".to_owned())
+            .build()
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let mut tokenizer = Tokenizer::new(model);
+        tokenizer.with_pre_tokenizer(Some(WhitespaceSplit));
+        let processor = TemplateProcessing::builder()
+            .try_single("eng_Latn $A </s>")
+            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .special_tokens(vec![("eng_Latn", 4), ("</s>", 3)])
+            .build()
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        tokenizer.with_post_processor(Some(processor));
         tokenizer
             .save(path, false)
             .map_err(|error| std::io::Error::other(error.to_string()))?;

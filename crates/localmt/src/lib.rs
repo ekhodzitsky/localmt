@@ -1202,6 +1202,24 @@ mod tests {
     }
 
     #[test]
+    fn generation_inputs_prefix_decoder_start_before_target_language()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pair = LanguagePair::new(Language::English, Language::Russian)?;
+        let tokens = TokenSequence::new(vec![TokenId::new(42), TokenId::new(7)])?;
+        let input = TokenizerOutput::new(pair, tokens);
+        let config = generation_config_with_decoder_start(3, TokenId::new(2))?;
+
+        let inputs = OrtGenerationInputs::from_tokenizer_output(&input, config);
+
+        assert_eq!(inputs.encoder_input_ids(), &[42, 7]);
+        assert_eq!(inputs.encoder_attention_mask(), &[1, 1]);
+        assert_eq!(inputs.decoder_input_ids(), &[2, 11]);
+        assert_eq!(inputs.max_new_tokens(), 3);
+        assert_eq!(inputs.eos_token_id(), 1);
+        Ok(())
+    }
+
+    #[test]
     fn generation_tensor_inputs_prepare_row_shapes() -> Result<(), Box<dyn std::error::Error>> {
         let pair = LanguagePair::new(Language::English, Language::Japanese)?;
         let tokens = TokenSequence::new(vec![TokenId::new(7), TokenId::new(8)])?;
@@ -1313,6 +1331,28 @@ mod tests {
             max_new_tokens,
             special_tokens,
             language_tokens,
+        )?)
+    }
+
+    fn generation_config_with_decoder_start(
+        max_new_tokens: usize,
+        decoder_start_token_id: TokenId,
+    ) -> Result<GenerationConfig, Box<dyn std::error::Error>> {
+        let max_new_tokens = MaxNewTokens::new(max_new_tokens)?;
+        let special_tokens = GenerationSpecialTokens::new(TokenId::new(0), TokenId::new(1))?;
+        let language_tokens = LanguageTokenIds::new(
+            TokenId::new(10),
+            TokenId::new(11),
+            TokenId::new(12),
+            TokenId::new(13),
+            TokenId::new(14),
+        )?;
+
+        Ok(GenerationConfig::new_with_decoder_start(
+            max_new_tokens,
+            special_tokens,
+            language_tokens,
+            decoder_start_token_id,
         )?)
     }
 

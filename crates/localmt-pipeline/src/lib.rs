@@ -208,6 +208,7 @@ impl LanguageTokenIds {
 pub struct GenerationConfig {
     max_new_tokens: MaxNewTokens,
     special_tokens: GenerationSpecialTokens,
+    decoder_start_token_id: Option<TokenId>,
     language_tokens: LanguageTokenIds,
 }
 
@@ -256,11 +257,41 @@ impl GenerationConfig {
         special_tokens: GenerationSpecialTokens,
         language_tokens: LanguageTokenIds,
     ) -> Result<Self, GenerationConfigError> {
+        Self::new_with_optional_decoder_start(max_new_tokens, special_tokens, language_tokens, None)
+    }
+
+    /// { max_new_tokens, special_tokens, language_tokens, and decoder_start_token_id were validated }
+    /// fn new_with_decoder_start(max_new_tokens: MaxNewTokens, special_tokens: GenerationSpecialTokens, language_tokens: LanguageTokenIds, decoder_start_token_id: TokenId) -> Result<Self, GenerationConfigError>
+    /// { ret is Ok only when language tokens do not collide with BOS/EOS }
+    pub fn new_with_decoder_start(
+        max_new_tokens: MaxNewTokens,
+        special_tokens: GenerationSpecialTokens,
+        language_tokens: LanguageTokenIds,
+        decoder_start_token_id: TokenId,
+    ) -> Result<Self, GenerationConfigError> {
+        Self::new_with_optional_decoder_start(
+            max_new_tokens,
+            special_tokens,
+            language_tokens,
+            Some(decoder_start_token_id),
+        )
+    }
+
+    /// { max_new_tokens, special_tokens, language_tokens, and decoder_start_token_id were validated }
+    /// fn new_with_optional_decoder_start(max_new_tokens: MaxNewTokens, special_tokens: GenerationSpecialTokens, language_tokens: LanguageTokenIds, decoder_start_token_id: Option<TokenId>) -> Result<Self, GenerationConfigError>
+    /// { ret is Ok only when language tokens do not collide with BOS/EOS }
+    fn new_with_optional_decoder_start(
+        max_new_tokens: MaxNewTokens,
+        special_tokens: GenerationSpecialTokens,
+        language_tokens: LanguageTokenIds,
+        decoder_start_token_id: Option<TokenId>,
+    ) -> Result<Self, GenerationConfigError> {
         ensure_language_tokens_do_not_collide_with_specials(special_tokens, language_tokens)?;
 
         Ok(Self {
             max_new_tokens,
             special_tokens,
+            decoder_start_token_id,
             language_tokens,
         })
     }
@@ -284,6 +315,13 @@ impl GenerationConfig {
     /// { ret is the configured end-of-sequence token id }
     pub const fn eos_token_id(&self) -> TokenId {
         self.special_tokens.eos_token_id()
+    }
+
+    /// { true }
+    /// fn decoder_start_token_id(&self) -> `Option<TokenId>`
+    /// { ret is the optional decoder seed token used before the target-language token }
+    pub const fn decoder_start_token_id(&self) -> Option<TokenId> {
+        self.decoder_start_token_id
     }
 
     /// { true }
@@ -410,6 +448,7 @@ impl std::error::Error for GenerationConfigParseError {}
 struct RawGenerationConfig {
     max_new_tokens: Option<usize>,
     bos_token_id: u32,
+    decoder_start_token_id: Option<u32>,
     eos_token_id: u32,
     language_token_ids: RawLanguageTokenIds,
 }
@@ -428,9 +467,15 @@ impl RawGenerationConfig {
         )
         .map_err(GenerationConfigParseError::InvalidConfig)?;
         let language_tokens = self.language_token_ids.try_into_tokens()?;
+        let decoder_start_token_id = self.decoder_start_token_id.map(TokenId::new);
 
-        GenerationConfig::new(max_new_tokens, special_tokens, language_tokens)
-            .map_err(GenerationConfigParseError::InvalidConfig)
+        GenerationConfig::new_with_optional_decoder_start(
+            max_new_tokens,
+            special_tokens,
+            language_tokens,
+            decoder_start_token_id,
+        )
+        .map_err(GenerationConfigParseError::InvalidConfig)
     }
 }
 
@@ -906,6 +951,7 @@ mod tests {
         assert_eq!(config.max_new_tokens().value(), DEFAULT_MAX_NEW_TOKENS);
         assert_eq!(config.bos_token_id(), TokenId::new(0));
         assert_eq!(config.eos_token_id(), TokenId::new(1));
+        assert_eq!(config.decoder_start_token_id(), None);
         assert_eq!(
             config.target_language_token(Language::Japanese),
             TokenId::new(14)
@@ -1013,9 +1059,40 @@ mod tests {
         assert_eq!(config.max_new_tokens().value(), 64);
         assert_eq!(config.bos_token_id(), TokenId::new(0));
         assert_eq!(config.eos_token_id(), TokenId::new(1));
+        assert_eq!(config.decoder_start_token_id(), None);
         assert_eq!(
             config.target_language_token(Language::Japanese),
             TokenId::new(14)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generation_config_parses_decoder_start_token_from_json_str()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = GenerationConfig::from_json_str(
+            r#"{
+  "max_new_tokens": 8,
+  "bos_token_id": 0,
+  "decoder_start_token_id": 2,
+  "eos_token_id": 2,
+  "language_token_ids": {
+    "en": 256047,
+    "ru": 256147,
+    "th": 256175,
+    "vi": 256193,
+    "ja": 256079
+  }
+}"#,
+        )?;
+
+        assert_eq!(config.max_new_tokens().value(), 8);
+        assert_eq!(config.bos_token_id(), TokenId::new(0));
+        assert_eq!(config.decoder_start_token_id(), Some(TokenId::new(2)));
+        assert_eq!(config.eos_token_id(), TokenId::new(2));
+        assert_eq!(
+            config.target_language_token(Language::Russian),
+            TokenId::new(256147)
         );
         Ok(())
     }

@@ -344,9 +344,13 @@ impl OrtGenerationInputs {
     pub fn from_tokenizer_output(input: &TokenizerOutput, config: GenerationConfig) -> Self {
         let encoder_input_ids = token_sequence_to_i64(input.tokens());
         let encoder_attention_mask = vec![1_i64; encoder_input_ids.len()];
-        let decoder_input_ids = vec![i64::from(
+        let mut decoder_input_ids = Vec::with_capacity(2);
+        if let Some(token) = config.decoder_start_token_id() {
+            decoder_input_ids.push(i64::from(token.value()));
+        }
+        decoder_input_ids.push(i64::from(
             config.target_language_token(input.target()).value(),
-        )];
+        ));
         let max_new_tokens = config.max_new_tokens().value();
         let eos_token_id = i64::from(config.eos_token_id().value());
 

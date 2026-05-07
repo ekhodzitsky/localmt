@@ -269,8 +269,8 @@ runtime features are enabled.
 
 `OrtGeneratorPlan::parse_generation_config` parses the optional verified
 `generation_config` asset into `GenerationConfig`. Packs without that role
-return `Ok(None)`. Session loading and decoder execution still do not consume
-the config yet.
+return `Ok(None)`. Runtime session loading and decoder execution consume the
+config only when `ort-runtime` is enabled.
 `OrtGeneratorPlan::parse_ort_io_config` parses the optional verified `config`
 asset when present and expects an `ort_io` object with the tensor names that the
 decoder loop binds. Packs without `config` return `Ok(None)`;
@@ -285,13 +285,13 @@ loading ONNX sessions, so missing decoder-loop settings or tensor names fail
 before any model execution starts.
 `OrtGenerationInputs::from_tokenizer_output` is the next no-inference boundary:
 it converts tokenizer source ids into ONNX-friendly `i64` encoder ids, builds
-the encoder attention mask, seeds decoder input ids with the configured target
-language token, and carries `max_new_tokens` plus EOS. `OrtTokenGenerator`
-uses those inputs to seed feature-enabled encoder and decoder execution.
+the encoder attention mask, seeds decoder input ids with an optional
+`decoder_start_token_id` followed by the configured target language token, and
+carries `max_new_tokens` plus EOS. `OrtTokenGenerator` uses those inputs to seed
+feature-enabled encoder and decoder execution.
 `OrtGenerationState` now owns the deterministic decoder-loop state on top of
 those inputs: it appends accepted token ids, extends decoder input ids, and
-marks the loop finished on EOS or the max-new-token limit. Logits selection and
-session execution remain separate future steps.
+marks the loop finished on EOS or the max-new-token limit.
 `OrtGenerationTensorInputs::from_generation_inputs` prepares the first concrete
 ORT tensor-input binding layer: encoder input ids, encoder attention mask, and
 decoder input ids are owned `i64` row tensors with `[1, N]` shapes, ready for
@@ -368,7 +368,11 @@ roundtrips so the future translation pipeline can be tested without
 model-specific tokenizer dependencies. `HfTokenizer` is available behind the
 `hf-tokenizers` feature and loads Hugging Face `tokenizer.json` files through
 the `tokenizers` crate with default features disabled and pure-Rust
-`fancy-regex` enabled. The `localmt` facade forwards the same feature.
+`fancy-regex` enabled. When the tokenizer exposes the first supported NLLB
+language tokens, `HfTokenizer` prefixes the encoded source with the request's
+source language token and appends `</s>` instead of relying on the tokenizer's
+serialized default source language. The `localmt` facade forwards the same
+feature.
 `TokenizerAssetPlan` builds from a verified model pack, requires a declared
 `tokenizer` role, and carries optional `vocab` and `config` paths for tokenizer
 implementations.
@@ -395,16 +399,17 @@ TranslateRequest -> TokenizerEngine::encode -> TokenGenerator::generate -> Token
 Real translation is wired through `OrtOfflineTranslator` when both
 `hf-tokenizers` and `ort-runtime` are enabled; default builds still use mock
 tokenizer/generator components for deterministic tests and adapter smoke checks.
-Cached decoder execution and real-model quality validation remain future work.
+Cached decoder execution, beam search, and model-specific quality tuning remain
+future work.
 
 ## Generation Config
 
-`GenerationConfig` captures decoder-loop settings as typed values before the
-loop exists. It owns a bounded `MaxNewTokens`, required BOS/EOS token ids, and
-target-language token ids for `en`, `ru`, `th`, `vi`, and `ja`.
+`GenerationConfig` captures decoder-loop settings as typed values. It owns a
+bounded `MaxNewTokens`, required BOS/EOS token ids, an optional
+`decoder_start_token_id`, and target-language token ids for `en`, `ru`, `th`,
+`vi`, and `ja`.
 `GenerationConfig::with_default_limit` uses `DEFAULT_MAX_NEW_TOKENS` and rejects
-duplicate or colliding token roles. Parsing `generation_config` files and using
-these values inside ONNX decoder execution are separate steps.
+duplicate or colliding token roles.
 
 Accepted local `generation_config` JSON shape:
 
@@ -412,6 +417,7 @@ Accepted local `generation_config` JSON shape:
 {
   "max_new_tokens": 64,
   "bos_token_id": 0,
+  "decoder_start_token_id": 2,
   "eos_token_id": 1,
   "language_token_ids": {
     "en": 10,
@@ -423,10 +429,12 @@ Accepted local `generation_config` JSON shape:
 }
 ```
 
-`max_new_tokens` is optional; omitted configs use `DEFAULT_MAX_NEW_TOKENS`.
+`max_new_tokens` and `decoder_start_token_id` are optional. Omitted
+`max_new_tokens` uses `DEFAULT_MAX_NEW_TOKENS`; omitted
+`decoder_start_token_id` preserves the legacy decoder seed of only the target
+language token.
 `GenerationConfig::from_json_file` and `GenerationConfig::from_json_str` parse
-this schema and then run the same token-role validation. Decoder execution still
-does not consume this config yet.
+this schema and then run the same token-role validation.
 
 ## Benchmark Skeleton
 
