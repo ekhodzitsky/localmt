@@ -58,6 +58,10 @@ jobs:
           /tmp/localmt-jni-utf-test
           javac -d /tmp/localmt-jni-smoke-classes \
             examples/android-jni-smoke/src/main/java/dev/localmt/smoke/LocalmtNative.java
+          cargo run --locked -p localmt-cli -- ffi startup > /tmp/localmt-startup.txt
+          ruby examples/android-jni-smoke/tests/check_java_language_constants.rb \
+            examples/android-jni-smoke/src/main/java/dev/localmt/smoke/LocalmtNative.java \
+            /tmp/localmt-startup.txt
 
       - name: Release FFI symbol check
         run: |
