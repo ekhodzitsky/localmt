@@ -263,6 +263,12 @@ it requires both a parsed `generation_config` and a parsed `ort_io` config.
 Feature-enabled `OrtTokenGenerator::load` parses that strict config before
 loading ONNX sessions, so missing decoder-loop settings or tensor names fail
 before any model execution starts.
+`OrtGenerationInputs::from_tokenizer_output` is the next no-inference boundary:
+it converts tokenizer source ids into ONNX-friendly `i64` encoder ids, builds
+the encoder attention mask, seeds decoder input ids with the configured target
+language token, and carries `max_new_tokens` plus EOS. `OrtTokenGenerator`
+still returns the explicit unavailable-backend error until ORT encoder/decoder
+session execution is wired.
 
 Accepted local `config.json` fragment for ORT I/O:
 

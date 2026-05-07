@@ -10,8 +10,9 @@ pub use localmt_core::{
 };
 pub use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
 pub use localmt_engine_ort::{
-    OrtEngine, OrtEngineError, OrtGeneratorPlan, OrtGeneratorRuntimeConfig, OrtIoConfig,
-    OrtIoConfigError, OrtIoConfigParseError, OrtModelRole, OrtSessionPlan, OrtTokenGenerator,
+    OrtEngine, OrtEngineError, OrtGenerationInputs, OrtGeneratorPlan, OrtGeneratorRuntimeConfig,
+    OrtIoConfig, OrtIoConfigError, OrtIoConfigParseError, OrtModelRole, OrtSessionPlan,
+    OrtTokenGenerator,
 };
 pub use localmt_models::{
     Discovered, ModelArchitecture, ModelFile, ModelFileKind, ModelFileRole, ModelId, ModelLicense,
@@ -521,15 +522,17 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        Discovered, Language, MockEngine, MockOfflineTranslator, ModelFileRole, ModelPack,
-        NonEmptyText, OfflineTranslatorAssets, OfflineTranslatorPlan, OfflineTranslatorPlanError,
-        OrtEngineError, OrtIoConfigStatus, OrtModelRole, TokenGeneratorError, TokenId,
-        TokenizerError, TranslateRequest, Translator,
+        Discovered, GenerationConfig, GenerationSpecialTokens, Language, LanguagePair,
+        LanguageTokenIds, MaxNewTokens, MockEngine, MockOfflineTranslator, ModelFileRole,
+        ModelPack, NonEmptyText, OfflineTranslatorAssets, OfflineTranslatorPlan,
+        OfflineTranslatorPlanError, OrtEngineError, OrtGenerationInputs, OrtIoConfigStatus,
+        OrtModelRole, TokenGeneratorError, TokenId, TokenSequence, TokenizerError, TokenizerOutput,
+        TranslateRequest, Translator,
     };
     #[cfg(feature = "hf-tokenizers")]
     use super::{HfMockOfflineTranslator, HfMockOfflineTranslatorError, Sha256Digest};
     #[cfg(not(feature = "ort-runtime"))]
-    use super::{LanguagePair, OrtTokenGenerator, TokenGenerator, TokenSequence, TokenizerOutput};
+    use super::{OrtTokenGenerator, TokenGenerator};
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
     const DECODER_SHA256: &str = "eacbeef293be61f2a85d929cadb4cbb5248c8b8a1478b3d4b3180ea365d5e687";
@@ -1039,6 +1042,59 @@ mod tests {
                 if reason == "ONNX token generation loop is not implemented"
         ));
         Ok(())
+    }
+
+    #[test]
+    fn generation_inputs_prepare_encoder_and_decoder_seed() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let pair = LanguagePair::new(Language::English, Language::Japanese)?;
+        let tokens = TokenSequence::new(vec![TokenId::new(7), TokenId::new(8)])?;
+        let input = TokenizerOutput::new(pair, tokens);
+        let config = generation_config_with_limit(3)?;
+
+        let inputs = OrtGenerationInputs::from_tokenizer_output(&input, config);
+
+        assert_eq!(inputs.encoder_input_ids(), &[7, 8]);
+        assert_eq!(inputs.encoder_attention_mask(), &[1, 1]);
+        assert_eq!(inputs.decoder_input_ids(), &[14]);
+        assert_eq!(inputs.max_new_tokens(), 3);
+        assert_eq!(inputs.eos_token_id(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn generation_inputs_preserve_source_token_order() -> Result<(), Box<dyn std::error::Error>> {
+        let pair = LanguagePair::new(Language::English, Language::Russian)?;
+        let tokens = TokenSequence::new(vec![TokenId::new(42), TokenId::new(7), TokenId::new(42)])?;
+        let input = TokenizerOutput::new(pair, tokens);
+        let config = generation_config_with_limit(3)?;
+
+        let inputs = OrtGenerationInputs::from_tokenizer_output(&input, config);
+
+        assert_eq!(inputs.encoder_input_ids(), &[42, 7, 42]);
+        assert_eq!(inputs.encoder_attention_mask(), &[1, 1, 1]);
+        assert_eq!(inputs.decoder_input_ids(), &[11]);
+        Ok(())
+    }
+
+    fn generation_config_with_limit(
+        max_new_tokens: usize,
+    ) -> Result<GenerationConfig, Box<dyn std::error::Error>> {
+        let max_new_tokens = MaxNewTokens::new(max_new_tokens)?;
+        let special_tokens = GenerationSpecialTokens::new(TokenId::new(0), TokenId::new(1))?;
+        let language_tokens = LanguageTokenIds::new(
+            TokenId::new(10),
+            TokenId::new(11),
+            TokenId::new(12),
+            TokenId::new(13),
+            TokenId::new(14),
+        )?;
+
+        Ok(GenerationConfig::new(
+            max_new_tokens,
+            special_tokens,
+            language_tokens,
+        )?)
     }
 
     fn create_pack(

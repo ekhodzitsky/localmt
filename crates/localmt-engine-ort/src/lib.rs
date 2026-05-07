@@ -319,6 +319,85 @@ impl OrtGeneratorRuntimeConfig {
     }
 }
 
+/// ONNX-friendly inputs prepared before ORT encoder/decoder execution.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrtGenerationInputs {
+    encoder_input_ids: Vec<i64>,
+    encoder_attention_mask: Vec<i64>,
+    decoder_input_ids: Vec<i64>,
+    max_new_tokens: usize,
+    eos_token_id: i64,
+}
+
+impl OrtGenerationInputs {
+    /// { input contains source tokens and config contains generation policy }
+    /// fn from_tokenizer_output(input: &TokenizerOutput, config: GenerationConfig) -> Self
+    /// { ret contains ONNX-friendly token ids, masks, and decoder-loop limits }
+    pub fn from_tokenizer_output(input: &TokenizerOutput, config: GenerationConfig) -> Self {
+        let encoder_input_ids = token_sequence_to_i64(input.tokens());
+        let encoder_attention_mask = vec![1_i64; encoder_input_ids.len()];
+        let decoder_input_ids = vec![i64::from(
+            config.target_language_token(input.target()).value(),
+        )];
+        let max_new_tokens = config.max_new_tokens().value();
+        let eos_token_id = i64::from(config.eos_token_id().value());
+
+        Self {
+            encoder_input_ids,
+            encoder_attention_mask,
+            decoder_input_ids,
+            max_new_tokens,
+            eos_token_id,
+        }
+    }
+
+    /// { true }
+    /// fn encoder_input_ids(&self) -> &[i64]
+    /// { ret is the source token ids in ONNX tensor scalar representation }
+    pub fn encoder_input_ids(&self) -> &[i64] {
+        &self.encoder_input_ids
+    }
+
+    /// { true }
+    /// fn encoder_attention_mask(&self) -> &[i64]
+    /// { ret is one attention-mask value per encoder token }
+    pub fn encoder_attention_mask(&self) -> &[i64] {
+        &self.encoder_attention_mask
+    }
+
+    /// { true }
+    /// fn decoder_input_ids(&self) -> &[i64]
+    /// { ret is the initial decoder token seed }
+    pub fn decoder_input_ids(&self) -> &[i64] {
+        &self.decoder_input_ids
+    }
+
+    /// { true }
+    /// fn max_new_tokens(&self) -> usize
+    /// { ret is the configured upper bound for generated target tokens }
+    pub const fn max_new_tokens(&self) -> usize {
+        self.max_new_tokens
+    }
+
+    /// { true }
+    /// fn eos_token_id(&self) -> i64
+    /// { ret is the configured end-of-sequence token id }
+    pub const fn eos_token_id(&self) -> i64 {
+        self.eos_token_id
+    }
+}
+
+/// { tokens is a non-empty bounded tokenizer sequence }
+/// fn token_sequence_to_i64(tokens: &TokenSequence) -> Vec<i64>
+/// { ret preserves token order while converting ids for ONNX tensors }
+fn token_sequence_to_i64(tokens: &TokenSequence) -> Vec<i64> {
+    tokens
+        .as_slice()
+        .iter()
+        .map(|token| i64::from(token.value()))
+        .collect()
+}
+
 #[derive(Deserialize)]
 struct RawOrtIoConfigEnvelope {
     ort_io: Option<RawOrtIoConfig>,
