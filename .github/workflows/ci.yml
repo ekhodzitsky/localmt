@@ -45,9 +45,17 @@ jobs:
           JAVA_HOME_DIR="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
           c++ -std=c++17 -fsyntax-only \
             -Icrates/localmt-ffi/include \
+            -Iexamples/android-jni-smoke/src/main/cpp \
             -I"$JAVA_HOME_DIR/include" \
             -I"$JAVA_HOME_DIR/include/linux" \
             examples/android-jni-smoke/src/main/cpp/localmt_jni_smoke.cpp
+          c++ -std=c++17 \
+            -Iexamples/android-jni-smoke/src/main/cpp \
+            -I"$JAVA_HOME_DIR/include" \
+            -I"$JAVA_HOME_DIR/include/linux" \
+            examples/android-jni-smoke/tests/localmt_jni_utf_test.cpp \
+            -o /tmp/localmt-jni-utf-test
+          /tmp/localmt-jni-utf-test
           javac -d /tmp/localmt-jni-smoke-classes \
             examples/android-jni-smoke/src/main/java/dev/localmt/smoke/LocalmtNative.java
 
