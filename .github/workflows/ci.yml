@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust components and Android target
+        run: |
+          rustup component add clippy rustfmt
+          rustup target add aarch64-linux-android
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Test default features
+        run: cargo test --locked
+
+      - name: Test all features
+        run: cargo test --locked --all-features
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Documentation
+        run: cargo doc --locked --no-deps
+
+      - name: Android arm64 FFI check
+        run: cargo check --locked -p localmt-ffi --target aarch64-linux-android
