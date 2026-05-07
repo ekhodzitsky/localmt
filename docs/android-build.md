@@ -51,6 +51,7 @@ Default behavior:
 - status messages work
 - HF tokenizer preflight returns `LOCALMT_FFI_TOKENIZER_DISABLED`
 - ORT generator preflight returns `LOCALMT_FFI_RUNTIME_DISABLED`
+- ORT translator open returns `LOCALMT_FFI_TOKENIZER_DISABLED`
 
 Tokenizer smoke builds:
 
@@ -68,9 +69,20 @@ cargo build -p localmt-ffi --release --features ort-runtime
 ```
 
 This enables ONNX Runtime session loading boundaries. The current generator
-still returns an explicit unavailable-backend error for real token generation.
-If this feature is used in an Android app, the app build must also package the
-matching ONNX Runtime Mobile library expected by the runtime loader.
+loads encoder/decoder sessions and runs the non-cached decoder loop when paired
+with tokenizer output. If this feature is used in an Android app, the app build
+must also package the matching ONNX Runtime Mobile library expected by the
+runtime loader.
+
+Full translator builds:
+
+```bash
+cargo build -p localmt-ffi --release --features "hf-tokenizers ort-runtime"
+```
+
+This enables `LocalmtFfiOrtTranslator`: model-pack verification, real
+`tokenizer.json` loading, ORT encoder/decoder session loading, and translation
+through `localmt_ffi_ort_translate`.
 
 ## JNI Call Flow
 
@@ -78,7 +90,7 @@ At app startup:
 
 1. Call `localmt_ffi_startup_summary()` for a loggable startup contract, or
    call the individual probes below.
-1. Call `localmt_ffi_abi_version()` and require `LOCALMT_FFI_ABI_VERSION == 8`.
+1. Call `localmt_ffi_abi_version()` and require `LOCALMT_FFI_ABI_VERSION == 9`.
 1. Call `localmt_ffi_xiaomi17_android_abi_code()` and require
    `LOCALMT_FFI_ANDROID_ABI_ARM64_V8A`.
 1. Call `localmt_ffi_supported_language_count()` and map language ids through
@@ -102,6 +114,34 @@ Smoke translation choices:
   `localmt_ffi_hf_mock_translate()` when the Rust library is built with
   `hf-tokenizers`; this verifies a real tokenizer file while keeping generation
   mocked.
+- Use `localmt_ffi_ort_generator_open()` when the Rust library is built with
+  `ort-runtime`; this verifies ORT session loading without translation.
+- Use `localmt_ffi_ort_translator_open()` and `localmt_ffi_ort_translate()`
+  when the Rust library is built with `hf-tokenizers` and `ort-runtime`; this is
+  the Android-visible real translation path.
+
+The ORT translator flow is:
+
+```c
+LocalmtFfiOrtTranslator *translator = NULL;
+int32_t status = localmt_ffi_ort_translator_open(
+    path_ptr,
+    path_len,
+    &translator);
+if (status == LOCALMT_FFI_OK) {
+    size_t written_len = 0;
+    status = localmt_ffi_ort_translate(
+        translator,
+        source_id,
+        target_id,
+        input_ptr,
+        input_len,
+        output_ptr,
+        output_capacity,
+        &written_len);
+}
+localmt_ffi_ort_translator_close(translator);
+```
 
 Every handle returned by an `open` function must be closed exactly once with the
 matching `close` function. Passing a non-null pointer not created by Rust, or
@@ -169,6 +209,7 @@ cargo run -p localmt -- ffi runtime-config <pack-dir>
 cargo run -p localmt -- ffi smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features ort-runtime -- ffi ort-smoke <pack-dir>
+cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-smoke <pack-dir> en ru "hello offline"
 ```
 
 `localmt ffi smoke` exercises the same default C ABI flow described above on the
@@ -176,9 +217,9 @@ host: ABI query, model-pack summary, mock translator open, mock translate,
 status-message lookup on errors, and handle close.
 `localmt model doctor` is the combined preflight gate before handing a pack to
 Android: facade planning, startup ABI summary, shared FFI model-pack summary,
-deterministic mock FFI translation, HF tokenizer status, and ORT runtime status.
-Default builds report disabled HF/ORT features as diagnostics, while feature
-builds use the compiled backends.
+deterministic mock FFI translation, HF tokenizer status, ORT runtime status, and
+ORT translator FFI status. Default builds report disabled HF/ORT features as
+diagnostics, while feature builds use the compiled backends.
 `localmt model runtime-config` is stricter than `model plan`: it requires both
 `generation_config` and `ort_io` to be present and valid, but still avoids
 loading ONNX Runtime sessions.
@@ -189,6 +230,8 @@ through the same host-side FFI helpers; it requires `hf-tokenizers`, verifies
 `tokenizer.json` loading, and still keeps token generation mocked.
 `localmt ffi ort-smoke` exercises the ORT generator preflight handle; it
 requires `ort-runtime`, attempts session loading, and does not run translation.
+`localmt ffi ort-translate-smoke` exercises the full ORT translator FFI handle;
+it requires `hf-tokenizers` plus `ort-runtime` for real translation.
 
 ## Verification
 
