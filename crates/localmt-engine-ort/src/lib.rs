@@ -1003,6 +1003,8 @@ pub enum OrtEngineError {
         /// Invalid output dimension.
         dimension: i64,
     },
+    /// A mutable ORT session lock was poisoned.
+    OrtSessionLock(OrtModelRole),
     /// Crate was compiled without the `ort-runtime` feature.
     OrtRuntimeFeatureDisabled,
     /// ONNX Runtime failed to create a session.
@@ -1030,6 +1032,7 @@ impl fmt::Display for OrtEngineError {
                 formatter,
                 "ORT output {output} has invalid shape dimension {dimension}"
             ),
+            Self::OrtSessionLock(role) => write!(formatter, "ORT session lock poisoned: {role}"),
             Self::OrtRuntimeFeatureDisabled => {
                 formatter.write_str("ort-runtime feature is not enabled")
             }
@@ -1039,6 +1042,65 @@ impl fmt::Display for OrtEngineError {
 }
 
 impl std::error::Error for OrtEngineError {}
+
+/// Thread-safe mutable slot for a loaded ONNX Runtime session.
+#[cfg(feature = "ort-runtime")]
+#[derive(Debug)]
+pub struct OrtEngineSlot {
+    role: OrtModelRole,
+    engine: std::sync::Mutex<OrtEngine>,
+}
+
+#[cfg(feature = "ort-runtime")]
+impl OrtEngineSlot {
+    /// { engine is a loaded ORT session wrapper }
+    /// fn new(engine: OrtEngine) -> Self
+    /// { ret owns engine behind a mutable session lock and preserves its role }
+    pub fn new(engine: OrtEngine) -> Self {
+        let role = engine.plan().role();
+
+        Self {
+            role,
+            engine: std::sync::Mutex::new(engine),
+        }
+    }
+
+    /// { true }
+    /// fn role(&self) -> OrtModelRole
+    /// { ret is the ORT model role held by this slot }
+    pub const fn role(&self) -> OrtModelRole {
+        self.role
+    }
+
+    /// { self owns a loaded ORT session }
+    /// fn with_mut<T>(&self, operation: impl FnOnce(&mut OrtEngine) -> Result<T, OrtEngineError>) -> Result<T, OrtEngineError>
+    /// { ret is operation result only when the mutable session lock is available }
+    pub fn with_mut<T>(
+        &self,
+        operation: impl FnOnce(&mut OrtEngine) -> Result<T, OrtEngineError>,
+    ) -> Result<T, OrtEngineError> {
+        let mut engine = self
+            .engine
+            .lock()
+            .map_err(|_error| OrtEngineError::OrtSessionLock(self.role))?;
+
+        operation(&mut engine)
+    }
+
+    /// { self owns a loaded ORT session }
+    /// fn input_count(&self) -> Result<usize, OrtEngineError>
+    /// { ret is the number of ONNX graph inputs when the session lock is available }
+    pub fn input_count(&self) -> Result<usize, OrtEngineError> {
+        self.with_mut(|engine| Ok(engine.input_count()))
+    }
+
+    /// { self owns a loaded ORT session }
+    /// fn output_count(&self) -> Result<usize, OrtEngineError>
+    /// { ret is the number of ONNX graph outputs when the session lock is available }
+    pub fn output_count(&self) -> Result<usize, OrtEngineError> {
+        self.with_mut(|engine| Ok(engine.output_count()))
+    }
+}
 
 /// ONNX Runtime token generator handle.
 #[cfg(not(feature = "ort-runtime"))]
@@ -1061,9 +1123,9 @@ impl OrtTokenGenerator {
 pub struct OrtTokenGenerator {
     plan: OrtGeneratorPlan,
     runtime_config: OrtGeneratorRuntimeConfig,
-    encoder: OrtEngine,
-    decoder: OrtEngine,
-    decoder_with_past: Option<OrtEngine>,
+    encoder: OrtEngineSlot,
+    decoder: OrtEngineSlot,
+    decoder_with_past: Option<OrtEngineSlot>,
 }
 
 #[cfg(feature = "ort-runtime")]
@@ -1073,13 +1135,14 @@ impl OrtTokenGenerator {
     /// { ret is Ok only when ONNX Runtime loads required generator sessions }
     pub fn load(plan: OrtGeneratorPlan) -> Result<Self, OrtEngineError> {
         let runtime_config = plan.parse_runtime_config()?;
-        let encoder = OrtEngine::load(plan.encoder().clone())?;
-        let decoder = OrtEngine::load(plan.decoder().clone())?;
+        let encoder = OrtEngineSlot::new(OrtEngine::load(plan.encoder().clone())?);
+        let decoder = OrtEngineSlot::new(OrtEngine::load(plan.decoder().clone())?);
         let decoder_with_past = plan
             .decoder_with_past()
             .cloned()
             .map(OrtEngine::load)
-            .transpose()?;
+            .transpose()?
+            .map(OrtEngineSlot::new);
 
         Ok(Self {
             plan,
@@ -1105,23 +1168,23 @@ impl OrtTokenGenerator {
     }
 
     /// { self was loaded successfully }
-    /// fn encoder(&self) -> &OrtEngine
-    /// { ret is the loaded encoder session wrapper }
-    pub const fn encoder(&self) -> &OrtEngine {
+    /// fn encoder(&self) -> &OrtEngineSlot
+    /// { ret is the loaded encoder session slot }
+    pub const fn encoder(&self) -> &OrtEngineSlot {
         &self.encoder
     }
 
     /// { self was loaded successfully }
-    /// fn decoder(&self) -> &OrtEngine
-    /// { ret is the loaded decoder session wrapper }
-    pub const fn decoder(&self) -> &OrtEngine {
+    /// fn decoder(&self) -> &OrtEngineSlot
+    /// { ret is the loaded decoder session slot }
+    pub const fn decoder(&self) -> &OrtEngineSlot {
         &self.decoder
     }
 
     /// { self was loaded successfully }
-    /// fn decoder_with_past(&self) -> `Option<&OrtEngine>`
-    /// { ret is Some only when the cached decoder session was loaded }
-    pub const fn decoder_with_past(&self) -> Option<&OrtEngine> {
+    /// fn decoder_with_past(&self) -> `Option<&OrtEngineSlot>`
+    /// { ret is Some only when the cached decoder session slot was loaded }
+    pub const fn decoder_with_past(&self) -> Option<&OrtEngineSlot> {
         self.decoder_with_past.as_ref()
     }
 }
@@ -1258,7 +1321,10 @@ mod tests {
     use localmt_tokenizer::TokenId;
 
     #[cfg(feature = "ort-runtime")]
-    use crate::{OrtEncoderIoNames, OrtEngine, OrtFloatTensorOutput, OrtGenerationTensorInputs};
+    use crate::{
+        OrtEncoderIoNames, OrtEngine, OrtEngineSlot, OrtFloatTensorOutput,
+        OrtGenerationTensorInputs, OrtTokenGenerator,
+    };
     #[cfg(not(feature = "ort-runtime"))]
     use crate::{OrtEngine, OrtTokenGenerator};
     use crate::{
@@ -1380,6 +1446,19 @@ mod tests {
 
         let _signature: fn(&mut OrtEngine, &OrtEncoderIoNames, &OrtGenerationTensorInputs) =
             assert_signature;
+    }
+
+    #[test]
+    #[ignore = "compile-only signature guard; construction requires real ONNX model assets"]
+    #[cfg(feature = "ort-runtime")]
+    fn token_generator_exposes_locked_sessions_for_generate_boundary() {
+        fn assert_signature(generator: &OrtTokenGenerator) {
+            let _encoder: &OrtEngineSlot = generator.encoder();
+            let _decoder: &OrtEngineSlot = generator.decoder();
+            let _past: Option<&OrtEngineSlot> = generator.decoder_with_past();
+        }
+
+        let _signature: fn(&OrtTokenGenerator) = assert_signature;
     }
 
     #[test]

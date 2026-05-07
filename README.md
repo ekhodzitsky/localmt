@@ -283,6 +283,11 @@ session, and copies the named `last_hidden_state` output into owned `f32`
 values. Full translation still needs decoder execution and generator mutability
 wiring before `OrtTokenGenerator::generate` can leave the explicit unavailable
 backend path.
+Runtime-enabled `OrtTokenGenerator` stores encoder, decoder, and optional cached
+decoder sessions in `OrtEngineSlot`. The slot uses a standard mutex to provide
+mutable ORT session access behind the shared `TokenGenerator::generate(&self)`
+API, so the pipeline trait can stay stable while real session execution is
+wired incrementally.
 `OrtNextTokenSelector::select_argmax` handles the first logits-selection policy:
 it rejects empty or non-finite logits, chooses the highest vocabulary index as a
 `TokenId`, and keeps the first index on ties. Decoder session execution still

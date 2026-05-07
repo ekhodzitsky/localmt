@@ -9,6 +9,8 @@ pub use localmt_core::{
     TextError, TranslateRequest, Translation,
 };
 pub use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
+#[cfg(feature = "ort-runtime")]
+pub use localmt_engine_ort::OrtEngineSlot;
 pub use localmt_engine_ort::{
     OrtEngine, OrtEngineError, OrtFloatTensorOutput, OrtGenerationInputs, OrtGenerationState,
     OrtGenerationStateError, OrtGenerationTensorInputs, OrtGeneratorPlan,
