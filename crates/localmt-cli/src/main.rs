@@ -489,7 +489,7 @@ fn doctor_hf_mock_translate(
 
 /// { path_bytes is a UTF-8 model-pack path }
 /// fn doctor_ort_generator(path_bytes: &[u8]) -> Result<String, CliError>
-/// { ret is Ok only when ORT opens or the runtime feature is disabled }
+/// { ret is Ok only when ORT opens or reports a readiness-only runtime status }
 fn doctor_ort_generator(path_bytes: &[u8]) -> Result<String, CliError> {
     let mut generator: *mut localmt_ffi::LocalmtFfiOrtGenerator = ptr::null_mut();
     let status = localmt_ffi::localmt_ffi_ort_generator_open(
@@ -497,8 +497,8 @@ fn doctor_ort_generator(path_bytes: &[u8]) -> Result<String, CliError> {
         path_bytes.len(),
         &mut generator,
     );
-    if status == localmt_ffi::LOCALMT_FFI_RUNTIME_DISABLED {
-        return Ok(ffi_status_text(status));
+    if let Some(readiness) = doctor_ort_readiness_status(status) {
+        return Ok(readiness);
     }
     ffi_ok(status)?;
     localmt_ffi::localmt_ffi_ort_generator_close(generator);
@@ -520,10 +520,11 @@ fn doctor_ort_translate(
         path_bytes.len(),
         &mut translator,
     );
-    if status == localmt_ffi::LOCALMT_FFI_TOKENIZER_DISABLED
-        || status == localmt_ffi::LOCALMT_FFI_RUNTIME_DISABLED
-    {
+    if status == localmt_ffi::LOCALMT_FFI_TOKENIZER_DISABLED {
         return Ok(ffi_status_text(status));
+    }
+    if let Some(readiness) = doctor_ort_readiness_status(status) {
+        return Ok(readiness);
     }
     ffi_ok(status)?;
 
@@ -544,6 +545,17 @@ fn doctor_ort_translate(
     let _translation = String::from_utf8(translation?).map_err(CliError::FfiOutputUtf8)?;
 
     Ok("ok".to_owned())
+}
+
+/// { status is a localmt FFI status code }
+/// fn doctor_ort_readiness_status(status: i32) -> Option<String>
+/// { ret is Some only for ORT runtime readiness statuses that should not fail model doctor }
+fn doctor_ort_readiness_status(status: i32) -> Option<String> {
+    match status {
+        localmt_ffi::LOCALMT_FFI_RUNTIME_DISABLED
+        | localmt_ffi::LOCALMT_FFI_RUNTIME_NOT_CONFIGURED => Some(ffi_status_text(status)),
+        _ => None,
+    }
 }
 
 /// { args contains tokenize command arguments }
@@ -1095,7 +1107,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::run;
+    use super::{doctor_ort_readiness_status, run};
     #[cfg(feature = "hf-tokenizers")]
     use localmt::Sha256Digest;
 
@@ -1301,6 +1313,14 @@ mod tests {
         assert!(output.contains("ffi_ort_generator: runtime disabled"));
         assert!(output.contains("ffi_ort_translate: tokenizer disabled"));
         Ok(())
+    }
+
+    #[test]
+    fn doctor_ort_readiness_status_reports_runtime_not_configured() {
+        assert_eq!(
+            doctor_ort_readiness_status(localmt_ffi::LOCALMT_FFI_RUNTIME_NOT_CONFIGURED).as_deref(),
+            Some("runtime not configured")
+        );
     }
 
     #[test]
