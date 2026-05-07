@@ -2,6 +2,8 @@
 
 use std::{ptr, slice, str};
 
+#[cfg(feature = "ort-runtime")]
+use localmt::configure_ort_dylib_path;
 use localmt::{
     DeviceProfile, Language, LanguagePair, MAX_TEXT_CHARS, MockOfflineTranslator, NonEmptyText,
     OfflineTranslatorAssets, OrtEngineError, OrtTokenGenerator, TranslateRequest,
@@ -41,7 +43,7 @@ pub const LOCALMT_FFI_TOKENIZER_ERROR: i32 = 12;
 pub const LOCALMT_FFI_RUNTIME_NOT_CONFIGURED: i32 = 13;
 
 /// Pointer-free C ABI version.
-pub const LOCALMT_FFI_ABI_VERSION: u32 = 10;
+pub const LOCALMT_FFI_ABI_VERSION: u32 = 11;
 /// FFI code for Android arm64-v8a.
 pub const LOCALMT_FFI_ANDROID_ABI_ARM64_V8A: u16 = 1;
 /// FFI code for ONNX Runtime Mobile with XNNPACK.
@@ -670,6 +672,30 @@ pub extern "C" fn localmt_ffi_ort_runtime_enabled() -> u8 {
     u8::from(cfg!(feature = "ort-runtime"))
 }
 
+/// { path_ptr points to path_len readable bytes }
+/// fn localmt_ffi_ort_runtime_configure(path_ptr: *const u8, path_len: usize) -> i32
+/// { ret is OK only when ORT runtime can use path as its explicit dylib path }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+pub extern "C" fn localmt_ffi_ort_runtime_configure(path_ptr: *const u8, path_len: usize) -> i32 {
+    let path = match read_ffi_utf8(path_ptr, path_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+
+    #[cfg(not(feature = "ort-runtime"))]
+    {
+        let _ = path;
+        LOCALMT_FFI_RUNTIME_DISABLED
+    }
+
+    #[cfg(feature = "ort-runtime")]
+    {
+        configure_ort_dylib_path(path)
+            .map(|()| LOCALMT_FFI_OK)
+            .unwrap_or_else(ffi_ort_engine_error_status)
+    }
+}
+
 /// { true }
 /// fn localmt_ffi_hf_tokenizer_enabled() -> u8
 /// { ret is 1 only when localmt-ffi was built with hf-tokenizers }
@@ -1008,7 +1034,8 @@ mod tests {
         localmt_ffi_language_from_iso_639_1, localmt_ffi_max_text_chars,
         localmt_ffi_mock_translate, localmt_ffi_mock_translator_close,
         localmt_ffi_mock_translator_open, localmt_ffi_model_pack_summary,
-        localmt_ffi_ort_generator_open, localmt_ffi_ort_runtime_enabled, localmt_ffi_ort_translate,
+        localmt_ffi_ort_generator_open, localmt_ffi_ort_runtime_configure,
+        localmt_ffi_ort_runtime_enabled, localmt_ffi_ort_translate,
         localmt_ffi_ort_translator_close, localmt_ffi_ort_translator_open,
         localmt_ffi_runtime_config_summary, localmt_ffi_startup_summary,
         localmt_ffi_status_message, localmt_ffi_supported_language_count,
@@ -1086,7 +1113,7 @@ mod tests {
 
     #[test]
     fn ffi_reports_abi_and_xiaomi17_contract() {
-        assert_eq!(localmt_ffi_abi_version(), 10);
+        assert_eq!(localmt_ffi_abi_version(), 11);
         assert_eq!(localmt_ffi_max_text_chars(), 4096);
         assert_eq!(localmt_ffi_xiaomi17_android_abi_code(), 1);
         assert_eq!(localmt_ffi_xiaomi17_ram_class_gib(), 12);
@@ -1104,7 +1131,7 @@ mod tests {
         );
         let summary = std::str::from_utf8(&output[..written_len])?;
 
-        assert!(summary.contains("ffi_abi: 10"));
+        assert!(summary.contains("ffi_abi: 11"));
         assert!(summary.contains("max_text_chars: 4096"));
         assert!(summary.contains("xiaomi17_android_abi: arm64-v8a"));
         assert!(summary.contains("xiaomi17_ram_class_gib: 12"));
@@ -1517,6 +1544,31 @@ mod tests {
     #[cfg(feature = "ort-runtime")]
     fn ffi_ort_runtime_enabled_reports_feature_build() {
         assert_eq!(localmt_ffi_ort_runtime_enabled(), 1);
+    }
+
+    #[test]
+    fn ffi_ort_runtime_configure_rejects_nulls_and_invalid_utf8() {
+        let path = "/tmp/libonnxruntime.so";
+
+        assert_eq!(
+            localmt_ffi_ort_runtime_configure(ptr::null(), path.len()),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_ort_runtime_configure([0xff].as_ptr(), 1),
+            LOCALMT_FFI_INVALID_UTF8
+        );
+    }
+
+    #[test]
+    fn ffi_ort_runtime_configure_reports_runtime_status_for_missing_path() {
+        let path = "/tmp/localmt-missing-libonnxruntime.so";
+        let status = localmt_ffi_ort_runtime_configure(path.as_ptr(), path.len());
+
+        #[cfg(feature = "ort-runtime")]
+        assert_eq!(status, LOCALMT_FFI_RUNTIME_NOT_CONFIGURED);
+        #[cfg(not(feature = "ort-runtime"))]
+        assert_eq!(status, super::LOCALMT_FFI_RUNTIME_DISABLED);
     }
 
     #[test]

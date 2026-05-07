@@ -23,7 +23,7 @@ extern "C" {
 #define LOCALMT_FFI_TOKENIZER_ERROR 12
 #define LOCALMT_FFI_RUNTIME_NOT_CONFIGURED 13
 
-#define LOCALMT_FFI_ABI_VERSION 10
+#define LOCALMT_FFI_ABI_VERSION 11
 #define LOCALMT_FFI_ANDROID_ABI_ARM64_V8A 1
 #define LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK 1
 
@@ -169,6 +169,20 @@ int32_t localmt_ffi_runtime_config_summary(
  * Returns 1 when localmt-ffi was built with the ort-runtime feature, otherwise 0.
  */
 uint8_t localmt_ffi_ort_runtime_enabled(void);
+
+/*
+ * Configures the absolute ONNX Runtime dynamic-library path for ORT-enabled
+ * builds. Call this before opening an ORT generator or translator when the app
+ * wants to pass its nativeLibraryDir/libonnxruntime.so path through the C ABI
+ * instead of relying on ORT_DYLIB_PATH.
+ *
+ * Default builds return LOCALMT_FFI_RUNTIME_DISABLED. ort-runtime builds return
+ * LOCALMT_FFI_RUNTIME_NOT_CONFIGURED when the path is missing, relative, or not
+ * a file.
+ */
+int32_t localmt_ffi_ort_runtime_configure(
+    const uint8_t *path_ptr,
+    size_t path_len);
 
 /*
  * Returns 1 when localmt-ffi was built with the hf-tokenizers feature,

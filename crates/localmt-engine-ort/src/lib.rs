@@ -5,6 +5,8 @@ use core::fmt;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "ort-runtime")]
+use std::sync::OnceLock;
 
 use localmt_models::{ModelFileRole, ModelPack, Verified};
 use localmt_pipeline::{
@@ -18,6 +20,8 @@ const ONNX_RUNTIME: &str = "onnx-runtime";
 const ORT_DYLIB_PATH_ENV: &str = "ORT_DYLIB_PATH";
 #[cfg(not(feature = "ort-runtime"))]
 const GENERATION_LOOP_UNIMPLEMENTED: &str = "ONNX token generation loop is not implemented";
+#[cfg(feature = "ort-runtime")]
+static ORT_DYLIB_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
 /// Typed ONNX tensor names required by the ORT generation loop.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1328,6 +1332,29 @@ impl fmt::Display for OrtEngineError {
 
 impl std::error::Error for OrtEngineError {}
 
+/// { path is a candidate ONNX Runtime dynamic library path }
+/// fn configure_ort_dylib_path(path: impl Into<PathBuf>) -> Result<(), OrtEngineError>
+/// { ret is Ok only when future ORT session loads may use path as the explicit dylib }
+#[cfg(feature = "ort-runtime")]
+pub fn configure_ort_dylib_path(path: impl Into<PathBuf>) -> Result<(), OrtEngineError> {
+    let path = validate_ort_dylib_path(path.into())?;
+
+    match ORT_DYLIB_PATH_OVERRIDE.set(path) {
+        Ok(()) => Ok(()),
+        Err(path) => match ORT_DYLIB_PATH_OVERRIDE.get() {
+            Some(existing) if existing == &path => Ok(()),
+            Some(existing) => Err(OrtEngineError::InvalidOrtDylibPath {
+                path,
+                reason: format!("runtime path already configured as {}", existing.display()),
+            }),
+            None => Err(OrtEngineError::InvalidOrtDylibPath {
+                path,
+                reason: "runtime path could not be configured".to_owned(),
+            }),
+        },
+    }
+}
+
 /// Thread-safe mutable slot for a loaded ONNX Runtime session.
 #[cfg(feature = "ort-runtime")]
 #[derive(Debug)]
@@ -1676,7 +1703,7 @@ impl OrtEngine {
 /// { ret is Ok only when ONNX Runtime dynamic loading has an explicit dylib path }
 #[cfg(feature = "ort-runtime")]
 fn prepare_ort_runtime() -> Result<(), OrtEngineError> {
-    let dylib_path = resolve_ort_dylib_path_from_env_value(std::env::var_os(ORT_DYLIB_PATH_ENV))?;
+    let dylib_path = resolve_ort_dylib_path()?;
     let builder = ort::init_from(&dylib_path).map_err(|source| {
         OrtEngineError::Ort(format!(
             "failed to load {ORT_DYLIB_PATH_ENV} {}: {source}",
@@ -1686,6 +1713,18 @@ fn prepare_ort_runtime() -> Result<(), OrtEngineError> {
     let _ = builder.commit();
 
     Ok(())
+}
+
+/// { ORT runtime path may be configured through FFI or ORT_DYLIB_PATH }
+/// fn resolve_ort_dylib_path() -> Result<PathBuf, OrtEngineError>
+/// { ret is Ok only when an explicit configured or environment dylib path is available }
+#[cfg(feature = "ort-runtime")]
+fn resolve_ort_dylib_path() -> Result<PathBuf, OrtEngineError> {
+    if let Some(path) = ORT_DYLIB_PATH_OVERRIDE.get() {
+        return Ok(path.clone());
+    }
+
+    resolve_ort_dylib_path_from_env_value(std::env::var_os(ORT_DYLIB_PATH_ENV))
 }
 
 /// { value is a raw ORT_DYLIB_PATH environment value }
@@ -1700,6 +1739,14 @@ fn resolve_ort_dylib_path_from_env_value(
     };
     let path = PathBuf::from(value);
 
+    validate_ort_dylib_path(path)
+}
+
+/// { path is a candidate ONNX Runtime dynamic library path }
+/// fn validate_ort_dylib_path(path: PathBuf) -> Result<PathBuf, OrtEngineError>
+/// { ret is Ok only when path is absolute and points to a file }
+#[cfg(feature = "ort-runtime")]
+fn validate_ort_dylib_path(path: PathBuf) -> Result<PathBuf, OrtEngineError> {
     if !path.is_absolute() {
         return Err(OrtEngineError::InvalidOrtDylibPath {
             path,

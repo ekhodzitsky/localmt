@@ -9,8 +9,6 @@ pub use localmt_core::{
     TextError, TranslateRequest, Translation,
 };
 pub use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
-#[cfg(feature = "ort-runtime")]
-pub use localmt_engine_ort::OrtEngineSlot;
 pub use localmt_engine_ort::{
     OrtDecoderLogits, OrtDecoderLogitsError, OrtEngine, OrtEngineError, OrtFloatTensorOutput,
     OrtGenerationInputs, OrtGenerationLoop, OrtGenerationLoopError, OrtGenerationState,
@@ -18,6 +16,8 @@ pub use localmt_engine_ort::{
     OrtGeneratorPlan, OrtGeneratorRuntimeConfig, OrtI64TensorInput, OrtIoConfig, OrtIoConfigError,
     OrtIoConfigParseError, OrtModelRole, OrtSessionPlan, OrtTokenGenerator,
 };
+#[cfg(feature = "ort-runtime")]
+pub use localmt_engine_ort::{OrtEngineSlot, configure_ort_dylib_path};
 pub use localmt_models::{
     Discovered, ModelArchitecture, ModelFile, ModelFileKind, ModelFileRole, ModelId, ModelLicense,
     ModelManifest, ModelPack, ModelPackError, ModelPackVersion, ModelRelativePath, ModelRuntime,

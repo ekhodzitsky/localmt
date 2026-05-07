@@ -90,7 +90,7 @@ At app startup:
 
 1. Call `localmt_ffi_startup_summary()` for a loggable startup contract, or
    call the individual probes below.
-1. Call `localmt_ffi_abi_version()` and require `LOCALMT_FFI_ABI_VERSION == 10`.
+1. Call `localmt_ffi_abi_version()` and require `LOCALMT_FFI_ABI_VERSION == 11`.
 1. Call `localmt_ffi_xiaomi17_android_abi_code()` and require
    `LOCALMT_FFI_ANDROID_ABI_ARM64_V8A`.
 1. Call `localmt_ffi_supported_language_count()` and map language ids through
@@ -120,8 +120,9 @@ Smoke translation choices:
   when the Rust library is built with `hf-tokenizers` and `ort-runtime`; this is
   the Android-visible real translation path.
 
-For ORT-enabled builds, set `ORT_DYLIB_PATH` to the absolute
-`libonnxruntime.so` path before opening the generator or translator. Missing or
+For ORT-enabled builds, call `localmt_ffi_ort_runtime_configure()` with the
+absolute `nativeLibraryDir/libonnxruntime.so` path before opening the generator
+or translator. `ORT_DYLIB_PATH` remains a CLI/development fallback. Missing or
 invalid paths return `LOCALMT_FFI_RUNTIME_NOT_CONFIGURED` instead of relying on
 platform dynamic-library search.
 
