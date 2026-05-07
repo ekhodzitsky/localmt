@@ -240,6 +240,7 @@ Host-side checks before handing the library to Android:
 ```bash
 cargo fmt --check
 cargo test -p localmt-ffi
+cargo check -p localmt-ffi --target aarch64-linux-android
 cargo test --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 cargo doc --no-deps
