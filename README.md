@@ -295,16 +295,20 @@ the immediate unavailable-backend response because they intentionally do not
 link or load ONNX Runtime.
 `OrtEngine::run_decoder` is available for the non-cached decoder graph: it binds
 decoder input ids, encoder attention mask, and encoder hidden states, then
-copies the named decoder logits output. Logits slicing for the final generated
-position and cached decoder-with-past execution remain future runtime steps.
+copies the named decoder logits output. Cached decoder-with-past execution
+remains a future runtime step.
 `OrtDecoderLogits::final_token_logits` now validates `[1, sequence, vocabulary]`
 decoder output and extracts the final sequence-position vocabulary row.
 `OrtDecoderLogits::select_next_token` delegates that row to the deterministic
 argmax selector before any generator state mutation happens.
+`OrtGenerationStep::accept_decoder_output` applies selected decoder tokens to
+`OrtGenerationState` while preserving distinct logits and state-transition
+errors.
 `OrtNextTokenSelector::select_argmax` handles the first logits-selection policy:
 it rejects empty or non-finite logits, chooses the highest vocabulary index as a
-`TokenId`, and keeps the first index on ties. Feeding selected decoder tokens
-back into `OrtGenerationState` still remains the next runtime step.
+`TokenId`, and keeps the first index on ties. Repeatedly feeding updated
+decoder ids through ORT decoder execution and detokenizing real model output
+remain the next runtime steps.
 
 Accepted local `config.json` fragment for ORT I/O:
 

@@ -734,6 +734,55 @@ impl OrtGenerationState {
     }
 }
 
+/// ORT decoder-output generation-step error.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OrtGenerationStepError {
+    /// Decoder logits could not produce a valid next token.
+    DecoderLogits(OrtDecoderLogitsError),
+    /// Generation state rejected the selected token.
+    State(OrtGenerationStateError),
+}
+
+impl fmt::Display for OrtGenerationStepError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DecoderLogits(error) => write!(formatter, "{error}"),
+            Self::State(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for OrtGenerationStepError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::DecoderLogits(error) => Some(error),
+            Self::State(error) => Some(error),
+        }
+    }
+}
+
+/// Pure ORT decoder-output application step.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OrtGenerationStep;
+
+impl OrtGenerationStep {
+    /// { state is the current decoder-loop state and output is copied decoder logits }
+    /// fn accept_decoder_output(state: &mut OrtGenerationState, output: &OrtFloatTensorOutput) -> Result<TokenId, OrtGenerationStepError>
+    /// { ret is Ok only when the selected token has been appended to state }
+    pub fn accept_decoder_output(
+        state: &mut OrtGenerationState,
+        output: &OrtFloatTensorOutput,
+    ) -> Result<TokenId, OrtGenerationStepError> {
+        let token = OrtDecoderLogits::select_next_token(output)
+            .map_err(OrtGenerationStepError::DecoderLogits)?;
+        state
+            .accept_next_token(token)
+            .map_err(OrtGenerationStepError::State)?;
+
+        Ok(token)
+    }
+}
+
 /// Next-token selection error for decoder logits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OrtNextTokenSelectionError {
@@ -1547,6 +1596,7 @@ mod tests {
     };
     use crate::{
         OrtDecoderLogits, OrtDecoderLogitsError, OrtEngineError, OrtFloatTensorOutput,
+        OrtGenerationState, OrtGenerationStateError, OrtGenerationStep, OrtGenerationStepError,
         OrtGeneratorPlan, OrtIoConfig, OrtIoConfigError, OrtIoConfigParseError, OrtModelRole,
         OrtNextTokenSelectionError, OrtNextTokenSelector, OrtSessionPlan,
     };
@@ -1702,6 +1752,83 @@ mod tests {
                 actual: 3
             })
         ));
+    }
+
+    #[test]
+    fn generation_step_accepts_decoder_output_into_state() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut state = generation_state(3);
+        let output = OrtFloatTensorOutput {
+            shape: vec![1, 1, 3],
+            values: vec![0.1, 0.2, 5.0],
+        };
+
+        let token = OrtGenerationStep::accept_decoder_output(&mut state, &output)?;
+
+        assert_eq!(token, TokenId::new(2));
+        assert_eq!(state.generated_token_ids(), &[TokenId::new(2)]);
+        assert_eq!(state.decoder_input_ids(), &[11, 2]);
+        assert!(!state.is_finished());
+        Ok(())
+    }
+
+    #[test]
+    fn generation_step_marks_state_finished_on_eos() -> Result<(), Box<dyn std::error::Error>> {
+        let mut state = generation_state(3);
+        let output = OrtFloatTensorOutput {
+            shape: vec![1, 1, 3],
+            values: vec![0.1, 9.0, 0.2],
+        };
+
+        let token = OrtGenerationStep::accept_decoder_output(&mut state, &output)?;
+
+        assert_eq!(token, TokenId::new(1));
+        assert_eq!(state.generated_token_ids(), &[TokenId::new(1)]);
+        assert!(state.is_finished());
+        Ok(())
+    }
+
+    #[test]
+    fn generation_step_propagates_logits_error_without_state_mutation() {
+        let mut state = generation_state(3);
+        let before = state.clone();
+        let output = OrtFloatTensorOutput {
+            shape: vec![1, 3],
+            values: vec![0.1, 0.2, 0.3],
+        };
+
+        let token = OrtGenerationStep::accept_decoder_output(&mut state, &output);
+
+        assert!(matches!(
+            token,
+            Err(OrtGenerationStepError::DecoderLogits(
+                OrtDecoderLogitsError::InvalidRank { rank: 2 }
+            ))
+        ));
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn generation_step_rejects_finished_state_without_extra_mutation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut state = generation_state(1);
+        let output = OrtFloatTensorOutput {
+            shape: vec![1, 1, 3],
+            values: vec![0.1, 0.2, 5.0],
+        };
+        OrtGenerationStep::accept_decoder_output(&mut state, &output)?;
+        let before = state.clone();
+
+        let token = OrtGenerationStep::accept_decoder_output(&mut state, &output);
+
+        assert!(matches!(
+            token,
+            Err(OrtGenerationStepError::State(
+                OrtGenerationStateError::AlreadyFinished
+            ))
+        ));
+        assert_eq!(state, before);
+        Ok(())
     }
 
     #[test]
@@ -2275,6 +2402,16 @@ mod tests {
         OrtFloatTensorOutput {
             shape: vec![1, 2, 3],
             values: vec![0.1, 0.2, 0.3, 4.0, 2.0, 1.0],
+        }
+    }
+
+    fn generation_state(max_new_tokens: usize) -> OrtGenerationState {
+        OrtGenerationState {
+            decoder_input_ids: vec![11],
+            generated_token_ids: Vec::new(),
+            max_new_tokens,
+            eos_token_id: 1,
+            finished: false,
         }
     }
 }
