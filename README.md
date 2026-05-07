@@ -297,10 +297,14 @@ link or load ONNX Runtime.
 decoder input ids, encoder attention mask, and encoder hidden states, then
 copies the named decoder logits output. Logits slicing for the final generated
 position and cached decoder-with-past execution remain future runtime steps.
+`OrtDecoderLogits::final_token_logits` now validates `[1, sequence, vocabulary]`
+decoder output and extracts the final sequence-position vocabulary row.
+`OrtDecoderLogits::select_next_token` delegates that row to the deterministic
+argmax selector before any generator state mutation happens.
 `OrtNextTokenSelector::select_argmax` handles the first logits-selection policy:
 it rejects empty or non-finite logits, chooses the highest vocabulary index as a
-`TokenId`, and keeps the first index on ties. Decoder logits-row extraction
-still remains the next runtime step.
+`TokenId`, and keeps the first index on ties. Feeding selected decoder tokens
+back into `OrtGenerationState` still remains the next runtime step.
 
 Accepted local `config.json` fragment for ORT I/O:
 

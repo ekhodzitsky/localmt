@@ -12,9 +12,9 @@ pub use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
 #[cfg(feature = "ort-runtime")]
 pub use localmt_engine_ort::OrtEngineSlot;
 pub use localmt_engine_ort::{
-    OrtEngine, OrtEngineError, OrtFloatTensorOutput, OrtGenerationInputs, OrtGenerationState,
-    OrtGenerationStateError, OrtGenerationTensorInputs, OrtGeneratorPlan,
-    OrtGeneratorRuntimeConfig, OrtI64TensorInput, OrtIoConfig, OrtIoConfigError,
+    OrtDecoderLogits, OrtDecoderLogitsError, OrtEngine, OrtEngineError, OrtFloatTensorOutput,
+    OrtGenerationInputs, OrtGenerationState, OrtGenerationStateError, OrtGenerationTensorInputs,
+    OrtGeneratorPlan, OrtGeneratorRuntimeConfig, OrtI64TensorInput, OrtIoConfig, OrtIoConfigError,
     OrtIoConfigParseError, OrtModelRole, OrtSessionPlan, OrtTokenGenerator,
 };
 pub use localmt_models::{

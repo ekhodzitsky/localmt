@@ -502,6 +502,145 @@ impl OrtFloatTensorOutput {
     }
 }
 
+/// Decoder logits shape interpretation error.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OrtDecoderLogitsError {
+    /// Decoder logits rank is not `[batch, sequence, vocabulary]`.
+    InvalidRank {
+        /// Actual rank.
+        rank: usize,
+    },
+    /// Decoder logits batch is not the supported single-row batch.
+    InvalidBatch {
+        /// Actual batch size.
+        batch: usize,
+    },
+    /// Decoder logits contain no sequence positions.
+    EmptySequence,
+    /// Decoder logits contain no vocabulary scores.
+    EmptyVocabulary,
+    /// Shape multiplication overflowed usize.
+    ElementCountOverflow,
+    /// Shape element count and payload length do not match.
+    ElementCountMismatch {
+        /// Expected element count from shape.
+        expected: usize,
+        /// Actual payload element count.
+        actual: usize,
+    },
+    /// Next-token selection failed after logits extraction.
+    Selection(OrtNextTokenSelectionError),
+}
+
+impl fmt::Display for OrtDecoderLogitsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidRank { rank } => {
+                write!(formatter, "decoder logits rank must be 3, got {rank}")
+            }
+            Self::InvalidBatch { batch } => {
+                write!(formatter, "decoder logits batch must be 1, got {batch}")
+            }
+            Self::EmptySequence => formatter.write_str("decoder logits sequence is empty"),
+            Self::EmptyVocabulary => formatter.write_str("decoder logits vocabulary is empty"),
+            Self::ElementCountOverflow => {
+                formatter.write_str("decoder logits shape element count overflowed")
+            }
+            Self::ElementCountMismatch { expected, actual } => write!(
+                formatter,
+                "decoder logits expected {expected} values, got {actual}"
+            ),
+            Self::Selection(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for OrtDecoderLogitsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Selection(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Shape-aware decoder logits helper.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OrtDecoderLogits;
+
+impl OrtDecoderLogits {
+    /// { output is a copied decoder logits tensor candidate }
+    /// fn final_token_logits(output: &OrtFloatTensorOutput) -> Result<&[f32], OrtDecoderLogitsError>
+    /// { ret is Ok only for the final sequence-position vocabulary row }
+    pub fn final_token_logits(
+        output: &OrtFloatTensorOutput,
+    ) -> Result<&[f32], OrtDecoderLogitsError> {
+        let shape = output.shape();
+        if shape.len() != 3 {
+            return Err(OrtDecoderLogitsError::InvalidRank { rank: shape.len() });
+        }
+
+        let batch = shape[0];
+        let sequence = shape[1];
+        let vocabulary = shape[2];
+        validate_decoder_logits_shape(batch, sequence, vocabulary, output.values().len())?;
+        let start = (sequence - 1)
+            .checked_mul(vocabulary)
+            .ok_or(OrtDecoderLogitsError::ElementCountOverflow)?;
+        let end = start
+            .checked_add(vocabulary)
+            .ok_or(OrtDecoderLogitsError::ElementCountOverflow)?;
+
+        output
+            .values()
+            .get(start..end)
+            .ok_or(OrtDecoderLogitsError::ElementCountMismatch {
+                expected: end,
+                actual: output.values().len(),
+            })
+    }
+
+    /// { output is a copied decoder logits tensor candidate }
+    /// fn select_next_token(output: &OrtFloatTensorOutput) -> Result<TokenId, OrtDecoderLogitsError>
+    /// { ret is Ok only when the final logits row yields a valid next token id }
+    pub fn select_next_token(
+        output: &OrtFloatTensorOutput,
+    ) -> Result<TokenId, OrtDecoderLogitsError> {
+        OrtNextTokenSelector::select_argmax(Self::final_token_logits(output)?)
+            .map_err(OrtDecoderLogitsError::Selection)
+    }
+}
+
+fn validate_decoder_logits_shape(
+    batch: usize,
+    sequence: usize,
+    vocabulary: usize,
+    actual_values: usize,
+) -> Result<(), OrtDecoderLogitsError> {
+    if batch != 1 {
+        return Err(OrtDecoderLogitsError::InvalidBatch { batch });
+    }
+    if sequence == 0 {
+        return Err(OrtDecoderLogitsError::EmptySequence);
+    }
+    if vocabulary == 0 {
+        return Err(OrtDecoderLogitsError::EmptyVocabulary);
+    }
+
+    let expected = batch
+        .checked_mul(sequence)
+        .and_then(|count| count.checked_mul(vocabulary))
+        .ok_or(OrtDecoderLogitsError::ElementCountOverflow)?;
+    if expected != actual_values {
+        return Err(OrtDecoderLogitsError::ElementCountMismatch {
+            expected,
+            actual: actual_values,
+        });
+    }
+
+    Ok(())
+}
+
 /// { tokens is a non-empty bounded tokenizer sequence }
 /// fn token_sequence_to_i64(tokens: &TokenSequence) -> Vec<i64>
 /// { ret preserves token order while converting ids for ONNX tensors }
@@ -1403,15 +1542,16 @@ mod tests {
 
     #[cfg(feature = "ort-runtime")]
     use crate::{
-        OrtDecoderIoNames, OrtEncoderIoNames, OrtEngine, OrtEngineSlot, OrtFloatTensorOutput,
-        OrtGenerationTensorInputs, OrtTokenGenerator,
+        OrtDecoderIoNames, OrtEncoderIoNames, OrtEngine, OrtEngineSlot, OrtGenerationTensorInputs,
+        OrtTokenGenerator,
+    };
+    use crate::{
+        OrtDecoderLogits, OrtDecoderLogitsError, OrtEngineError, OrtFloatTensorOutput,
+        OrtGeneratorPlan, OrtIoConfig, OrtIoConfigError, OrtIoConfigParseError, OrtModelRole,
+        OrtNextTokenSelectionError, OrtNextTokenSelector, OrtSessionPlan,
     };
     #[cfg(not(feature = "ort-runtime"))]
     use crate::{OrtEngine, OrtTokenGenerator};
-    use crate::{
-        OrtEngineError, OrtGeneratorPlan, OrtIoConfig, OrtIoConfigError, OrtIoConfigParseError,
-        OrtModelRole, OrtNextTokenSelectionError, OrtNextTokenSelector, OrtSessionPlan,
-    };
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
     const DECODER_SHA256: &str = "eacbeef293be61f2a85d929cadb4cbb5248c8b8a1478b3d4b3180ea365d5e687";
@@ -1508,6 +1648,59 @@ mod tests {
         assert!(matches!(
             token,
             Err(OrtNextTokenSelectionError::NonFiniteLogit { index: 1 })
+        ));
+    }
+
+    #[test]
+    fn decoder_logits_extract_final_token_row() -> Result<(), Box<dyn std::error::Error>> {
+        let output = decoder_logits_output();
+
+        let logits = OrtDecoderLogits::final_token_logits(&output)?;
+
+        assert_eq!(logits, &[4.0, 2.0, 1.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn decoder_logits_select_next_token_from_final_row() -> Result<(), Box<dyn std::error::Error>> {
+        let output = decoder_logits_output();
+
+        let token = OrtDecoderLogits::select_next_token(&output)?;
+
+        assert_eq!(token, TokenId::new(0));
+        Ok(())
+    }
+
+    #[test]
+    fn decoder_logits_rejects_non_three_dimensional_output() {
+        let output = OrtFloatTensorOutput {
+            shape: vec![1, 3],
+            values: vec![0.1, 0.2, 0.3],
+        };
+
+        let logits = OrtDecoderLogits::final_token_logits(&output);
+
+        assert!(matches!(
+            logits,
+            Err(OrtDecoderLogitsError::InvalidRank { rank: 2 })
+        ));
+    }
+
+    #[test]
+    fn decoder_logits_rejects_mismatched_element_count() {
+        let output = OrtFloatTensorOutput {
+            shape: vec![1, 2, 3],
+            values: vec![0.1, 0.2, 0.3],
+        };
+
+        let logits = OrtDecoderLogits::final_token_logits(&output);
+
+        assert!(matches!(
+            logits,
+            Err(OrtDecoderLogitsError::ElementCountMismatch {
+                expected: 6,
+                actual: 3
+            })
         ));
     }
 
@@ -2076,5 +2269,12 @@ mod tests {
   ]
 }}"#
         )
+    }
+
+    fn decoder_logits_output() -> OrtFloatTensorOutput {
+        OrtFloatTensorOutput {
+            shape: vec![1, 2, 3],
+            values: vec![0.1, 0.2, 0.3, 4.0, 2.0, 1.0],
+        }
     }
 }
