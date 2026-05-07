@@ -37,7 +37,7 @@ pub const LOCALMT_FFI_TOKENIZER_DISABLED: i32 = 11;
 pub const LOCALMT_FFI_TOKENIZER_ERROR: i32 = 12;
 
 /// Pointer-free C ABI version.
-pub const LOCALMT_FFI_ABI_VERSION: u32 = 7;
+pub const LOCALMT_FFI_ABI_VERSION: u32 = 8;
 /// FFI code for Android arm64-v8a.
 pub const LOCALMT_FFI_ANDROID_ABI_ARM64_V8A: u16 = 1;
 /// FFI code for ONNX Runtime Mobile with XNNPACK.
@@ -344,6 +344,69 @@ pub extern "C" fn localmt_ffi_model_pack_summary(
     unsafe { ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, output.len()) }; // SAFETY: output buffer capacity was checked.
 
     LOCALMT_FFI_OK
+}
+
+/// { path_ptr points to path_len readable bytes and output/written pointers follow the header contract }
+/// fn localmt_ffi_runtime_config_summary(path_ptr: *const u8, path_len: usize, output_ptr: *mut u8, output_capacity: usize, written_len: *mut usize) -> i32
+/// { ret is OK only when output receives written_len UTF-8 strict runtime config summary bytes }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_runtime_config_summary(
+    path_ptr: *const u8,
+    path_len: usize,
+    output_ptr: *mut u8,
+    output_capacity: usize,
+    written_len: *mut usize,
+) -> i32 {
+    if written_len.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *written_len = 0 }; // SAFETY: non-null writable length pointer.
+
+    let path = match read_ffi_utf8(path_ptr, path_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let summary = match ffi_runtime_config_summary(path) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let output = summary.as_bytes();
+
+    unsafe { *written_len = output.len() }; // SAFETY: non-null writable length pointer.
+
+    if output_capacity < output.len() {
+        return LOCALMT_FFI_BUFFER_TOO_SMALL;
+    }
+    if output_ptr.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, output.len()) }; // SAFETY: output buffer capacity was checked.
+
+    LOCALMT_FFI_OK
+}
+
+/// { path names a model-pack root candidate }
+/// fn ffi_runtime_config_summary(path: &str) -> Result<String, i32>
+/// { ret is Ok only when the strict ORT runtime config can be summarized }
+fn ffi_runtime_config_summary(path: &str) -> Result<String, i32> {
+    let assets = OfflineTranslatorAssets::from_model_pack_path(path)
+        .map_err(|_error| LOCALMT_FFI_MODEL_PACK_ERROR)?;
+    let config = assets
+        .plan()
+        .generator()
+        .parse_runtime_config()
+        .map_err(|_error| LOCALMT_FFI_MODEL_PACK_ERROR)?;
+
+    Ok(format!(
+        "runtime_config: ok\nmax_new_tokens: {}\nencoder_input_ids: {}\ndecoder_input_ids: {}\ndecoder_logits: {}",
+        config.generation_config().max_new_tokens().value(),
+        config.ort_io_config().encoder().input_ids(),
+        config.ort_io_config().decoder().input_ids(),
+        config.ort_io_config().decoder().logits(),
+    ))
 }
 
 /// { path_ptr points to path_len readable bytes and out_translator is writable }
@@ -766,18 +829,55 @@ mod tests {
         localmt_ffi_mock_translate, localmt_ffi_mock_translator_close,
         localmt_ffi_mock_translator_open, localmt_ffi_model_pack_summary,
         localmt_ffi_ort_generator_open, localmt_ffi_ort_runtime_enabled,
-        localmt_ffi_startup_summary, localmt_ffi_status_message,
-        localmt_ffi_supported_language_count, localmt_ffi_validate_language_pair,
-        localmt_ffi_xiaomi17_android_abi_code, localmt_ffi_xiaomi17_preferred_runtime_code,
-        localmt_ffi_xiaomi17_ram_class_gib,
+        localmt_ffi_runtime_config_summary, localmt_ffi_startup_summary,
+        localmt_ffi_status_message, localmt_ffi_supported_language_count,
+        localmt_ffi_validate_language_pair, localmt_ffi_xiaomi17_android_abi_code,
+        localmt_ffi_xiaomi17_preferred_runtime_code, localmt_ffi_xiaomi17_ram_class_gib,
     };
     #[cfg(feature = "hf-tokenizers")]
     use localmt::Sha256Digest;
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
     const DECODER_SHA256: &str = "eacbeef293be61f2a85d929cadb4cbb5248c8b8a1478b3d4b3180ea365d5e687";
+    const GENERATION_CONFIG_SHA256: &str =
+        "a8a99326d564beb1fc16cb59526dd5ed7b5fd673f969591f47845e17fbed401d";
+    const ORT_IO_CONFIG_SHA256: &str =
+        "3ed8af0b5a58d51e246f3081e973d8683b89bf3cacf23c26243fec19ab31a721";
     const TOKENIZER_SHA256: &str =
         "38395078aa8c0af1657b8fc788f358d57e5f5fea99c8cdc004198e3c6fffbe71";
+    const GENERATION_CONFIG: &str = r#"{
+  "max_new_tokens": 32,
+  "bos_token_id": 0,
+  "eos_token_id": 1,
+  "language_token_ids": {
+    "en": 10,
+    "ru": 11,
+    "th": 12,
+    "vi": 13,
+    "ja": 14
+  }
+}"#;
+    const ORT_IO_CONFIG: &str = r#"{
+  "ort_io": {
+    "encoder": {
+      "input_ids": "encoder_input_ids",
+      "attention_mask": "encoder_attention_mask",
+      "last_hidden_state": "encoder_last_hidden_state"
+    },
+    "decoder": {
+      "input_ids": "decoder_input_ids",
+      "encoder_attention_mask": "decoder_encoder_attention_mask",
+      "encoder_hidden_states": "decoder_encoder_hidden_states",
+      "logits": "decoder_logits"
+    },
+    "decoder_with_past": {
+      "input_ids": "past_input_ids",
+      "encoder_attention_mask": "past_encoder_attention_mask",
+      "encoder_hidden_states": "past_encoder_hidden_states",
+      "logits": "past_logits"
+    }
+  }
+}"#;
     static PACK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
@@ -805,7 +905,7 @@ mod tests {
 
     #[test]
     fn ffi_reports_abi_and_xiaomi17_contract() {
-        assert_eq!(localmt_ffi_abi_version(), 7);
+        assert_eq!(localmt_ffi_abi_version(), 8);
         assert_eq!(localmt_ffi_max_text_chars(), 4096);
         assert_eq!(localmt_ffi_xiaomi17_android_abi_code(), 1);
         assert_eq!(localmt_ffi_xiaomi17_ram_class_gib(), 12);
@@ -823,7 +923,7 @@ mod tests {
         );
         let summary = std::str::from_utf8(&output[..written_len])?;
 
-        assert!(summary.contains("ffi_abi: 7"));
+        assert!(summary.contains("ffi_abi: 8"));
         assert!(summary.contains("max_text_chars: 4096"));
         assert!(summary.contains("xiaomi17_android_abi: arm64-v8a"));
         assert!(summary.contains("xiaomi17_ram_class_gib: 12"));
@@ -1078,6 +1178,112 @@ mod tests {
             LOCALMT_FFI_MODEL_PACK_ERROR
         );
         assert_eq!(written_len, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_runtime_config_summary_reports_strict_ort_contract()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_runtime_config_pack()?;
+        let path = path_bytes(&root)?;
+        let mut output = [0_u8; 512];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_runtime_config_summary(
+                path.as_ptr(),
+                path.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_OK
+        );
+
+        let summary = std::str::from_utf8(&output[..written_len])?;
+        assert!(summary.contains("runtime_config: ok"));
+        assert!(summary.contains("max_new_tokens: 32"));
+        assert!(summary.contains("encoder_input_ids: encoder_input_ids"));
+        assert!(summary.contains("decoder_input_ids: decoder_input_ids"));
+        assert!(summary.contains("decoder_logits: decoder_logits"));
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_runtime_config_summary_reports_required_buffer_len()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_runtime_config_pack()?;
+        let path = path_bytes(&root)?;
+        let mut output = [0_u8; 3];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_runtime_config_summary(
+                path.as_ptr(),
+                path.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_BUFFER_TOO_SMALL
+        );
+        assert!(written_len > output.len());
+
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_runtime_config_summary_rejects_nulls_and_invalid_utf8()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_runtime_config_pack()?;
+        let path = path_bytes(&root)?;
+        let mut output = [0_u8; 512];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_runtime_config_summary(
+                path.as_ptr(),
+                path.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                ptr::null_mut(),
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_runtime_config_summary(
+                ptr::null(),
+                0,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(written_len, 0);
+        assert_eq!(
+            localmt_ffi_runtime_config_summary(
+                [0xff].as_ptr(),
+                1,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_INVALID_UTF8
+        );
+        assert_eq!(written_len, 0);
+        assert_eq!(
+            localmt_ffi_runtime_config_summary(
+                path.as_ptr(),
+                path.len(),
+                ptr::null_mut(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert!(written_len > 0);
 
         Ok(())
     }
@@ -1553,6 +1759,16 @@ mod tests {
         Ok(root)
     }
 
+    fn create_runtime_config_pack() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let root = create_verified_pack()?;
+
+        fs::write(root.join("generation.json"), GENERATION_CONFIG)?;
+        fs::write(root.join("config.json"), ORT_IO_CONFIG)?;
+        fs::write(root.join("manifest.json"), runtime_config_manifest_json())?;
+
+        Ok(root)
+    }
+
     #[cfg(feature = "hf-tokenizers")]
     fn create_hf_verified_pack() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
@@ -1590,6 +1806,27 @@ mod tests {
     {{ "path": "encoder.onnx", "kind": "encoder", "sha256": "{ENCODER_SHA256}" }},
     {{ "path": "decoder.onnx", "kind": "decoder", "sha256": "{DECODER_SHA256}" }},
     {{ "path": "tokenizer.json", "kind": "tokenizer", "sha256": "{tokenizer_sha256}" }}
+  ]
+}}"#
+        )
+    }
+
+    fn runtime_config_manifest_json() -> String {
+        format!(
+            r#"{{
+  "schema_version": 0,
+  "model_id": "m2m100-418m-int8",
+  "version": "0.1.0",
+  "architecture": "m2m100",
+  "runtime": "onnx-runtime",
+  "license": "MIT",
+  "languages": ["en", "ru", "th", "vi", "ja"],
+  "files": [
+    {{ "path": "encoder.onnx", "kind": "encoder", "sha256": "{ENCODER_SHA256}" }},
+    {{ "path": "decoder.onnx", "kind": "decoder", "sha256": "{DECODER_SHA256}" }},
+    {{ "path": "tokenizer.json", "kind": "tokenizer", "sha256": "{TOKENIZER_SHA256}" }},
+    {{ "path": "generation.json", "kind": "generation_config", "sha256": "{GENERATION_CONFIG_SHA256}" }},
+    {{ "path": "config.json", "kind": "config", "sha256": "{ORT_IO_CONFIG_SHA256}" }}
   ]
 }}"#
         )

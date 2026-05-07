@@ -29,6 +29,7 @@ usage:
   localmt ffi smoke PACK FROM TO TEXT
   localmt ffi startup
   localmt ffi header
+  localmt ffi runtime-config PACK
   localmt ffi hf-smoke PACK FROM TO TEXT
   localmt ffi ort-smoke PACK
   localmt bench --profile xiaomi17 --model-pack PACK
@@ -41,6 +42,7 @@ usage:
   localmt ffi smoke PACK FROM TO TEXT
   localmt ffi startup
   localmt ffi header
+  localmt ffi runtime-config PACK
   localmt ffi hf-smoke PACK FROM TO TEXT
   localmt ffi ort-smoke PACK
 ";
@@ -182,6 +184,7 @@ fn run_ffi(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
         "smoke" => run_ffi_smoke(args),
         "startup" => ffi_startup(args),
         "header" => ffi_header(args),
+        "runtime-config" => run_ffi_runtime_config(args),
         "hf-smoke" => run_ffi_hf_smoke(args),
         "ort-smoke" => run_ffi_ort_smoke(args),
         _ => Err(CliError::UnknownFfiCommand(command)),
@@ -688,6 +691,38 @@ fn run_ffi_ort_smoke(args: impl Iterator<Item = String>) -> Result<String, CliEr
     ))
 }
 
+/// { args contains one model path argument }
+/// fn run_ffi_runtime_config(args: impl Iterator<Item = String>) -> Result<String, CliError>
+/// { ret is Ok only when strict ORT runtime config is summarized through FFI }
+fn run_ffi_runtime_config(args: impl Iterator<Item = String>) -> Result<String, CliError> {
+    let path = single_model_path(args)?;
+    let path_bytes = path.as_bytes();
+    let _model_summary = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_model_pack_summary(
+            path_bytes.as_ptr(),
+            path_bytes.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
+    })?;
+    let runtime_summary = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_runtime_config_summary(
+            path_bytes.as_ptr(),
+            path_bytes.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
+    })?;
+    let runtime_summary = String::from_utf8(runtime_summary).map_err(CliError::FfiOutputUtf8)?;
+
+    Ok(format!(
+        "ffi_abi: {}\nmodel_pack_summary: ok\nruntime_config_summary: ok\n{runtime_summary}",
+        localmt_ffi::localmt_ffi_abi_version()
+    ))
+}
+
 /// { language is supported by localmt }
 /// fn ffi_language_id(language: Language) -> Result<u8, CliError>
 /// { ret is the stable FFI language id for language }
@@ -1136,7 +1171,7 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 7"));
+        assert!(output.contains("ffi_abi: 8"));
         assert!(output.contains("model_pack_summary: ok"));
         assert!(output.contains("mock_translator_open: ok"));
         assert!(output.contains("mock_translate: ok"));
@@ -1175,8 +1210,9 @@ mod tests {
         let output = run(args.into_iter())?;
 
         assert!(output.contains("#ifndef LOCALMT_FFI_H"));
-        assert!(output.contains("#define LOCALMT_FFI_ABI_VERSION 7"));
+        assert!(output.contains("#define LOCALMT_FFI_ABI_VERSION 8"));
         assert!(output.contains("int32_t localmt_ffi_model_pack_summary("));
+        assert!(output.contains("int32_t localmt_ffi_runtime_config_summary("));
         assert!(output.contains("int32_t localmt_ffi_mock_translate("));
         assert!(output.contains("int32_t localmt_ffi_ort_generator_open("));
         Ok(())
@@ -1188,10 +1224,30 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 7"));
+        assert!(output.contains("ffi_abi: 8"));
         assert!(output.contains("max_text_chars: 4096"));
         assert!(output.contains("xiaomi17_android_abi: arm64-v8a"));
         assert!(output.contains("languages: en, ru, th, vi, ja"));
+        Ok(())
+    }
+
+    #[test]
+    fn cli_ffi_runtime_config_reports_strict_ort_contract() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = create_runtime_config_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "ffi".to_owned(),
+            "runtime-config".to_owned(),
+            root.display().to_string(),
+        ];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("ffi_abi: 8"));
+        assert!(output.contains("runtime_config_summary: ok"));
+        assert!(output.contains("runtime_config: ok"));
+        assert!(output.contains("decoder_logits: decoder_logits"));
         Ok(())
     }
 
@@ -1235,7 +1291,7 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 7"));
+        assert!(output.contains("ffi_abi: 8"));
         assert!(output.contains("model_pack_summary: ok"));
         assert!(output.contains("hf_mock_translator_open: ok"));
         assert!(output.contains("hf_mock_translate: ok"));
@@ -1402,6 +1458,7 @@ mod tests {
         assert!(output.contains("localmt ffi smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi startup"));
         assert!(output.contains("localmt ffi header"));
+        assert!(output.contains("localmt ffi runtime-config PACK"));
         assert!(output.contains("localmt ffi hf-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-smoke PACK"));
         assert!(output.contains("localmt bench --profile xiaomi17 --model-pack PACK"));
@@ -1417,6 +1474,7 @@ mod tests {
         assert!(output.contains("localmt ffi smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi startup"));
         assert!(output.contains("localmt ffi header"));
+        assert!(output.contains("localmt ffi runtime-config PACK"));
         assert!(output.contains("localmt ffi hf-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-smoke PACK"));
         Ok(())

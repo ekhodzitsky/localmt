@@ -78,7 +78,7 @@ At app startup:
 
 1. Call `localmt_ffi_startup_summary()` for a loggable startup contract, or
    call the individual probes below.
-1. Call `localmt_ffi_abi_version()` and require `LOCALMT_FFI_ABI_VERSION == 7`.
+1. Call `localmt_ffi_abi_version()` and require `LOCALMT_FFI_ABI_VERSION == 8`.
 1. Call `localmt_ffi_xiaomi17_android_abi_code()` and require
    `LOCALMT_FFI_ANDROID_ABI_ARM64_V8A`.
 1. Call `localmt_ffi_supported_language_count()` and map language ids through
@@ -88,7 +88,10 @@ Before opening a translator:
 
 1. Call `localmt_ffi_model_pack_summary()` with a local model-pack directory.
 2. If the buffer is too small, allocate `written_len` bytes and call again.
-3. Use `localmt_ffi_status_message()` to turn any non-zero status into a local
+3. Call `localmt_ffi_runtime_config_summary()` before opening ORT generation;
+   this requires valid `generation_config` and `ort_io` metadata without loading
+   ONNX Runtime sessions.
+4. Use `localmt_ffi_status_message()` to turn any non-zero status into a local
    log or UI diagnostic.
 
 Smoke translation choices:
@@ -162,6 +165,7 @@ cargo run -p localmt -- model doctor <pack-dir>
 cargo run -p localmt -- model runtime-config <pack-dir>
 cargo run -p localmt -- ffi startup
 cargo run -p localmt -- ffi header
+cargo run -p localmt -- ffi runtime-config <pack-dir>
 cargo run -p localmt -- ffi smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features ort-runtime -- ffi ort-smoke <pack-dir>
@@ -178,6 +182,8 @@ builds use the compiled backends.
 `localmt model runtime-config` is stricter than `model plan`: it requires both
 `generation_config` and `ort_io` to be present and valid, but still avoids
 loading ONNX Runtime sessions.
+`localmt ffi runtime-config` exercises the same strict readiness gate through
+`localmt_ffi_runtime_config_summary`, which is the Android/JNI-facing ABI call.
 `localmt ffi hf-smoke` exercises the tokenizer-backed mock translator path
 through the same host-side FFI helpers; it requires `hf-tokenizers`, verifies
 `tokenizer.json` loading, and still keeps token generation mocked.

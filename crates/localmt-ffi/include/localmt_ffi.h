@@ -22,7 +22,7 @@ extern "C" {
 #define LOCALMT_FFI_TOKENIZER_DISABLED 11
 #define LOCALMT_FFI_TOKENIZER_ERROR 12
 
-#define LOCALMT_FFI_ABI_VERSION 7
+#define LOCALMT_FFI_ABI_VERSION 8
 #define LOCALMT_FFI_ANDROID_ABI_ARM64_V8A 1
 #define LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK 1
 
@@ -129,6 +129,26 @@ uint16_t localmt_ffi_xiaomi17_preferred_runtime_code(void);
  * and output is not written.
  */
 int32_t localmt_ffi_model_pack_summary(
+    const uint8_t *path_ptr,
+    size_t path_len,
+    uint8_t *output_ptr,
+    size_t output_capacity,
+    size_t *written_len);
+
+/*
+ * Verifies, plans, and strictly validates ORT runtime configuration.
+ *
+ * This does not load tokenizer backends or ONNX Runtime sessions. It requires
+ * both generation_config and ort_io metadata to be present and valid, then
+ * writes the selected generation limit and ONNX tensor names.
+ *
+ * path_ptr/path_len must be valid UTF-8 bytes for the model-pack directory.
+ * output_ptr/output_capacity is caller-owned byte storage and is not NUL
+ * terminated by Rust. written_len must point to writable size_t storage. On
+ * LOCALMT_FFI_BUFFER_TOO_SMALL, written_len contains the required byte count
+ * and output is not written.
+ */
+int32_t localmt_ffi_runtime_config_summary(
     const uint8_t *path_ptr,
     size_t path_len,
     uint8_t *output_ptr,

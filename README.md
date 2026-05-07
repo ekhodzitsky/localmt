@@ -79,6 +79,7 @@ localmt model runtime-config ./models/m2m100-418m-int8
 localmt model tokenize ./models/m2m100-418m-int8 en ru "hello offline"
 localmt ffi startup
 localmt ffi header
+localmt ffi runtime-config ./models/m2m100-418m-int8
 localmt bench --help
 ```
 
@@ -148,6 +149,7 @@ cargo run -p localmt -- model plan ./models/m2m100-418m-int8
 cargo run -p localmt -- model doctor ./models/m2m100-418m-int8
 cargo run -p localmt -- ffi startup
 cargo run -p localmt -- ffi header
+cargo run -p localmt -- ffi runtime-config ./models/m2m100-418m-int8
 cargo run -p localmt -- ffi smoke ./models/m2m100-418m-int8 en ru "hello offline"
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke ./models/m2m100-418m-int8 en ru "hello offline"
 cargo run -p localmt --features ort-runtime -- ffi ort-smoke ./models/m2m100-418m-int8
@@ -158,6 +160,10 @@ same output-buffer ABI as JNI callers: ABI version, max text length, Xiaomi 17
 metadata, compiled feature flags, and stable language codes.
 `localmt ffi header` prints the checked-in C ABI header from
 `crates/localmt-ffi/include/localmt_ffi.h` for Android/NDK consumers.
+`localmt ffi runtime-config` exercises
+`localmt_ffi_runtime_config_summary`: it verifies the pack through the Android
+buffer ABI, requires strict ORT runtime metadata, and still avoids tokenizer or
+ONNX Runtime loading.
 `localmt ffi smoke` runs the host-side equivalent of the default JNI call flow:
 ABI query, model-pack summary, mock translator open, mock translate, status
 message mapping on errors, and handle close.
@@ -187,6 +193,12 @@ reporting, but does not load tokenizer backends or ONNX Runtime sessions. The
 CLI and FFI paths share
 `OfflineTranslatorAssetsSummary::to_preflight_text` so adapter-visible summary
 text has one source of truth.
+
+`localmt_ffi_runtime_config_summary` is the stricter Android readiness gate for
+real ORT generation. It uses the same output-buffer ABI, requires both
+`generation_config` and `ort_io` to parse, and returns the generation limit plus
+selected tensor names without opening tokenizer backends or ONNX Runtime
+sessions.
 
 For Android smoke integration, `localmt-ffi` also exposes a Rust-owned opaque
 `LocalmtFfiTranslator` handle around `MockOfflineTranslator`. Callers open it
