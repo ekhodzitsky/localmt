@@ -40,6 +40,8 @@ roles are `encoder`, `decoder`, `decoder_with_past`, `tokenizer`, `vocab`,
 than once. After verification, `ModelPack<Verified>::file_path(role)` resolves a
 declared role to its model-pack-root-qualified file path; missing optional roles
 return `None`.
+The optional `config` role can carry tokenizer metadata and, for ONNX Runtime
+packs, the local `ort_io` tensor-name contract consumed by `localmt-engine-ort`.
 
 Minimal manifest shape:
 
@@ -232,6 +234,39 @@ execution, and translation are intentionally future work.
 `generation_config` asset into `GenerationConfig`. Packs without that role
 return `Ok(None)`. Session loading and decoder execution still do not consume
 the config yet.
+`OrtGeneratorPlan::parse_ort_io_config` parses the optional verified `config`
+asset when present and expects an `ort_io` object with the tensor names that the
+future decoder loop will bind. Packs without `config` return `Ok(None)`;
+packs with `config` but without `ort_io` fail the explicit ORT I/O parse.
+
+Accepted local `config.json` fragment for ORT I/O:
+
+```json
+{
+  "ort_io": {
+    "encoder": {
+      "input_ids": "input_ids",
+      "attention_mask": "attention_mask",
+      "last_hidden_state": "last_hidden_state"
+    },
+    "decoder": {
+      "input_ids": "input_ids",
+      "encoder_attention_mask": "encoder_attention_mask",
+      "encoder_hidden_states": "encoder_hidden_states",
+      "logits": "logits"
+    },
+    "decoder_with_past": {
+      "input_ids": "input_ids",
+      "encoder_attention_mask": "encoder_attention_mask",
+      "encoder_hidden_states": "encoder_hidden_states",
+      "logits": "logits"
+    }
+  }
+}
+```
+
+`decoder_with_past` inside `ort_io` is optional and mirrors the optional
+`decoder_with_past` model-pack role.
 
 ## Tokenizer Boundary
 

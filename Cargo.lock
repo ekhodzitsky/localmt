@@ -361,6 +361,8 @@ dependencies = [
  "localmt-pipeline",
  "localmt-tokenizer",
  "ort",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -11,6 +11,8 @@ localmt-models = { path = "../localmt-models" }
 localmt-pipeline = { path = "../localmt-pipeline" }
 localmt-tokenizer = { path = "../localmt-tokenizer" }
 ort = { version = "2.0.0-rc.12", optional = true, default-features = false, features = ["api-22", "load-dynamic", "std"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [features]
 default = []

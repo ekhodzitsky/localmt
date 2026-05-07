@@ -124,6 +124,28 @@ vocab.txt                optional
 config.json              optional
 ```
 
+For ONNX Runtime packs, `config.json` may include the local `ort_io` object that
+names encoder and decoder tensors. This is metadata for the Rust ORT generation
+boundary, not a network dependency:
+
+```json
+{
+  "ort_io": {
+    "encoder": {
+      "input_ids": "input_ids",
+      "attention_mask": "attention_mask",
+      "last_hidden_state": "last_hidden_state"
+    },
+    "decoder": {
+      "input_ids": "input_ids",
+      "encoder_attention_mask": "encoder_attention_mask",
+      "encoder_hidden_states": "encoder_hidden_states",
+      "logits": "logits"
+    }
+  }
+}
+```
+
 Use the development CLI to prepare and inspect packs locally:
 
 ```bash

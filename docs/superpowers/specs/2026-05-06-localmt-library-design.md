@@ -98,6 +98,10 @@ defaults to `DEFAULT_MAX_NEW_TOKENS`.
 `OrtGeneratorPlan::parse_generation_config` bridges the verified optional
 `generation_config` model-pack asset into this typed config while keeping ORT
 session loading and decoder execution separate.
+`OrtGeneratorPlan::parse_ort_io_config` bridges the optional verified `config`
+asset into ORT-owned tensor-name contracts from a nested `ort_io` object, so the
+future generation loop can bind encoder and decoder tensors without hardcoding
+model-specific ONNX names.
 `OfflineTranslatorPlan` is the facade-level planning object for SDK users. It
 combines `TokenizerAssetPlan` and `OrtGeneratorPlan` from one verified model
 pack without parsing tokenizer files, loading ORT sessions, or running
