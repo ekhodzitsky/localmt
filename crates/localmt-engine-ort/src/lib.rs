@@ -1327,11 +1327,47 @@ impl OrtEngine {
 
         OrtFloatTensorOutput::from_ort_tensor(names.last_hidden_state(), shape, values)
     }
+
+    /// { self was loaded successfully and names match the decoder graph contract }
+    /// fn run_decoder(&mut self, names: &OrtDecoderIoNames, inputs: &OrtGenerationTensorInputs, encoder_output: &OrtFloatTensorOutput) -> Result<OrtFloatTensorOutput, OrtEngineError>
+    /// { ret is Ok only when decoder execution returns named f32 logits }
+    pub fn run_decoder(
+        &mut self,
+        names: &OrtDecoderIoNames,
+        inputs: &OrtGenerationTensorInputs,
+        encoder_output: &OrtFloatTensorOutput,
+    ) -> Result<OrtFloatTensorOutput, OrtEngineError> {
+        let input_ids = ort_i64_tensor(inputs.decoder_input_ids())?;
+        let encoder_attention_mask = ort_i64_tensor(inputs.encoder_attention_mask())?;
+        let encoder_hidden_states = ort_f32_tensor(encoder_output)?;
+        let outputs = self
+            .session
+            .run(ort::inputs! {
+                names.input_ids() => input_ids,
+                names.encoder_attention_mask() => encoder_attention_mask,
+                names.encoder_hidden_states() => encoder_hidden_states,
+            })
+            .map_err(|source| OrtEngineError::Ort(source.to_string()))?;
+        let output = outputs
+            .get(names.logits())
+            .ok_or_else(|| OrtEngineError::MissingOrtOutput(names.logits().to_owned()))?;
+        let (shape, values) = output
+            .try_extract_tensor::<f32>()
+            .map_err(|source| OrtEngineError::Ort(source.to_string()))?;
+
+        OrtFloatTensorOutput::from_ort_tensor(names.logits(), shape, values)
+    }
 }
 
 #[cfg(feature = "ort-runtime")]
 fn ort_i64_tensor(input: &OrtI64TensorInput) -> Result<ort::value::Tensor<i64>, OrtEngineError> {
     ort::value::Tensor::from_array((input.shape(), input.values().to_vec()))
+        .map_err(|source| OrtEngineError::Ort(source.to_string()))
+}
+
+#[cfg(feature = "ort-runtime")]
+fn ort_f32_tensor(input: &OrtFloatTensorOutput) -> Result<ort::value::Tensor<f32>, OrtEngineError> {
+    ort::value::Tensor::from_array((input.shape().to_vec(), input.values().to_vec()))
         .map_err(|source| OrtEngineError::Ort(source.to_string()))
 }
 
@@ -1367,7 +1403,7 @@ mod tests {
 
     #[cfg(feature = "ort-runtime")]
     use crate::{
-        OrtEncoderIoNames, OrtEngine, OrtEngineSlot, OrtFloatTensorOutput,
+        OrtDecoderIoNames, OrtEncoderIoNames, OrtEngine, OrtEngineSlot, OrtFloatTensorOutput,
         OrtGenerationTensorInputs, OrtTokenGenerator,
     };
     #[cfg(not(feature = "ort-runtime"))]
@@ -1517,6 +1553,29 @@ mod tests {
         }
 
         let _signature: fn(&OrtTokenGenerator, &TokenizerOutput) = assert_signature;
+    }
+
+    #[test]
+    #[ignore = "compile-only signature guard; execution requires a real ONNX decoder model"]
+    #[cfg(feature = "ort-runtime")]
+    fn decoder_run_method_accepts_encoder_hidden_states() {
+        fn assert_signature(
+            engine: &mut OrtEngine,
+            names: &OrtDecoderIoNames,
+            inputs: &OrtGenerationTensorInputs,
+            encoder_output: &OrtFloatTensorOutput,
+        ) {
+            let result: Result<OrtFloatTensorOutput, OrtEngineError> =
+                engine.run_decoder(names, inputs, encoder_output);
+            let _ = result;
+        }
+
+        let _signature: fn(
+            &mut OrtEngine,
+            &OrtDecoderIoNames,
+            &OrtGenerationTensorInputs,
+            &OrtFloatTensorOutput,
+        ) = assert_signature;
     }
 
     #[test]

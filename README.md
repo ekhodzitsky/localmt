@@ -293,10 +293,14 @@ inputs, runs the encoder stage, and then stops at the explicit
 `ONNX decoder generation loop is not implemented` boundary. Default builds keep
 the immediate unavailable-backend response because they intentionally do not
 link or load ONNX Runtime.
+`OrtEngine::run_decoder` is available for the non-cached decoder graph: it binds
+decoder input ids, encoder attention mask, and encoder hidden states, then
+copies the named decoder logits output. Logits slicing for the final generated
+position and cached decoder-with-past execution remain future runtime steps.
 `OrtNextTokenSelector::select_argmax` handles the first logits-selection policy:
 it rejects empty or non-finite logits, chooses the highest vocabulary index as a
-`TokenId`, and keeps the first index on ties. Decoder session execution still
-remains the next runtime step.
+`TokenId`, and keeps the first index on ties. Decoder logits-row extraction
+still remains the next runtime step.
 
 Accepted local `config.json` fragment for ORT I/O:
 
