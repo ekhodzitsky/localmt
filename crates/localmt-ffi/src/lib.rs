@@ -37,9 +37,11 @@ pub const LOCALMT_FFI_ORT_ERROR: i32 = 10;
 pub const LOCALMT_FFI_TOKENIZER_DISABLED: i32 = 11;
 /// FFI status when tokenizer loading fails.
 pub const LOCALMT_FFI_TOKENIZER_ERROR: i32 = 12;
+/// FFI status when ORT runtime is enabled but no usable dylib path is configured.
+pub const LOCALMT_FFI_RUNTIME_NOT_CONFIGURED: i32 = 13;
 
 /// Pointer-free C ABI version.
-pub const LOCALMT_FFI_ABI_VERSION: u32 = 9;
+pub const LOCALMT_FFI_ABI_VERSION: u32 = 10;
 /// FFI code for Android arm64-v8a.
 pub const LOCALMT_FFI_ANDROID_ABI_ARM64_V8A: u16 = 1;
 /// FFI code for ONNX Runtime Mobile with XNNPACK.
@@ -188,6 +190,7 @@ const fn ffi_status_message(status: i32) -> &'static str {
         LOCALMT_FFI_ORT_ERROR => "onnx runtime error",
         LOCALMT_FFI_TOKENIZER_DISABLED => "tokenizer disabled",
         LOCALMT_FFI_TOKENIZER_ERROR => "tokenizer error",
+        LOCALMT_FFI_RUNTIME_NOT_CONFIGURED => "runtime not configured",
         _ => "unknown status",
     }
 }
@@ -768,8 +771,7 @@ pub extern "C" fn localmt_ffi_ort_generator_open(
             unsafe { *out_generator = Box::into_raw(handle) }; // SAFETY: non-null writable out pointer.
             LOCALMT_FFI_OK
         }
-        Err(OrtEngineError::OrtRuntimeFeatureDisabled) => LOCALMT_FFI_RUNTIME_DISABLED,
-        Err(_error) => LOCALMT_FFI_ORT_ERROR,
+        Err(error) => ffi_ort_engine_error_status(error),
     }
 }
 
@@ -833,11 +835,21 @@ pub extern "C" fn localmt_ffi_ort_translator_open(
             }
             Err(OrtOfflineTranslatorError::Assets(_error)) => LOCALMT_FFI_MODEL_PACK_ERROR,
             Err(OrtOfflineTranslatorError::Tokenizer(_error)) => LOCALMT_FFI_TOKENIZER_ERROR,
-            Err(OrtOfflineTranslatorError::Generator(
-                OrtEngineError::OrtRuntimeFeatureDisabled,
-            )) => LOCALMT_FFI_RUNTIME_DISABLED,
-            Err(OrtOfflineTranslatorError::Generator(_error)) => LOCALMT_FFI_ORT_ERROR,
+            Err(OrtOfflineTranslatorError::Generator(error)) => ffi_ort_engine_error_status(error),
         }
+    }
+}
+
+/// { error came from the ORT engine boundary }
+/// fn ffi_ort_engine_error_status(error: OrtEngineError) -> i32
+/// { ret is the stable FFI status for the engine error class }
+fn ffi_ort_engine_error_status(error: OrtEngineError) -> i32 {
+    match error {
+        OrtEngineError::OrtRuntimeFeatureDisabled => LOCALMT_FFI_RUNTIME_DISABLED,
+        OrtEngineError::MissingOrtDylibPath | OrtEngineError::InvalidOrtDylibPath { .. } => {
+            LOCALMT_FFI_RUNTIME_NOT_CONFIGURED
+        }
+        _ => LOCALMT_FFI_ORT_ERROR,
     }
 }
 
@@ -986,8 +998,9 @@ mod tests {
     use super::{
         LOCALMT_FFI_BUFFER_TOO_SMALL, LOCALMT_FFI_INVALID_LANGUAGE, LOCALMT_FFI_INVALID_PAIR,
         LOCALMT_FFI_INVALID_UTF8, LOCALMT_FFI_MODEL_PACK_ERROR, LOCALMT_FFI_NULL_POINTER,
-        LOCALMT_FFI_OK, LOCALMT_FFI_TEXT_ERROR, LocalmtFfiHfMockTranslator, LocalmtFfiHfTokenizer,
-        LocalmtFfiOrtGenerator, LocalmtFfiOrtTranslator, LocalmtFfiTranslator,
+        LOCALMT_FFI_OK, LOCALMT_FFI_RUNTIME_NOT_CONFIGURED, LOCALMT_FFI_TEXT_ERROR,
+        LocalmtFfiHfMockTranslator, LocalmtFfiHfTokenizer, LocalmtFfiOrtGenerator,
+        LocalmtFfiOrtTranslator, LocalmtFfiTranslator, OrtEngineError, ffi_ort_engine_error_status,
         localmt_ffi_abi_version, localmt_ffi_hf_mock_translate,
         localmt_ffi_hf_mock_translator_close, localmt_ffi_hf_mock_translator_open,
         localmt_ffi_hf_tokenizer_close, localmt_ffi_hf_tokenizer_enabled,
@@ -1073,7 +1086,7 @@ mod tests {
 
     #[test]
     fn ffi_reports_abi_and_xiaomi17_contract() {
-        assert_eq!(localmt_ffi_abi_version(), 9);
+        assert_eq!(localmt_ffi_abi_version(), 10);
         assert_eq!(localmt_ffi_max_text_chars(), 4096);
         assert_eq!(localmt_ffi_xiaomi17_android_abi_code(), 1);
         assert_eq!(localmt_ffi_xiaomi17_ram_class_gib(), 12);
@@ -1091,7 +1104,7 @@ mod tests {
         );
         let summary = std::str::from_utf8(&output[..written_len])?;
 
-        assert!(summary.contains("ffi_abi: 9"));
+        assert!(summary.contains("ffi_abi: 10"));
         assert!(summary.contains("max_text_chars: 4096"));
         assert!(summary.contains("xiaomi17_android_abi: arm64-v8a"));
         assert!(summary.contains("xiaomi17_ram_class_gib: 12"));
@@ -1158,6 +1171,44 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn ffi_status_message_reports_runtime_not_configured_text()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut output = [0_u8; 64];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_status_message(
+                LOCALMT_FFI_RUNTIME_NOT_CONFIGURED,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_OK
+        );
+        assert_eq!(
+            std::str::from_utf8(&output[..written_len])?,
+            "runtime not configured"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_maps_ort_runtime_configuration_errors_to_stable_status() {
+        assert_eq!(
+            ffi_ort_engine_error_status(OrtEngineError::MissingOrtDylibPath),
+            LOCALMT_FFI_RUNTIME_NOT_CONFIGURED
+        );
+        assert_eq!(
+            ffi_ort_engine_error_status(OrtEngineError::InvalidOrtDylibPath {
+                path: "/tmp/missing-libonnxruntime.dylib".into(),
+                reason: "path does not point to a file".to_owned(),
+            }),
+            LOCALMT_FFI_RUNTIME_NOT_CONFIGURED
+        );
     }
 
     #[test]

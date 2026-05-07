@@ -1,6 +1,8 @@
 //! ONNX Runtime adapter boundary for localmt.
 
 use core::fmt;
+#[cfg(feature = "ort-runtime")]
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +15,7 @@ use localmt_tokenizer::{TokenId, TokenSequence, TokenizerOutput};
 use serde::Deserialize;
 
 const ONNX_RUNTIME: &str = "onnx-runtime";
+const ORT_DYLIB_PATH_ENV: &str = "ORT_DYLIB_PATH";
 #[cfg(not(feature = "ort-runtime"))]
 const GENERATION_LOOP_UNIMPLEMENTED: &str = "ONNX token generation loop is not implemented";
 
@@ -1269,6 +1272,15 @@ pub enum OrtEngineError {
     OrtSessionLock(OrtModelRole),
     /// Crate was compiled without the `ort-runtime` feature.
     OrtRuntimeFeatureDisabled,
+    /// Dynamic ONNX Runtime loading requires an explicit dylib path.
+    MissingOrtDylibPath,
+    /// Dynamic ONNX Runtime dylib path is not usable.
+    InvalidOrtDylibPath {
+        /// Path configured through ORT_DYLIB_PATH.
+        path: PathBuf,
+        /// Stable validation reason.
+        reason: String,
+    },
     /// ONNX Runtime failed to create a session.
     Ort(String),
 }
@@ -1298,6 +1310,17 @@ impl fmt::Display for OrtEngineError {
             Self::OrtRuntimeFeatureDisabled => {
                 formatter.write_str("ort-runtime feature is not enabled")
             }
+            Self::MissingOrtDylibPath => {
+                write!(
+                    formatter,
+                    "{ORT_DYLIB_PATH_ENV} must point to libonnxruntime"
+                )
+            }
+            Self::InvalidOrtDylibPath { path, reason } => write!(
+                formatter,
+                "{ORT_DYLIB_PATH_ENV} {} is invalid: {reason}",
+                path.display()
+            ),
             Self::Ort(error) => write!(formatter, "ONNX Runtime error: {error}"),
         }
     }
@@ -1559,6 +1582,8 @@ impl OrtEngine {
     /// fn load(plan: OrtSessionPlan) -> Result<Self, OrtEngineError>
     /// { ret is Ok only when ONNX Runtime creates a session from plan.model_path() }
     pub fn load(plan: OrtSessionPlan) -> Result<Self, OrtEngineError> {
+        prepare_ort_runtime()?;
+
         let session = ort::session::Session::builder()
             .map_err(|source| OrtEngineError::Ort(source.to_string()))?
             .commit_from_file(plan.model_path())
@@ -1646,6 +1671,51 @@ impl OrtEngine {
     }
 }
 
+/// { ORT_DYLIB_PATH may or may not be set in the process environment }
+/// fn prepare_ort_runtime() -> Result<(), OrtEngineError>
+/// { ret is Ok only when ONNX Runtime dynamic loading has an explicit dylib path }
+#[cfg(feature = "ort-runtime")]
+fn prepare_ort_runtime() -> Result<(), OrtEngineError> {
+    let dylib_path = resolve_ort_dylib_path_from_env_value(std::env::var_os(ORT_DYLIB_PATH_ENV))?;
+    let builder = ort::init_from(&dylib_path).map_err(|source| {
+        OrtEngineError::Ort(format!(
+            "failed to load {ORT_DYLIB_PATH_ENV} {}: {source}",
+            dylib_path.display()
+        ))
+    })?;
+    let _ = builder.commit();
+
+    Ok(())
+}
+
+/// { value is a raw ORT_DYLIB_PATH environment value }
+/// fn resolve_ort_dylib_path_from_env_value(value: Option<OsString>) -> Result<PathBuf, OrtEngineError>
+/// { ret is Ok only when value is a non-empty absolute path to a file }
+#[cfg(feature = "ort-runtime")]
+fn resolve_ort_dylib_path_from_env_value(
+    value: Option<OsString>,
+) -> Result<PathBuf, OrtEngineError> {
+    let Some(value) = value.filter(|candidate| !candidate.is_empty()) else {
+        return Err(OrtEngineError::MissingOrtDylibPath);
+    };
+    let path = PathBuf::from(value);
+
+    if !path.is_absolute() {
+        return Err(OrtEngineError::InvalidOrtDylibPath {
+            path,
+            reason: "path must be absolute".to_owned(),
+        });
+    }
+    if !path.is_file() {
+        return Err(OrtEngineError::InvalidOrtDylibPath {
+            path,
+            reason: "path does not point to a file".to_owned(),
+        });
+    }
+
+    Ok(path)
+}
+
 #[cfg(feature = "ort-runtime")]
 fn ort_i64_tensor(input: &OrtI64TensorInput) -> Result<ort::value::Tensor<i64>, OrtEngineError> {
     ort::value::Tensor::from_array((input.shape(), input.values().to_vec()))
@@ -1691,6 +1761,7 @@ mod tests {
     #[cfg(feature = "ort-runtime")]
     use crate::{
         OrtDecoderIoNames, OrtEncoderIoNames, OrtEngine, OrtEngineSlot, OrtTokenGenerator,
+        resolve_ort_dylib_path_from_env_value,
     };
     use crate::{
         OrtDecoderLogits, OrtDecoderLogitsError, OrtEngineError, OrtFloatTensorOutput,
@@ -2145,6 +2216,40 @@ mod tests {
             Err(OrtEngineError::OrtRuntimeFeatureDisabled)
         ));
         Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "ort-runtime")]
+    fn runtime_dylib_path_rejects_missing_env_value() {
+        let error = resolve_ort_dylib_path_from_env_value(None);
+
+        assert!(matches!(error, Err(OrtEngineError::MissingOrtDylibPath)));
+    }
+
+    #[test]
+    #[cfg(feature = "ort-runtime")]
+    fn runtime_dylib_path_rejects_relative_env_value() {
+        let error = resolve_ort_dylib_path_from_env_value(Some("libonnxruntime.dylib".into()));
+
+        assert!(matches!(
+            error,
+            Err(OrtEngineError::InvalidOrtDylibPath { ref reason, .. })
+                if reason == "path must be absolute"
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "ort-runtime")]
+    fn runtime_dylib_path_rejects_missing_file() {
+        let missing_path = PathBuf::from("/tmp/localmt-missing-libonnxruntime.dylib");
+
+        let error = resolve_ort_dylib_path_from_env_value(Some(missing_path.into_os_string()));
+
+        assert!(matches!(
+            error,
+            Err(OrtEngineError::InvalidOrtDylibPath { ref reason, .. })
+                if reason == "path does not point to a file"
+        ));
     }
 
     #[test]

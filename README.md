@@ -228,8 +228,11 @@ generation, so this is stronger adapter coverage but not real translation.
 `localmt_ffi_ort_runtime_enabled` and `LocalmtFfiOrtGenerator` provide runtime
 preflight. Default builds report runtime disabled; `ort-runtime` builds can
 verify a model pack and attempt to load encoder/decoder ONNX sessions. This is
-a model/runtime load check, not translation. `LocalmtFfiOrtTranslator` wraps
-the SDK-level `OrtOfflineTranslator` for Android/JNI callers behind
+a model/runtime load check, not translation. ORT-enabled builds require
+`ORT_DYLIB_PATH` to be set to an absolute `libonnxruntime` path; missing or
+invalid paths return `LOCALMT_FFI_RUNTIME_NOT_CONFIGURED` before session
+loading. `LocalmtFfiOrtTranslator` wraps the SDK-level `OrtOfflineTranslator`
+for Android/JNI callers behind
 `hf-tokenizers + ort-runtime`: open verifies the same model pack and builds the
 real tokenizer plus ORT generator, while `localmt_ffi_ort_translate` uses the
 same UTF-8 output-buffer contract as the mock translator handles.
@@ -246,6 +249,10 @@ Runtime accidentally. Real session creation is available behind the
 cargo check -p localmt-engine-ort --features ort-runtime
 cargo check -p localmt --features ort-runtime
 ```
+
+When running ORT smoke commands locally, point `ORT_DYLIB_PATH` at the runtime
+library, for example `/opt/homebrew/lib/libonnxruntime.dylib` on a macOS dev
+machine or the app `nativeLibraryDir/libonnxruntime.so` path on Android.
 
 `OrtGeneratorPlan` builds on the pipeline-owned `GeneratorAssetPlan` and turns
 verified encoder/decoder assets into ORT session plans. `OrtTokenGenerator`

@@ -21,8 +21,9 @@ extern "C" {
 #define LOCALMT_FFI_ORT_ERROR 10
 #define LOCALMT_FFI_TOKENIZER_DISABLED 11
 #define LOCALMT_FFI_TOKENIZER_ERROR 12
+#define LOCALMT_FFI_RUNTIME_NOT_CONFIGURED 13
 
-#define LOCALMT_FFI_ABI_VERSION 9
+#define LOCALMT_FFI_ABI_VERSION 10
 #define LOCALMT_FFI_ANDROID_ABI_ARM64_V8A 1
 #define LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK 1
 
@@ -281,7 +282,9 @@ void localmt_ffi_hf_tokenizer_close(LocalmtFfiHfTokenizer *tokenizer);
  * before work and receives a non-null handle only on LOCALMT_FFI_OK.
  *
  * Default builds return LOCALMT_FFI_RUNTIME_DISABLED after pack planning.
- * ort-runtime builds map ORT session-load failures to LOCALMT_FFI_ORT_ERROR.
+ * ort-runtime builds return LOCALMT_FFI_RUNTIME_NOT_CONFIGURED when the ONNX
+ * Runtime dylib path is missing or invalid, and map other ORT session-load
+ * failures to LOCALMT_FFI_ORT_ERROR.
  */
 int32_t localmt_ffi_ort_generator_open(
     const uint8_t *path_ptr,
@@ -303,8 +306,9 @@ void localmt_ffi_ort_generator_close(LocalmtFfiOrtGenerator *generator);
  * Default builds return LOCALMT_FFI_TOKENIZER_DISABLED after pack planning.
  * hf-tokenizers-only builds return LOCALMT_FFI_RUNTIME_DISABLED.
  * hf-tokenizers + ort-runtime builds map tokenizer load failures to
- * LOCALMT_FFI_TOKENIZER_ERROR and ORT session/generation failures to
- * LOCALMT_FFI_ORT_ERROR or LOCALMT_FFI_TRANSLATION_ERROR.
+ * LOCALMT_FFI_TOKENIZER_ERROR, ORT dylib configuration failures to
+ * LOCALMT_FFI_RUNTIME_NOT_CONFIGURED, and other ORT session/generation failures
+ * to LOCALMT_FFI_ORT_ERROR or LOCALMT_FFI_TRANSLATION_ERROR.
  */
 int32_t localmt_ffi_ort_translator_open(
     const uint8_t *path_ptr,
