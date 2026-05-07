@@ -153,6 +153,7 @@ cargo run -p localmt -- ffi runtime-config ./models/m2m100-418m-int8
 cargo run -p localmt -- ffi smoke ./models/m2m100-418m-int8 en ru "hello offline"
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke ./models/m2m100-418m-int8 en ru "hello offline"
 cargo run -p localmt --features ort-runtime -- ffi ort-smoke ./models/m2m100-418m-int8
+cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-smoke ./models/m2m100-418m-int8 en ru "hello offline"
 ```
 
 `localmt ffi startup` prints the Android-visible startup contract through the
@@ -173,6 +174,10 @@ contract while token generation remains deterministic mock generation.
 `localmt ffi ort-smoke` uses the ORT generator preflight ABI to verify runtime
 session loading for a local pack; it is a model/runtime load check, not
 translation.
+`localmt ffi ort-translate-smoke` is the full translator dogfood path for
+mobile adapters: it opens `LocalmtFfiOrtTranslator` and calls
+`localmt_ffi_ort_translate` through the same output-buffer ABI that JNI will
+use.
 
 ## Android FFI Boundary
 
