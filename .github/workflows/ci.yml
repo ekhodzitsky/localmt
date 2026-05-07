@@ -65,7 +65,19 @@ jobs:
 
       - name: Release FFI symbol check
         run: |
+          JAVA_HOME_DIR="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
           cargo build --locked --release -p localmt-ffi --features hf-tokenizers,ort-runtime
           test -f target/release/liblocalmt_ffi.so
           nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_abi_version
           nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_model_pack_trust_schema_version
+          c++ -std=c++17 -shared -fPIC \
+            -Icrates/localmt-ffi/include \
+            -Iexamples/android-jni-smoke/src/main/cpp \
+            -I"$JAVA_HOME_DIR/include" \
+            -I"$JAVA_HOME_DIR/include/linux" \
+            examples/android-jni-smoke/src/main/cpp/localmt_jni_smoke.cpp \
+            -Ltarget/release \
+            -Wl,-rpath,'$ORIGIN' \
+            -llocalmt_ffi \
+            -o /tmp/liblocalmt_jni_smoke.so
+          test -f /tmp/liblocalmt_jni_smoke.so

@@ -18,7 +18,8 @@ Rust UTF-8 output back to Java UTF-16. It does not rely on JNI modified UTF-8.
 CI also compares the Java language constants against `localmt ffi startup`.
 CI runs the conversion tests against ASCII, Russian, Thai, Japanese,
 Vietnamese, supplementary-plane characters, malformed UTF-16, and malformed
-UTF-8.
+UTF-8. CI also links the JNI bridge against a release `localmt-ffi` artifact on
+the host runner, so missing C ABI symbols fail before device testing.
 
 ## Packaging
 
