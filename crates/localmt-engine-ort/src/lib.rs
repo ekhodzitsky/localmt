@@ -443,6 +443,17 @@ impl OrtGenerationTensorInputs {
         }
     }
 
+    /// { inputs contains stable encoder-side tensors and state contains current decoder ids }
+    /// fn from_generation_state(inputs: &OrtGenerationInputs, state: &OrtGenerationState) -> Self
+    /// { ret preserves encoder tensors and uses the state's current decoder input row }
+    pub fn from_generation_state(inputs: &OrtGenerationInputs, state: &OrtGenerationState) -> Self {
+        Self {
+            encoder_input_ids: OrtI64TensorInput::row(inputs.encoder_input_ids()),
+            encoder_attention_mask: OrtI64TensorInput::row(inputs.encoder_attention_mask()),
+            decoder_input_ids: OrtI64TensorInput::row(state.decoder_input_ids()),
+        }
+    }
+
     /// { true }
     /// fn encoder_input_ids(&self) -> &OrtI64TensorInput
     /// { ret is the encoder token-id tensor payload }
@@ -1591,14 +1602,14 @@ mod tests {
 
     #[cfg(feature = "ort-runtime")]
     use crate::{
-        OrtDecoderIoNames, OrtEncoderIoNames, OrtEngine, OrtEngineSlot, OrtGenerationTensorInputs,
-        OrtTokenGenerator,
+        OrtDecoderIoNames, OrtEncoderIoNames, OrtEngine, OrtEngineSlot, OrtTokenGenerator,
     };
     use crate::{
         OrtDecoderLogits, OrtDecoderLogitsError, OrtEngineError, OrtFloatTensorOutput,
-        OrtGenerationState, OrtGenerationStateError, OrtGenerationStep, OrtGenerationStepError,
-        OrtGeneratorPlan, OrtIoConfig, OrtIoConfigError, OrtIoConfigParseError, OrtModelRole,
-        OrtNextTokenSelectionError, OrtNextTokenSelector, OrtSessionPlan,
+        OrtGenerationInputs, OrtGenerationState, OrtGenerationStateError, OrtGenerationStep,
+        OrtGenerationStepError, OrtGenerationTensorInputs, OrtGeneratorPlan, OrtIoConfig,
+        OrtIoConfigError, OrtIoConfigParseError, OrtModelRole, OrtNextTokenSelectionError,
+        OrtNextTokenSelector, OrtSessionPlan,
     };
     #[cfg(not(feature = "ort-runtime"))]
     use crate::{OrtEngine, OrtTokenGenerator};
@@ -1828,6 +1839,38 @@ mod tests {
             ))
         ));
         assert_eq!(state, before);
+        Ok(())
+    }
+
+    #[test]
+    fn generation_tensor_inputs_from_state_match_initial_inputs() {
+        let inputs = raw_generation_inputs();
+        let state = OrtGenerationState::new(inputs.clone());
+
+        let tensor_inputs = OrtGenerationTensorInputs::from_generation_state(&inputs, &state);
+
+        assert_eq!(tensor_inputs.encoder_input_ids().shape(), [1, 2]);
+        assert_eq!(tensor_inputs.encoder_input_ids().values(), &[7, 8]);
+        assert_eq!(tensor_inputs.encoder_attention_mask().shape(), [1, 2]);
+        assert_eq!(tensor_inputs.encoder_attention_mask().values(), &[1, 1]);
+        assert_eq!(tensor_inputs.decoder_input_ids().shape(), [1, 1]);
+        assert_eq!(tensor_inputs.decoder_input_ids().values(), &[11]);
+    }
+
+    #[test]
+    fn generation_tensor_inputs_from_state_follow_decoder_growth()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let inputs = raw_generation_inputs();
+        let mut state = OrtGenerationState::new(inputs.clone());
+        state.accept_next_token(TokenId::new(21))?;
+        state.accept_next_token(TokenId::new(22))?;
+
+        let tensor_inputs = OrtGenerationTensorInputs::from_generation_state(&inputs, &state);
+
+        assert_eq!(tensor_inputs.encoder_input_ids().values(), &[7, 8]);
+        assert_eq!(tensor_inputs.encoder_attention_mask().values(), &[1, 1]);
+        assert_eq!(tensor_inputs.decoder_input_ids().shape(), [1, 3]);
+        assert_eq!(tensor_inputs.decoder_input_ids().values(), &[11, 21, 22]);
         Ok(())
     }
 
@@ -2412,6 +2455,16 @@ mod tests {
             max_new_tokens,
             eos_token_id: 1,
             finished: false,
+        }
+    }
+
+    fn raw_generation_inputs() -> OrtGenerationInputs {
+        OrtGenerationInputs {
+            encoder_input_ids: vec![7, 8],
+            encoder_attention_mask: vec![1, 1],
+            decoder_input_ids: vec![11],
+            max_new_tokens: 3,
+            eos_token_id: 1,
         }
     }
 }

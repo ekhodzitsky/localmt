@@ -304,6 +304,9 @@ argmax selector before any generator state mutation happens.
 `OrtGenerationStep::accept_decoder_output` applies selected decoder tokens to
 `OrtGenerationState` while preserving distinct logits and state-transition
 errors.
+`OrtGenerationTensorInputs::from_generation_state` rebuilds decoder input
+tensors from the growing state while keeping encoder input ids and attention
+mask anchored to the original generation inputs.
 `OrtNextTokenSelector::select_argmax` handles the first logits-selection policy:
 it rejects empty or non-finite logits, chooses the highest vocabulary index as a
 `TokenId`, and keeps the first index on ties. Repeatedly feeding updated
