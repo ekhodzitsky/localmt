@@ -13,7 +13,10 @@ use localmt_tokenizer::{TokenId, TokenSequence, TokenizerOutput};
 use serde::Deserialize;
 
 const ONNX_RUNTIME: &str = "onnx-runtime";
+#[cfg(not(feature = "ort-runtime"))]
 const GENERATION_LOOP_UNIMPLEMENTED: &str = "ONNX token generation loop is not implemented";
+#[cfg(feature = "ort-runtime")]
+const DECODER_LOOP_UNIMPLEMENTED: &str = "ONNX decoder generation loop is not implemented";
 
 /// Typed ONNX tensor names required by the ORT generation loop.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1187,8 +1190,30 @@ impl OrtTokenGenerator {
     pub const fn decoder_with_past(&self) -> Option<&OrtEngineSlot> {
         self.decoder_with_past.as_ref()
     }
+
+    /// { self was loaded successfully and input contains validated source tokens }
+    /// fn run_encoder_for_input(&self, input: &TokenizerOutput) -> Result<OrtFloatTensorOutput, OrtEngineError>
+    /// { ret is Ok only when the configured encoder session returns last_hidden_state }
+    fn run_encoder_for_input(
+        &self,
+        input: &TokenizerOutput,
+    ) -> Result<OrtFloatTensorOutput, OrtEngineError> {
+        let generation_inputs = OrtGenerationInputs::from_tokenizer_output(
+            input,
+            self.runtime_config.generation_config(),
+        );
+        let tensor_inputs = OrtGenerationTensorInputs::from_generation_inputs(&generation_inputs);
+
+        self.encoder.with_mut(|engine| {
+            engine.run_encoder(
+                self.runtime_config.ort_io_config().encoder(),
+                &tensor_inputs,
+            )
+        })
+    }
 }
 
+#[cfg(not(feature = "ort-runtime"))]
 impl TokenGenerator for OrtTokenGenerator {
     /// { input contains validated source tokens and target language }
     /// fn generate(&self, input: &TokenizerOutput) -> Result<TokenSequence, TokenGeneratorError>
@@ -1196,6 +1221,24 @@ impl TokenGenerator for OrtTokenGenerator {
     fn generate(&self, _input: &TokenizerOutput) -> Result<TokenSequence, TokenGeneratorError> {
         Err(TokenGeneratorError::BackendUnavailable(
             GENERATION_LOOP_UNIMPLEMENTED.to_owned(),
+        ))
+    }
+}
+
+#[cfg(feature = "ort-runtime")]
+impl TokenGenerator for OrtTokenGenerator {
+    /// { input contains validated source tokens and target language }
+    /// fn generate(&self, input: &TokenizerOutput) -> Result<TokenSequence, TokenGeneratorError>
+    /// { ret is Err until ONNX decoder token generation is implemented }
+    fn generate(&self, input: &TokenizerOutput) -> Result<TokenSequence, TokenGeneratorError> {
+        let _encoder_output = self.run_encoder_for_input(input).map_err(|error| {
+            TokenGeneratorError::BackendUnavailable(format!(
+                "ORT encoder execution failed: {error}"
+            ))
+        })?;
+
+        Err(TokenGeneratorError::BackendUnavailable(
+            DECODER_LOOP_UNIMPLEMENTED.to_owned(),
         ))
     }
 }
@@ -1319,6 +1362,8 @@ mod tests {
     use localmt_models::{Discovered, ModelFileRole, ModelPack};
     use localmt_pipeline::TokenGeneratorError;
     use localmt_tokenizer::TokenId;
+    #[cfg(feature = "ort-runtime")]
+    use localmt_tokenizer::TokenizerOutput;
 
     #[cfg(feature = "ort-runtime")]
     use crate::{
@@ -1459,6 +1504,19 @@ mod tests {
         }
 
         let _signature: fn(&OrtTokenGenerator) = assert_signature;
+    }
+
+    #[test]
+    #[ignore = "compile-only signature guard; construction requires real ONNX model assets"]
+    #[cfg(feature = "ort-runtime")]
+    fn token_generator_encoder_stage_accepts_tokenizer_output() {
+        fn assert_signature(generator: &OrtTokenGenerator, input: &TokenizerOutput) {
+            let result: Result<OrtFloatTensorOutput, OrtEngineError> =
+                generator.run_encoder_for_input(input);
+            let _ = result;
+        }
+
+        let _signature: fn(&OrtTokenGenerator, &TokenizerOutput) = assert_signature;
     }
 
     #[test]

@@ -288,6 +288,11 @@ decoder sessions in `OrtEngineSlot`. The slot uses a standard mutex to provide
 mutable ORT session access behind the shared `TokenGenerator::generate(&self)`
 API, so the pipeline trait can stay stable while real session execution is
 wired incrementally.
+With `ort-runtime`, `OrtTokenGenerator::generate` now prepares generation
+inputs, runs the encoder stage, and then stops at the explicit
+`ONNX decoder generation loop is not implemented` boundary. Default builds keep
+the immediate unavailable-backend response because they intentionally do not
+link or load ONNX Runtime.
 `OrtNextTokenSelector::select_argmax` handles the first logits-selection policy:
 it rejects empty or non-finite logits, chooses the highest vocabulary index as a
 `TokenId`, and keeps the first index on ties. Decoder session execution still
