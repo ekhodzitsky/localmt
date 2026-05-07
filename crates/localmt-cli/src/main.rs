@@ -2,6 +2,7 @@ use core::fmt;
 use std::path::Path;
 use std::process::ExitCode;
 use std::ptr;
+use std::time::Instant;
 
 #[cfg(feature = "hf-tokenizers")]
 use localmt::{HfTokenizer, TokenizerEngine, TokenizerInput};
@@ -33,6 +34,7 @@ usage:
   localmt ffi hf-smoke PACK FROM TO TEXT
   localmt ffi ort-smoke PACK
   localmt ffi ort-translate-smoke PACK FROM TO TEXT
+  localmt ffi ort-translate-bench PACK FROM TO TEXT RUNS
   localmt bench --profile xiaomi17 --model-pack PACK
 ";
 
@@ -47,6 +49,7 @@ usage:
   localmt ffi hf-smoke PACK FROM TO TEXT
   localmt ffi ort-smoke PACK
   localmt ffi ort-translate-smoke PACK FROM TO TEXT
+  localmt ffi ort-translate-bench PACK FROM TO TEXT RUNS
 ";
 
 const MODEL_HELP_TEXT: &str = "\
@@ -190,6 +193,7 @@ fn run_ffi(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
         "hf-smoke" => run_ffi_hf_smoke(args),
         "ort-smoke" => run_ffi_ort_smoke(args),
         "ort-translate-smoke" => run_ffi_ort_translate_smoke(args),
+        "ort-translate-bench" => run_ffi_ort_translate_bench(args),
         _ => Err(CliError::UnknownFfiCommand(command)),
     }
 }
@@ -802,6 +806,24 @@ fn run_ffi_ort_translate_smoke(mut args: impl Iterator<Item = String>) -> Result
     ))
 }
 
+/// { args contains FFI ORT translation benchmark command arguments }
+/// fn run_ffi_ort_translate_bench(args: impl Iterator<Item = String>) -> Result<String, CliError>
+/// { ret is Ok only when ORT-backed FFI translation succeeds for every requested run }
+fn run_ffi_ort_translate_bench(args: impl Iterator<Item = String>) -> Result<String, CliError> {
+    let args = OrtTranslateBenchArgs::parse(args)?;
+    let total_start = Instant::now();
+    let path_bytes = args.path.as_bytes();
+    let model_pack_summary_ms = measure_model_pack_summary(path_bytes)?;
+    let source_id = ffi_language_id(args.source)?;
+    let target_id = ffi_language_id(args.target)?;
+    let (translator, open_ms) = open_ort_translator(path_bytes)?;
+    let loop_report = run_ort_translation_bench(&translator, source_id, target_id, &args)?;
+    let report =
+        OrtTranslateBenchReport::new(args.runs, model_pack_summary_ms, open_ms, loop_report);
+
+    Ok(report.format(total_start.elapsed().as_millis()))
+}
+
 /// { args contains one model path argument }
 /// fn run_ffi_runtime_config(args: impl Iterator<Item = String>) -> Result<String, CliError>
 /// { ret is Ok only when strict ORT runtime config is summarized through FFI }
@@ -850,6 +872,250 @@ fn ffi_language_id(language: Language) -> Result<u8, CliError> {
     u8::try_from(id).map_err(|_error| CliError::FfiStatus {
         status: localmt_ffi::LOCALMT_FFI_INVALID_LANGUAGE,
         message: ffi_status_text(localmt_ffi::LOCALMT_FFI_INVALID_LANGUAGE),
+    })
+}
+
+#[derive(Debug)]
+struct OrtTranslateBenchArgs {
+    path: String,
+    source: Language,
+    target: Language,
+    text: String,
+    runs: TranslateBenchRuns,
+}
+
+impl OrtTranslateBenchArgs {
+    /// { args contains ORT translate benchmark CLI arguments }
+    /// fn parse(args: impl Iterator<Item = String>) -> Result<Self, CliError>
+    /// { ret is Ok only when all required arguments are present and no extras exist }
+    fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, CliError> {
+        let path = args.next().ok_or(CliError::MissingArgument("MODEL_PACK"))?;
+        let source = parse_language(args.next(), "FROM")?;
+        let target = parse_language(args.next(), "TO")?;
+        let text = args.next().ok_or(CliError::MissingArgument("TEXT"))?;
+        let runs = TranslateBenchRuns::parse(args.next())?;
+        if args.next().is_some() {
+            return Err(CliError::TooManyArguments);
+        }
+
+        Ok(Self {
+            path,
+            source,
+            target,
+            text,
+            runs,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TranslateBenchRuns(usize);
+
+impl TranslateBenchRuns {
+    const MAX: usize = 100;
+
+    /// { value may be any CLI argument }
+    /// fn parse(value: `Option<String>`) -> Result<Self, CliError>
+    /// { ret is Ok only when value is an integer in 1..=MAX }
+    fn parse(value: Option<String>) -> Result<Self, CliError> {
+        let value = value.ok_or(CliError::MissingArgument("RUNS"))?;
+        let runs = value.parse::<usize>().map_err(|_error| {
+            CliError::InvalidBenchArguments("RUNS must be between 1 and 100".to_owned())
+        })?;
+        if !(1..=Self::MAX).contains(&runs) {
+            return Err(CliError::InvalidBenchArguments(
+                "RUNS must be between 1 and 100".to_owned(),
+            ));
+        }
+
+        Ok(Self(runs))
+    }
+
+    /// { true }
+    /// fn value(self) -> usize
+    /// { ret is the bounded run count }
+    const fn value(self) -> usize {
+        self.0
+    }
+}
+
+struct OrtTranslatorHandle {
+    translator: *mut localmt_ffi::LocalmtFfiOrtTranslator,
+}
+
+impl OrtTranslatorHandle {
+    /// { translator came from localmt_ffi_ort_translator_open }
+    /// fn new(translator: *mut localmt_ffi::LocalmtFfiOrtTranslator) -> Self
+    /// { ret closes translator on drop }
+    const fn new(translator: *mut localmt_ffi::LocalmtFfiOrtTranslator) -> Self {
+        Self { translator }
+    }
+
+    /// { true }
+    /// fn as_ptr(&self) -> *mut localmt_ffi::LocalmtFfiOrtTranslator
+    /// { ret is the raw FFI translator handle }
+    const fn as_ptr(&self) -> *mut localmt_ffi::LocalmtFfiOrtTranslator {
+        self.translator
+    }
+}
+
+impl Drop for OrtTranslatorHandle {
+    fn drop(&mut self) {
+        localmt_ffi::localmt_ffi_ort_translator_close(self.translator);
+    }
+}
+
+struct OrtTranslationBenchLoopReport {
+    first_translate_ms: u128,
+    translate_total_ms: u128,
+    translate_avg_ms: u128,
+    translation: String,
+}
+
+impl OrtTranslationBenchLoopReport {
+    /// { runs.value() > 0 }
+    /// fn new(first_ms: u128, total_ms: u128, runs: TranslateBenchRuns, translation: String) -> Self
+    /// { ret stores total and average timing for a completed translation loop }
+    fn new(first_ms: u128, total_ms: u128, runs: TranslateBenchRuns, translation: String) -> Self {
+        Self {
+            first_translate_ms: first_ms,
+            translate_total_ms: total_ms,
+            translate_avg_ms: total_ms / (runs.value() as u128),
+            translation,
+        }
+    }
+}
+
+struct OrtTranslateBenchReport {
+    runs: TranslateBenchRuns,
+    model_pack_summary_ms: u128,
+    open_ms: u128,
+    loop_report: OrtTranslationBenchLoopReport,
+}
+
+impl OrtTranslateBenchReport {
+    /// { loop_report was produced by the same benchmark run }
+    /// fn new(runs: TranslateBenchRuns, summary_ms: u128, open_ms: u128, loop_report: OrtTranslationBenchLoopReport) -> Self
+    /// { ret contains every measured benchmark phase except final total time }
+    const fn new(
+        runs: TranslateBenchRuns,
+        summary_ms: u128,
+        open_ms: u128,
+        loop_report: OrtTranslationBenchLoopReport,
+    ) -> Self {
+        Self {
+            runs,
+            model_pack_summary_ms: summary_ms,
+            open_ms,
+            loop_report,
+        }
+    }
+
+    /// { total_ms covers the command duration that produced self }
+    /// fn format(&self, total_ms: u128) -> String
+    /// { ret is a stable line-oriented benchmark report }
+    fn format(&self, total_ms: u128) -> String {
+        let loop_report = &self.loop_report;
+        format!(
+            "ffi_abi: {}\nmodel_pack_summary: ok\nort_translator_open: ok\nort_translate_bench: ok\nruns: {}\nmodel_pack_summary_ms: {}\nort_translator_open_ms: {}\nfirst_translate_ms: {}\ntranslate_total_ms: {}\ntranslate_avg_ms: {}\ntotal_ms: {total_ms}\ntranslation: {}",
+            localmt_ffi::localmt_ffi_abi_version(),
+            self.runs.value(),
+            self.model_pack_summary_ms,
+            self.open_ms,
+            loop_report.first_translate_ms,
+            loop_report.translate_total_ms,
+            loop_report.translate_avg_ms,
+            loop_report.translation
+        )
+    }
+}
+
+/// { path_bytes points to a UTF-8 model-pack path }
+/// fn measure_model_pack_summary(path_bytes: &[u8]) -> Result<u128, CliError>
+/// { ret is Ok with elapsed milliseconds only when FFI pack summary succeeds }
+fn measure_model_pack_summary(path_bytes: &[u8]) -> Result<u128, CliError> {
+    let summary_start = Instant::now();
+    let _summary = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_model_pack_summary(
+            path_bytes.as_ptr(),
+            path_bytes.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
+    })?;
+
+    Ok(summary_start.elapsed().as_millis())
+}
+
+/// { path_bytes points to a UTF-8 model-pack path }
+/// fn open_ort_translator(path_bytes: &[u8]) -> Result<(OrtTranslatorHandle, u128), CliError>
+/// { ret is Ok only when the ORT translator opens and is owned by an RAII handle }
+fn open_ort_translator(path_bytes: &[u8]) -> Result<(OrtTranslatorHandle, u128), CliError> {
+    let open_start = Instant::now();
+    let mut translator: *mut localmt_ffi::LocalmtFfiOrtTranslator = ptr::null_mut();
+    ffi_ok(localmt_ffi::localmt_ffi_ort_translator_open(
+        path_bytes.as_ptr(),
+        path_bytes.len(),
+        &mut translator,
+    ))?;
+
+    Ok((
+        OrtTranslatorHandle::new(translator),
+        open_start.elapsed().as_millis(),
+    ))
+}
+
+/// { translator is open and args.runs.value() > 0 }
+/// fn run_ort_translation_bench(translator: &OrtTranslatorHandle, source_id: u8, target_id: u8, args: &OrtTranslateBenchArgs) -> Result<OrtTranslationBenchLoopReport, CliError>
+/// { ret is Ok only when every FFI translation run succeeds and returns UTF-8 }
+fn run_ort_translation_bench(
+    translator: &OrtTranslatorHandle,
+    source_id: u8,
+    target_id: u8,
+    args: &OrtTranslateBenchArgs,
+) -> Result<OrtTranslationBenchLoopReport, CliError> {
+    let input = args.text.as_bytes();
+    let mut first_ms = 0_u128;
+    let translate_start = Instant::now();
+    let mut translation = String::new();
+    for index in 0..args.runs.value() {
+        let run_start = Instant::now();
+        let bytes = translate_with_ort_handle(translator, source_id, target_id, input)?;
+        if index == 0 {
+            first_ms = run_start.elapsed().as_millis();
+        }
+        translation = String::from_utf8(bytes).map_err(CliError::FfiOutputUtf8)?;
+    }
+
+    Ok(OrtTranslationBenchLoopReport::new(
+        first_ms,
+        translate_start.elapsed().as_millis(),
+        args.runs,
+        translation,
+    ))
+}
+
+/// { translator is open and input points to UTF-8 source text }
+/// fn translate_with_ort_handle(translator: &OrtTranslatorHandle, source_id: u8, target_id: u8, input: &[u8]) -> Result<Vec<u8>, CliError>
+/// { ret contains the FFI output bytes for one successful translation call }
+fn translate_with_ort_handle(
+    translator: &OrtTranslatorHandle,
+    source_id: u8,
+    target_id: u8,
+    input: &[u8],
+) -> Result<Vec<u8>, CliError> {
+    ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_ort_translate(
+            translator.as_ptr(),
+            source_id,
+            target_id,
+            input.as_ptr(),
+            input.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
     })
 }
 
@@ -1608,6 +1874,7 @@ mod tests {
         assert!(output.contains("localmt ffi hf-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-smoke PACK"));
         assert!(output.contains("localmt ffi ort-translate-smoke PACK FROM TO TEXT"));
+        assert!(output.contains("localmt ffi ort-translate-bench PACK FROM TO TEXT RUNS"));
         assert!(output.contains("localmt bench --profile xiaomi17 --model-pack PACK"));
         Ok(())
     }
@@ -1625,6 +1892,53 @@ mod tests {
         assert!(output.contains("localmt ffi hf-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-smoke PACK"));
         assert!(output.contains("localmt ffi ort-translate-smoke PACK FROM TO TEXT"));
+        assert!(output.contains("localmt ffi ort-translate-bench PACK FROM TO TEXT RUNS"));
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(not(feature = "hf-tokenizers"))]
+    fn cli_ffi_ort_translate_bench_reports_tokenizer_disabled_after_pack_planning()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_runtime_config_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "ffi".to_owned(),
+            "ort-translate-bench".to_owned(),
+            root.display().to_string(),
+            "en".to_owned(),
+            "ru".to_owned(),
+            "hello offline".to_owned(),
+            "3".to_owned(),
+        ];
+
+        let result = run(args.into_iter());
+
+        assert!(
+            matches!(result, Err(ref error) if error.to_string().contains("tokenizer disabled"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cli_ffi_ort_translate_bench_rejects_empty_runs() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_runtime_config_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "ffi".to_owned(),
+            "ort-translate-bench".to_owned(),
+            root.display().to_string(),
+            "en".to_owned(),
+            "ru".to_owned(),
+            "hello offline".to_owned(),
+            "0".to_owned(),
+        ];
+
+        let result = run(args.into_iter());
+
+        assert!(
+            matches!(result, Err(ref error) if error.to_string().contains("RUNS must be between 1 and 100"))
+        );
         Ok(())
     }
 

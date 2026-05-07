@@ -216,6 +216,7 @@ cargo run -p localmt -- ffi smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke <pack-dir> en ru "hello offline"
 cargo run -p localmt --features ort-runtime -- ffi ort-smoke <pack-dir>
 cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-smoke <pack-dir> en ru "hello offline"
+cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-bench <pack-dir> en ru "hello offline" 3
 ```
 
 `localmt ffi smoke` exercises the same default C ABI flow described above on the
@@ -238,6 +239,8 @@ through the same host-side FFI helpers; it requires `hf-tokenizers`, verifies
 requires `ort-runtime`, attempts session loading, and does not run translation.
 `localmt ffi ort-translate-smoke` exercises the full ORT translator FFI handle;
 it requires `hf-tokenizers` plus `ort-runtime` for real translation.
+`localmt ffi ort-translate-bench` keeps that ORT translator handle open and
+reports bounded repeated-translation timing phases for performance baselines.
 
 ## Verification
 

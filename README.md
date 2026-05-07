@@ -80,6 +80,7 @@ localmt model tokenize ./models/m2m100-418m-int8 en ru "hello offline"
 localmt ffi startup
 localmt ffi header
 localmt ffi runtime-config ./models/m2m100-418m-int8
+localmt ffi ort-translate-bench ./models/m2m100-418m-int8 en ru "hello offline" 3
 localmt bench --help
 ```
 
@@ -155,6 +156,7 @@ cargo run -p localmt -- ffi smoke ./models/m2m100-418m-int8 en ru "hello offline
 cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke ./models/m2m100-418m-int8 en ru "hello offline"
 cargo run -p localmt --features ort-runtime -- ffi ort-smoke ./models/m2m100-418m-int8
 cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-smoke ./models/m2m100-418m-int8 en ru "hello offline"
+cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-bench ./models/m2m100-418m-int8 en ru "hello offline" 3
 ```
 
 `localmt ffi startup` prints the Android-visible startup contract through the
@@ -179,6 +181,10 @@ translation.
 mobile adapters: it opens `LocalmtFfiOrtTranslator` and calls
 `localmt_ffi_ort_translate` through the same output-buffer ABI that JNI will
 use.
+`localmt ffi ort-translate-bench` keeps the same translator handle open across
+bounded repeated translations and reports phase timings for model-pack summary,
+ORT translator open, first translation, total translation time, average
+translation time, and total command time.
 
 ## Android FFI Boundary
 
@@ -438,12 +444,14 @@ this schema and then run the same token-role validation.
 
 ## Benchmark Skeleton
 
-The current benchmark command verifies a model pack, then runs 10 fixed language
-pair scenarios through `TranslationPipeline<MockTokenizer, MockTokenGenerator>`.
-It is intentionally labeled `runtime: mock-pipeline`; real ONNX latency and
-memory metrics will be added with an ONNX-backed `TokenGenerator`. The first
-profile is `xiaomi17`, with Android ABI `arm64-v8a`, 12 GiB RAM class, and
-preferred runtime hint `onnx-runtime-mobile-xnnpack`.
+The top-level benchmark command verifies a model pack, then runs 10 fixed
+language pair scenarios through `TranslationPipeline<MockTokenizer,
+MockTokenGenerator>`. It is intentionally labeled `runtime: mock-pipeline`.
+Real ORT latency measurement lives in `localmt ffi ort-translate-bench`, which
+uses the same FFI translator path as Android adapters and keeps one translator
+handle warm across repeated runs. The first profile is `xiaomi17`, with Android
+ABI `arm64-v8a`, 12 GiB RAM class, and preferred runtime hint
+`onnx-runtime-mobile-xnnpack`.
 
 ```bash
 localmt bench --profile xiaomi17 --model-pack ./models/m2m100-418m-int8
