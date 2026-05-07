@@ -36,6 +36,12 @@ The C ABI header is checked in at
 `crates/localmt-ffi/include/localmt_ffi.h`; the development CLI can also print
 the same header with `cargo run -p localmt -- ffi header`.
 
+## Release Profile
+
+Workspace release builds use ThinLTO, one codegen unit, `panic = "abort"`, and
+debug-info stripping. This keeps Android artifacts optimized without stripping
+the dynamic symbols the C ABI depends on.
+
 ## Feature Flags
 
 Default builds are intentionally conservative:

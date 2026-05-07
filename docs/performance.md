@@ -27,11 +27,17 @@ Model pack:
 Observed on the macOS development machine:
 
 ```text
+ffi_abi: 13
+model_pack_summary: ok
+ort_translator_open: ok
+ort_translate_bench: ok
+runs: 3
 model_pack_summary_ms: 1
-ort_translator_open_ms: 11171
-first_translate_ms: 783
-translate_total_ms: 1698
-translate_avg_ms: 566
+ort_translator_open_ms: 12426
+first_translate_ms: 1117
+translate_total_ms: 2152
+translate_avg_ms: 717
+total_ms: 14580
 translation: Привет, мир.
 ```
 

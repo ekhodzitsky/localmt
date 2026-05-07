@@ -30,6 +30,12 @@ todo = "deny"
 unimplemented = "deny"
 unwrap_used = "deny"
 
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+strip = "debuginfo"
+
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
