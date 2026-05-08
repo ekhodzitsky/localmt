@@ -34,6 +34,20 @@ It builds `localmt-ffi` for `arm64-v8a` with `hf-tokenizers` and `ort-runtime`,
 writes `examples/android-jni-smoke/src/main/jniLibs/arm64-v8a/liblocalmt_ffi.so`,
 and checks the exported ABI and ORT translator symbols with `llvm-nm`.
 
+To stage the native artifacts on a connected Android device before wiring a
+full app shell, run:
+
+```bash
+scripts/android-device-preflight.sh \
+  --ort-runtime /path/to/libonnxruntime.so \
+  --model-pack /path/to/model-pack
+```
+
+The preflight checks `adb`, waits for a device, verifies `arm64-v8a`, prints
+device metadata, then pushes `liblocalmt_ffi.so`, optional `libonnxruntime.so`,
+and an optional model pack under `/data/local/tmp/localmt-smoke`.
+Use `--device <serial>` when more than one device is attached.
+
 This writes the JNI library under:
 
 ```text

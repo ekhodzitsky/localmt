@@ -38,6 +38,11 @@ examples/android-jni-smoke/src/main/jniLibs/arm64-v8a/liblocalmt_ffi.so
 Your Android app must also package the matching ONNX Runtime Mobile
 `libonnxruntime.so` beside `liblocalmt_ffi.so`.
 
+Before an app shell exists, `scripts/android-device-preflight.sh` can stage the
+native artifacts and an optional model pack on a connected `arm64-v8a` device
+under `/data/local/tmp/localmt-smoke`. It requires `adb`; pass `--device` when
+more than one device is attached.
+
 ## App Integration
 
 Point the Android module's external native build at this `CMakeLists.txt`, or

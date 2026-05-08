@@ -43,6 +43,7 @@ jobs:
       - name: Android JNI smoke syntax
         run: |
           bash -n scripts/package-android-ffi.sh
+          bash -n scripts/android-device-preflight.sh
           JAVA_HOME_DIR="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
           c++ -std=c++17 -fsyntax-only \
             -Icrates/localmt-ffi/include \
