@@ -9,7 +9,9 @@ FFI, and Android foundations.
 - [x] Add Hy-MT GGUF model-pack roles and validation.
 - [x] Add a sample Hy-MT model-pack manifest without committing model weights.
 - [x] Add `localmt model doctor` coverage for GGUF model packs.
-- [ ] Create `localmt-engine-llama` as a feature-gated backend crate.
+- [x] Create `localmt-engine-llama` as a feature-gated backend crate.
+- [x] Add Rust-owned HY-MT prompt formatting for llama.cpp completion.
+- [x] Add typed llama runtime config parsing without native loading.
 - [ ] Decide the llama.cpp integration boundary: dynamic library, static build,
       or vendored source build.
 - [ ] Add host CLI smoke command:

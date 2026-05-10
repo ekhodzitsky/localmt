@@ -10,6 +10,7 @@ version.workspace = true
 localmt-bench = { path = "../localmt-bench" }
 localmt-core = { path = "../localmt-core" }
 localmt-engine = { path = "../localmt-engine" }
+localmt-engine-llama = { path = "../localmt-engine-llama" }
 localmt-engine-ort = { path = "../localmt-engine-ort" }
 localmt-models = { path = "../localmt-models" }
 localmt-pipeline = { path = "../localmt-pipeline" }
@@ -18,6 +19,7 @@ localmt-tokenizer = { path = "../localmt-tokenizer" }
 [features]
 default = []
 hf-tokenizers = ["localmt-tokenizer/hf-tokenizers"]
+llama-runtime = ["localmt-engine-llama/llama-runtime"]
 ort-runtime = ["localmt-engine-ort/ort-runtime"]
 
 [lints]

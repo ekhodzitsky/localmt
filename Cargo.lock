@@ -315,6 +315,7 @@ dependencies = [
  "localmt-bench",
  "localmt-core",
  "localmt-engine",
+ "localmt-engine-llama",
  "localmt-engine-ort",
  "localmt-models",
  "localmt-pipeline",
@@ -351,6 +352,17 @@ name = "localmt-engine"
 version = "0.1.0"
 dependencies = [
  "localmt-core",
+]
+
+[[package]]
+name = "localmt-engine-llama"
+version = "0.1.0"
+dependencies = [
+ "localmt-core",
+ "localmt-engine",
+ "localmt-models",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

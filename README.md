@@ -132,6 +132,9 @@ Android app  ->  localmt-models   ->  llama.cpp / GGUF
   shells are thin adapters around the Rust API.
 - **Feature-gated backends** - default builds compile in milliseconds with mock
   engines; enable backend features for real inference.
+- **Rust-owned llama boundary** - `localmt-engine-llama` owns Hy-MT prompt
+  formatting, GGUF asset planning, and runtime config before native llama.cpp
+  loading is wired in.
 - **Pointer-free C ABI** - null-safe FFI handles, explicit buffer contracts, and
   no undefined behaviour across the JNI boundary.
 

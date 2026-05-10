@@ -8,6 +8,7 @@ and model-pack format in detail. For the quick-start guide, see the project
 
 - `crates/localmt-core` - language, text, request, and invariant types
 - `crates/localmt-engine` - engine trait and mock engine
+- `crates/localmt-engine-llama` - llama.cpp/GGUF planning, prompt formatting, and runtime config
 - `crates/localmt-engine-ort` - ONNX Runtime planning, mobile session tuning, and generation
 - `crates/localmt-models` - model-pack manifest parsing and checksum verification
 - `crates/localmt-pipeline` - tokenizer/generator translation pipeline skeleton
@@ -111,6 +112,22 @@ GGUF model-pack validation and reports the verified GGUF, chat-template, and
 runtime-config asset readiness without loading llama.cpp.
 
 ## Facade Planning
+
+`GgufModelAssetPlan` is the verified model-pack bridge for `runtime:
+"llama.cpp"` packs. `localmt-engine-llama` consumes that plan as
+`LlamaModelPlan`, preserving the root-qualified GGUF path plus optional
+chat-template and runtime-config paths. `LlamaTranslationPrompt` owns the
+HY-MT segment prompt:
+
+```text
+Translate the following segment into {target_language}, without additional explanation.
+
+{source_text}
+```
+
+`LlamaRuntimeConfig` currently parses local JSON config for context size, CPU
+threads, and temperature. `LlamaTranslator::load` intentionally reports a
+disabled runtime until the native llama.cpp boundary is implemented.
 
 `OfflineTranslatorPlan::from_pack(&verified_pack)` is the SDK-level bridge from
 a verified model pack to the assets needed by a future offline translator. It

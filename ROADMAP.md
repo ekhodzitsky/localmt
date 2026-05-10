@@ -50,11 +50,13 @@ Exit criteria:
 Goal: add a feature-gated runtime backend without leaking llama.cpp types into
 the public facade.
 
-- Add `localmt-engine-llama` as an adapter crate.
+- Add `localmt-engine-llama` as an adapter crate. Completed.
+- Encode translation as prompt-completion using the HY-MT prompt template.
+  Completed at the prompt-boundary layer.
+- Expose backend config through typed localmt-owned structs. Completed for
+  no-runtime config parsing.
 - Bind to llama.cpp through a narrow Rust-owned interface.
 - Support CPU-only `arm64-v8a` execution first.
-- Encode translation as prompt-completion using the HY-MT prompt template.
-- Expose backend config through typed localmt-owned structs.
 
 Exit criteria:
 

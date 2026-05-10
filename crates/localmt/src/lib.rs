@@ -9,6 +9,9 @@ pub use localmt_core::{
     TextError, TranslateRequest, Translation,
 };
 pub use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
+pub use localmt_engine_llama::{
+    LlamaEngineError, LlamaModelPlan, LlamaRuntimeConfig, LlamaTranslationPrompt, LlamaTranslator,
+};
 pub use localmt_engine_ort::{
     OrtDecoderLogits, OrtDecoderLogitsError, OrtEngine, OrtEngineError, OrtFloatTensorOutput,
     OrtGenerationInputs, OrtGenerationLoop, OrtGenerationLoopError, OrtGenerationState,

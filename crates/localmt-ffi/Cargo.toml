@@ -15,6 +15,7 @@ localmt = { path = "../localmt" }
 [features]
 default = []
 hf-tokenizers = ["localmt/hf-tokenizers"]
+llama-runtime = ["localmt/llama-runtime"]
 ort-runtime = ["localmt/ort-runtime"]
 
 [lints.rust]
