@@ -135,6 +135,10 @@ The Android-facing FFI exposes the same readiness path through
 `localmt ffi gguf-translate-smoke PACK FROM TO TEXT`; it validates the pack,
 builds the stable HY-MT prompt, and reports `runtime disabled` until native
 loading is available.
+The llama.cpp integration boundary is a dynamic library path configured either
+through `localmt_ffi_llama_runtime_configure()` or the
+`LLAMA_CPP_DYLIB_PATH` environment variable. Missing, relative, or non-file
+paths map to `LOCALMT_FFI_RUNTIME_NOT_CONFIGURED` before native loading starts.
 
 `OfflineTranslatorPlan::from_pack(&verified_pack)` is the SDK-level bridge from
 a verified model pack to the assets needed by a future offline translator. It

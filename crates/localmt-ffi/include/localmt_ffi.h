@@ -253,6 +253,20 @@ uint8_t localmt_ffi_hf_tokenizer_enabled(void);
 uint8_t localmt_ffi_llama_runtime_enabled(void);
 
 /*
+ * Configures the absolute llama.cpp dynamic-library path for llama-enabled
+ * builds. Call this before opening a llama translator when the app wants to
+ * pass its nativeLibraryDir/libllama.so path through the C ABI instead of
+ * relying on LLAMA_CPP_DYLIB_PATH.
+ *
+ * Default builds return LOCALMT_FFI_RUNTIME_DISABLED. llama-runtime builds
+ * return LOCALMT_FFI_RUNTIME_NOT_CONFIGURED when the path is missing, relative,
+ * or not a file.
+ */
+int32_t localmt_ffi_llama_runtime_configure(
+    const uint8_t *path_ptr,
+    size_t path_len);
+
+/*
  * Opens a verified local model pack and constructs the deterministic mock
  * translator used for Android/JNI smoke checks before real inference exists.
  *

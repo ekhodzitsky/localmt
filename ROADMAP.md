@@ -58,6 +58,9 @@ the public facade.
 - Expose GGUF readiness through the Android-facing FFI ABI. Completed with
   `localmt ffi gguf-translate-smoke`, which validates the pack, prompt, and
   open path before native loading exists.
+- Use dynamic llama.cpp loading as the integration boundary. Completed at the
+  configuration-contract layer through `localmt_ffi_llama_runtime_configure`
+  and `LLAMA_CPP_DYLIB_PATH`.
 - Bind to llama.cpp through a narrow Rust-owned interface.
 - Support CPU-only `arm64-v8a` execution first.
 

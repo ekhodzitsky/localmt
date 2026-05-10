@@ -2,6 +2,8 @@
 
 use std::{ptr, slice, str};
 
+#[cfg(feature = "llama-runtime")]
+use localmt::configure_llama_cpp_dylib_path;
 #[cfg(feature = "ort-runtime")]
 use localmt::configure_ort_dylib_path;
 use localmt::{
@@ -846,6 +848,30 @@ pub extern "C" fn localmt_ffi_llama_runtime_enabled() -> u8 {
     u8::from(cfg!(feature = "llama-runtime"))
 }
 
+/// { path_ptr points to path_len readable bytes }
+/// fn localmt_ffi_llama_runtime_configure(path_ptr: *const u8, path_len: usize) -> i32
+/// { ret is OK only when llama.cpp runtime can use path as its explicit dylib path }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+pub extern "C" fn localmt_ffi_llama_runtime_configure(path_ptr: *const u8, path_len: usize) -> i32 {
+    let path = match read_ffi_utf8(path_ptr, path_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+
+    #[cfg(not(feature = "llama-runtime"))]
+    {
+        let _ = path;
+        LOCALMT_FFI_RUNTIME_DISABLED
+    }
+
+    #[cfg(feature = "llama-runtime")]
+    {
+        configure_llama_cpp_dylib_path(path)
+            .map(|()| LOCALMT_FFI_OK)
+            .unwrap_or_else(ffi_llama_engine_error_status)
+    }
+}
+
 /// { path_ptr points to path_len readable bytes and out_translator is writable }
 /// fn localmt_ffi_llama_translator_open(path_ptr: *const u8, path_len: usize, out_translator: *mut *mut LocalmtFfiLlamaTranslator) -> i32
 /// { ret is OK only when out_translator receives an owned non-null llama translator handle }
@@ -990,6 +1016,8 @@ pub extern "C" fn localmt_ffi_llama_translate(
 fn ffi_llama_engine_error_status(error: LlamaEngineError) -> i32 {
     match error {
         LlamaEngineError::RuntimeDisabled => LOCALMT_FFI_RUNTIME_DISABLED,
+        LlamaEngineError::MissingLlamaDylibPath
+        | LlamaEngineError::InvalidLlamaDylibPath { .. } => LOCALMT_FFI_RUNTIME_NOT_CONFIGURED,
         LlamaEngineError::ReadRuntimeConfig { .. }
         | LlamaEngineError::ParseRuntimeConfig { .. }
         | LlamaEngineError::InvalidRuntimeConfig { .. } => LOCALMT_FFI_MODEL_PACK_ERROR,
@@ -1416,20 +1444,20 @@ mod tests {
         localmt_ffi_hf_mock_translate, localmt_ffi_hf_mock_translator_close,
         localmt_ffi_hf_mock_translator_open, localmt_ffi_hf_tokenizer_close,
         localmt_ffi_hf_tokenizer_enabled, localmt_ffi_hf_tokenizer_open, localmt_ffi_language_code,
-        localmt_ffi_language_from_iso_639_1, localmt_ffi_llama_runtime_enabled,
-        localmt_ffi_llama_translate, localmt_ffi_llama_translator_close,
-        localmt_ffi_llama_translator_open, localmt_ffi_max_text_chars, localmt_ffi_mock_translate,
-        localmt_ffi_mock_translator_close, localmt_ffi_mock_translator_open,
-        localmt_ffi_model_pack_summary, localmt_ffi_model_pack_trust,
-        localmt_ffi_model_pack_trust_schema_version, localmt_ffi_model_pack_trusted_summary,
-        localmt_ffi_ort_generator_open, localmt_ffi_ort_runtime_configure,
-        localmt_ffi_ort_runtime_enabled, localmt_ffi_ort_translate,
-        localmt_ffi_ort_translator_close, localmt_ffi_ort_translator_open,
-        localmt_ffi_ort_translator_open_trusted, localmt_ffi_runtime_config_summary,
-        localmt_ffi_startup_summary, localmt_ffi_status_message,
-        localmt_ffi_supported_language_count, localmt_ffi_validate_language_pair,
-        localmt_ffi_xiaomi17_android_abi_code, localmt_ffi_xiaomi17_preferred_runtime_code,
-        localmt_ffi_xiaomi17_ram_class_gib,
+        localmt_ffi_language_from_iso_639_1, localmt_ffi_llama_runtime_configure,
+        localmt_ffi_llama_runtime_enabled, localmt_ffi_llama_translate,
+        localmt_ffi_llama_translator_close, localmt_ffi_llama_translator_open,
+        localmt_ffi_max_text_chars, localmt_ffi_mock_translate, localmt_ffi_mock_translator_close,
+        localmt_ffi_mock_translator_open, localmt_ffi_model_pack_summary,
+        localmt_ffi_model_pack_trust, localmt_ffi_model_pack_trust_schema_version,
+        localmt_ffi_model_pack_trusted_summary, localmt_ffi_ort_generator_open,
+        localmt_ffi_ort_runtime_configure, localmt_ffi_ort_runtime_enabled,
+        localmt_ffi_ort_translate, localmt_ffi_ort_translator_close,
+        localmt_ffi_ort_translator_open, localmt_ffi_ort_translator_open_trusted,
+        localmt_ffi_runtime_config_summary, localmt_ffi_startup_summary,
+        localmt_ffi_status_message, localmt_ffi_supported_language_count,
+        localmt_ffi_validate_language_pair, localmt_ffi_xiaomi17_android_abi_code,
+        localmt_ffi_xiaomi17_preferred_runtime_code, localmt_ffi_xiaomi17_ram_class_gib,
     };
     use localmt::Sha256Digest;
 
@@ -2144,15 +2172,45 @@ mod tests {
     }
 
     #[test]
+    fn ffi_llama_runtime_configure_rejects_nulls_and_invalid_utf8() {
+        let path = "/tmp/libllama.so";
+
+        assert_eq!(
+            localmt_ffi_llama_runtime_configure(ptr::null(), path.len()),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_llama_runtime_configure([0xff].as_ptr(), 1),
+            LOCALMT_FFI_INVALID_UTF8
+        );
+    }
+
+    #[test]
+    fn ffi_llama_runtime_configure_reports_runtime_status_for_missing_path() {
+        let path = "/tmp/localmt-missing-libllama.so";
+        let status = localmt_ffi_llama_runtime_configure(path.as_ptr(), path.len());
+
+        #[cfg(feature = "llama-runtime")]
+        assert_eq!(status, LOCALMT_FFI_RUNTIME_NOT_CONFIGURED);
+        #[cfg(not(feature = "llama-runtime"))]
+        assert_eq!(status, LOCALMT_FFI_RUNTIME_DISABLED);
+    }
+
+    #[test]
     fn ffi_llama_translator_open_reports_runtime_disabled_after_pack_planning()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = create_gguf_pack()?;
         let path = path_bytes(&root)?;
         let mut translator: *mut LocalmtFfiLlamaTranslator = ptr::null_mut();
+        let expected = if cfg!(feature = "llama-runtime") {
+            LOCALMT_FFI_RUNTIME_NOT_CONFIGURED
+        } else {
+            LOCALMT_FFI_RUNTIME_DISABLED
+        };
 
         assert_eq!(
             localmt_ffi_llama_translator_open(path.as_ptr(), path.len(), &mut translator),
-            LOCALMT_FFI_RUNTIME_DISABLED
+            expected
         );
         assert!(translator.is_null());
 

@@ -914,7 +914,10 @@ fn run_ffi_gguf_translate_smoke(
         path_bytes.len(),
         &mut translator,
     );
-    if status == localmt_ffi::LOCALMT_FFI_RUNTIME_DISABLED {
+    if matches!(
+        status,
+        localmt_ffi::LOCALMT_FFI_RUNTIME_DISABLED | localmt_ffi::LOCALMT_FFI_RUNTIME_NOT_CONFIGURED
+    ) {
         return Ok(format!(
             "ffi_abi: {}\ngguf_model_pack_summary: ok\nllama_runtime_enabled: {}\nllama_prompt: ok\nprompt_bytes: {}\nllama_translator_open: {}",
             localmt_ffi::localmt_ffi_abi_version(),
@@ -1875,7 +1878,10 @@ mod tests {
         assert!(output.contains("llama_runtime_enabled:"));
         assert!(output.contains("llama_prompt: ok"));
         assert!(output.contains("prompt_bytes:"));
+        #[cfg(not(feature = "llama-runtime"))]
         assert!(output.contains("llama_translator_open: runtime disabled"));
+        #[cfg(feature = "llama-runtime")]
+        assert!(output.contains("llama_translator_open: runtime not configured"));
         Ok(())
     }
 
@@ -1903,6 +1909,7 @@ mod tests {
         assert!(output.contains("int32_t localmt_ffi_runtime_config_summary("));
         assert!(output.contains("int32_t localmt_ffi_mock_translate("));
         assert!(output.contains("uint8_t localmt_ffi_llama_runtime_enabled(void);"));
+        assert!(output.contains("int32_t localmt_ffi_llama_runtime_configure("));
         assert!(output.contains("int32_t localmt_ffi_llama_translator_open("));
         assert!(output.contains("int32_t localmt_ffi_llama_translate("));
         assert!(output.contains("int32_t localmt_ffi_ort_generator_open("));

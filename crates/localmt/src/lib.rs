@@ -9,6 +9,8 @@ pub use localmt_core::{
     TextError, TranslateRequest, Translation,
 };
 pub use localmt_engine::{MockEngine, TranslationError, TranslatorEngine};
+#[cfg(feature = "llama-runtime")]
+pub use localmt_engine_llama::configure_llama_cpp_dylib_path;
 pub use localmt_engine_llama::{
     LlamaEngineError, LlamaModelPlan, LlamaRuntimeConfig, LlamaTranslationPrompt, LlamaTranslator,
 };

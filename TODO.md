@@ -14,8 +14,9 @@ FFI, and Android foundations.
 - [x] Add typed llama runtime config parsing without native loading.
 - [x] Add host CLI/FFI readiness command:
       `localmt ffi gguf-translate-smoke ./models/hymt-1.25bit en ru "hello"`.
-- [ ] Decide the llama.cpp integration boundary: dynamic library, static build,
+- [x] Decide the llama.cpp integration boundary: dynamic library, static build,
       or vendored source build.
+- [x] Add FFI configuration for the llama.cpp dynamic library path.
 - [ ] Implement native llama.cpp loading behind the existing GGUF FFI handle.
 
 ## Android

@@ -1,8 +1,12 @@
 //! llama.cpp / GGUF adapter boundary for localmt.
 
 use core::{fmt, num::NonZeroUsize};
+#[cfg(feature = "llama-runtime")]
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "llama-runtime")]
+use std::sync::OnceLock;
 
 use localmt_core::{Language, TranslateRequest, Translation};
 use localmt_engine::{TranslationError, TranslatorEngine};
@@ -13,6 +17,9 @@ const DEFAULT_CONTEXT_TOKENS: usize = 2048;
 const DEFAULT_CPU_THREADS: usize = 1;
 const DEFAULT_TEMPERATURE: f32 = 0.0;
 const DISABLED_RUNTIME: &str = "llama.cpp runtime is not enabled";
+const LLAMA_CPP_DYLIB_PATH_ENV: &str = "LLAMA_CPP_DYLIB_PATH";
+#[cfg(feature = "llama-runtime")]
+static LLAMA_CPP_DYLIB_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
 /// Verified llama.cpp model-load plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -186,8 +193,19 @@ impl LlamaTranslator {
     /// { plan was built from verified GGUF assets }
     /// fn load(plan: LlamaModelPlan) -> Result<Self, LlamaEngineError>
     /// { ret is Ok only when the llama runtime feature can load the model }
-    pub fn load(_plan: LlamaModelPlan) -> Result<Self, LlamaEngineError> {
-        Err(LlamaEngineError::RuntimeDisabled)
+    pub fn load(plan: LlamaModelPlan) -> Result<Self, LlamaEngineError> {
+        #[cfg(not(feature = "llama-runtime"))]
+        {
+            let _plan = plan;
+            Err(LlamaEngineError::RuntimeDisabled)
+        }
+
+        #[cfg(feature = "llama-runtime")]
+        {
+            let _plan = plan;
+            let _dylib_path = resolve_llama_cpp_dylib_path()?;
+            Err(LlamaEngineError::RuntimeDisabled)
+        }
     }
 
     /// { true }
@@ -212,6 +230,15 @@ impl TranslatorEngine for LlamaTranslator {
 pub enum LlamaEngineError {
     /// Runtime feature or native backend is not available in this build.
     RuntimeDisabled,
+    /// Dynamic llama.cpp loading requires an explicit dylib path.
+    MissingLlamaDylibPath,
+    /// Dynamic llama.cpp dylib path is not usable.
+    InvalidLlamaDylibPath {
+        /// Path configured through LLAMA_CPP_DYLIB_PATH.
+        path: PathBuf,
+        /// Stable validation reason.
+        reason: String,
+    },
     /// Runtime-config JSON could not be read.
     ReadRuntimeConfig {
         /// Config path.
@@ -237,6 +264,17 @@ impl fmt::Display for LlamaEngineError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::RuntimeDisabled => formatter.write_str(DISABLED_RUNTIME),
+            Self::MissingLlamaDylibPath => {
+                write!(
+                    formatter,
+                    "{LLAMA_CPP_DYLIB_PATH_ENV} must point to a llama.cpp dynamic library"
+                )
+            }
+            Self::InvalidLlamaDylibPath { path, reason } => write!(
+                formatter,
+                "{LLAMA_CPP_DYLIB_PATH_ENV} {} is invalid: {reason}",
+                path.display()
+            ),
             Self::ReadRuntimeConfig { path, reason } => {
                 write!(
                     formatter,
@@ -255,6 +293,29 @@ impl fmt::Display for LlamaEngineError {
 }
 
 impl std::error::Error for LlamaEngineError {}
+
+/// { path is a candidate llama.cpp dynamic library path }
+/// `fn configure_llama_cpp_dylib_path(path: impl Into<PathBuf>) -> Result<(), LlamaEngineError>`
+/// { ret is Ok only when future llama.cpp loads may use path as the explicit dylib }
+#[cfg(feature = "llama-runtime")]
+pub fn configure_llama_cpp_dylib_path(path: impl Into<PathBuf>) -> Result<(), LlamaEngineError> {
+    let path = validate_llama_cpp_dylib_path(path.into())?;
+
+    match LLAMA_CPP_DYLIB_PATH_OVERRIDE.set(path) {
+        Ok(()) => Ok(()),
+        Err(path) => match LLAMA_CPP_DYLIB_PATH_OVERRIDE.get() {
+            Some(existing) if existing == &path => Ok(()),
+            Some(existing) => Err(LlamaEngineError::InvalidLlamaDylibPath {
+                path,
+                reason: format!("runtime path already configured as {}", existing.display()),
+            }),
+            None => Err(LlamaEngineError::InvalidLlamaDylibPath {
+                path,
+                reason: "runtime path could not be configured".to_owned(),
+            }),
+        },
+    }
+}
 
 #[derive(Deserialize)]
 struct RawLlamaRuntimeConfig {
@@ -304,6 +365,54 @@ const fn language_label(language: Language) -> &'static str {
         Language::Vietnamese => "Vietnamese",
         Language::Japanese => "Japanese",
     }
+}
+
+/// { llama.cpp runtime path may be configured through FFI or LLAMA_CPP_DYLIB_PATH }
+/// fn resolve_llama_cpp_dylib_path() -> Result<PathBuf, LlamaEngineError>
+/// { ret is Ok only when an explicit configured or environment dylib path is available }
+#[cfg(feature = "llama-runtime")]
+fn resolve_llama_cpp_dylib_path() -> Result<PathBuf, LlamaEngineError> {
+    if let Some(path) = LLAMA_CPP_DYLIB_PATH_OVERRIDE.get() {
+        return Ok(path.clone());
+    }
+
+    resolve_llama_cpp_dylib_path_from_env_value(std::env::var_os(LLAMA_CPP_DYLIB_PATH_ENV))
+}
+
+/// { value is a raw LLAMA_CPP_DYLIB_PATH environment value }
+/// fn resolve_llama_cpp_dylib_path_from_env_value(value: `Option<OsString>`) -> Result<PathBuf, LlamaEngineError>
+/// { ret is Ok only when value is a non-empty absolute path to a file }
+#[cfg(feature = "llama-runtime")]
+fn resolve_llama_cpp_dylib_path_from_env_value(
+    value: Option<OsString>,
+) -> Result<PathBuf, LlamaEngineError> {
+    let Some(value) = value.filter(|candidate| !candidate.is_empty()) else {
+        return Err(LlamaEngineError::MissingLlamaDylibPath);
+    };
+    let path = PathBuf::from(value);
+
+    validate_llama_cpp_dylib_path(path)
+}
+
+/// { path is a candidate llama.cpp dynamic library path }
+/// fn validate_llama_cpp_dylib_path(path: PathBuf) -> Result<PathBuf, LlamaEngineError>
+/// { ret is Ok only when path is absolute and points to a file }
+#[cfg(feature = "llama-runtime")]
+fn validate_llama_cpp_dylib_path(path: PathBuf) -> Result<PathBuf, LlamaEngineError> {
+    if !path.is_absolute() {
+        return Err(LlamaEngineError::InvalidLlamaDylibPath {
+            path,
+            reason: "path must be absolute".to_owned(),
+        });
+    }
+    if !path.is_file() {
+        return Err(LlamaEngineError::InvalidLlamaDylibPath {
+            path,
+            reason: "path does not point to a file".to_owned(),
+        });
+    }
+
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -403,6 +512,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "llama-runtime"))]
     fn translator_load_reports_disabled_runtime_without_feature()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = create_gguf_pack()?;
@@ -412,6 +522,61 @@ mod tests {
 
         assert!(matches!(error, Some(LlamaEngineError::RuntimeDisabled)));
         Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "llama-runtime")]
+    fn translator_load_reports_missing_runtime_path_with_feature()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_gguf_pack()?;
+        let plan = LlamaModelPlan::from_assets(verified_gguf_assets(&root)?)?;
+
+        let error = LlamaTranslator::load(plan).err();
+
+        assert!(matches!(
+            error,
+            Some(LlamaEngineError::MissingLlamaDylibPath)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "llama-runtime")]
+    fn runtime_dylib_path_rejects_missing_env_value() {
+        let error = super::resolve_llama_cpp_dylib_path_from_env_value(None);
+
+        assert!(matches!(
+            error,
+            Err(LlamaEngineError::MissingLlamaDylibPath)
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "llama-runtime")]
+    fn runtime_dylib_path_rejects_relative_env_value() {
+        let error =
+            super::resolve_llama_cpp_dylib_path_from_env_value(Some("libllama.dylib".into()));
+
+        assert!(matches!(
+            error,
+            Err(LlamaEngineError::InvalidLlamaDylibPath { ref reason, .. })
+                if reason == "path must be absolute"
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "llama-runtime")]
+    fn runtime_dylib_path_rejects_missing_file() {
+        let missing_path = PathBuf::from("/tmp/localmt-missing-libllama.dylib");
+
+        let error =
+            super::resolve_llama_cpp_dylib_path_from_env_value(Some(missing_path.into_os_string()));
+
+        assert!(matches!(
+            error,
+            Err(LlamaEngineError::InvalidLlamaDylibPath { ref reason, .. })
+                if reason == "path does not point to a file"
+        ));
     }
 
     #[test]

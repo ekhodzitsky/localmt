@@ -74,6 +74,7 @@ jobs:
           nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_model_pack_trust_schema_version
           nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_gguf_model_pack_summary
           nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_llama_runtime_enabled
+          nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_llama_runtime_configure
           nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_llama_translator_open
           nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_llama_translate
           c++ -std=c++17 -shared -fPIC \
