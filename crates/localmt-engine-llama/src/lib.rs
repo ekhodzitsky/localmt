@@ -1,12 +1,14 @@
 //! llama.cpp / GGUF adapter boundary for localmt.
 
+#[cfg(feature = "llama-runtime")]
+use core::ffi::{c_char, c_void};
 use core::{fmt, num::NonZeroUsize};
 #[cfg(feature = "llama-runtime")]
-use std::ffi::OsString;
+use std::ffi::{CString, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "llama-runtime")]
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use localmt_core::{Language, TranslateRequest, Translation};
 use localmt_engine::{TranslationError, TranslatorEngine};
@@ -19,18 +21,9 @@ const DEFAULT_TEMPERATURE: f32 = 0.0;
 const DISABLED_RUNTIME: &str = "llama.cpp runtime is not enabled";
 const LLAMA_CPP_DYLIB_PATH_ENV: &str = "LLAMA_CPP_DYLIB_PATH";
 #[cfg(feature = "llama-runtime")]
-const LLAMA_NATIVE_REQUIRED_SYMBOLS: [&str; 8] = [
-    "llama_backend_init",
-    "llama_backend_free",
-    "llama_model_default_params",
-    "llama_model_load_from_file",
-    "llama_model_free",
-    "llama_context_default_params",
-    "llama_init_from_model",
-    "llama_free",
-];
-#[cfg(feature = "llama-runtime")]
 static LLAMA_CPP_DYLIB_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+#[cfg(feature = "llama-runtime")]
+static LLAMA_BACKEND_REFCOUNT: Mutex<usize> = Mutex::new(0);
 
 /// Verified llama.cpp model-load plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -197,8 +190,20 @@ impl LlamaTranslationPrompt {
 }
 
 /// llama.cpp translator handle.
-#[derive(Clone, Debug)]
-pub struct LlamaTranslator;
+pub struct LlamaTranslator {
+    #[cfg(feature = "llama-runtime")]
+    _model_context: Option<LlamaModelContext>,
+    #[cfg(feature = "llama-runtime")]
+    _backend: Option<LlamaBackendLease>,
+    #[cfg(feature = "llama-runtime")]
+    _native: Option<LlamaNativeLibrary>,
+}
+
+impl fmt::Debug for LlamaTranslator {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LlamaTranslator")
+    }
+}
 
 impl LlamaTranslator {
     /// { plan was built from verified GGUF assets }
@@ -213,10 +218,16 @@ impl LlamaTranslator {
 
         #[cfg(feature = "llama-runtime")]
         {
-            let _plan = plan;
-            let _dylib_path = resolve_llama_cpp_dylib_path()?;
-            let _native = LlamaNativeLibrary::load(&_dylib_path)?;
-            Err(LlamaEngineError::RuntimeDisabled)
+            let runtime_config = plan.parse_runtime_config()?;
+            let dylib_path = resolve_llama_cpp_dylib_path()?;
+            let native = LlamaNativeLibrary::load(&dylib_path)?;
+            let backend = LlamaBackendLease::acquire(&native);
+            let model_context = LlamaModelContext::load(&native, &plan, runtime_config)?;
+            Ok(Self {
+                _model_context: Some(model_context),
+                _backend: Some(backend),
+                _native: Some(native),
+            })
         }
     }
 
@@ -224,8 +235,15 @@ impl LlamaTranslator {
     /// fn disabled_for_tests() -> Self
     /// { ret is a translator handle that reports disabled runtime on translate }
     #[cfg(test)]
-    pub(crate) const fn disabled_for_tests() -> Self {
-        Self
+    pub(crate) fn disabled_for_tests() -> Self {
+        Self {
+            #[cfg(feature = "llama-runtime")]
+            _model_context: None,
+            #[cfg(feature = "llama-runtime")]
+            _backend: None,
+            #[cfg(feature = "llama-runtime")]
+            _native: None,
+        }
     }
 }
 
@@ -266,6 +284,27 @@ pub enum LlamaEngineError {
         symbol: &'static str,
         /// Stable lookup error reason.
         reason: String,
+    },
+    /// GGUF model path cannot be passed to llama.cpp.
+    InvalidModelPath {
+        /// Verified model path.
+        path: PathBuf,
+        /// Stable path conversion reason.
+        reason: &'static str,
+    },
+    /// llama.cpp failed to load the verified GGUF model.
+    LoadModel {
+        /// Verified model path.
+        path: PathBuf,
+        /// Stable load reason.
+        reason: &'static str,
+    },
+    /// llama.cpp failed to create a context from the loaded model.
+    CreateContext {
+        /// Verified model path.
+        path: PathBuf,
+        /// Stable context creation reason.
+        reason: &'static str,
     },
     /// Runtime-config JSON could not be read.
     ReadRuntimeConfig {
@@ -319,6 +358,27 @@ impl fmt::Display for LlamaEngineError {
                 "llama.cpp library {} is missing symbol {symbol}: {reason}",
                 path.display()
             ),
+            Self::InvalidModelPath { path, reason } => {
+                write!(
+                    formatter,
+                    "llama.cpp model path {} is invalid: {reason}",
+                    path.display()
+                )
+            }
+            Self::LoadModel { path, reason } => {
+                write!(
+                    formatter,
+                    "llama.cpp failed to load model {}: {reason}",
+                    path.display()
+                )
+            }
+            Self::CreateContext { path, reason } => {
+                write!(
+                    formatter,
+                    "llama.cpp failed to create context for {}: {reason}",
+                    path.display()
+                )
+            }
             Self::ReadRuntimeConfig { path, reason } => {
                 write!(
                     formatter,
@@ -364,6 +424,14 @@ pub fn configure_llama_cpp_dylib_path(path: impl Into<PathBuf>) -> Result<(), Ll
 
 #[cfg(feature = "llama-runtime")]
 struct LlamaNativeLibrary {
+    backend_init: LlamaBackendInit,
+    backend_free: LlamaBackendFree,
+    model_default_params: LlamaModelDefaultParams,
+    model_load_from_file: LlamaModelLoadFromFile,
+    model_free: LlamaModelFree,
+    context_default_params: LlamaContextDefaultParams,
+    init_from_model: LlamaInitFromModel,
+    context_free: LlamaFree,
     _library: libloading::Library,
 }
 
@@ -384,22 +452,356 @@ impl LlamaNativeLibrary {
             reason: source.to_string(),
         })?;
 
-        for symbol in LLAMA_NATIVE_REQUIRED_SYMBOLS {
+        let backend_init = load_symbol(&library, path, "llama_backend_init")?;
+        let backend_free = load_symbol(&library, path, "llama_backend_free")?;
+        let model_default_params = load_symbol(&library, path, "llama_model_default_params")?;
+        let model_load_from_file = load_symbol(&library, path, "llama_model_load_from_file")?;
+        let model_free = load_symbol(&library, path, "llama_model_free")?;
+        let context_default_params = load_symbol(&library, path, "llama_context_default_params")?;
+        let init_from_model = load_symbol(&library, path, "llama_init_from_model")?;
+        let context_free = load_symbol(&library, path, "llama_free")?;
+
+        Ok(Self {
+            backend_init,
+            backend_free,
+            model_default_params,
+            model_load_from_file,
+            model_free,
+            context_default_params,
+            init_from_model,
+            context_free,
+            _library: library,
+        })
+    }
+}
+
+#[cfg(feature = "llama-runtime")]
+type LlamaBackendInit = unsafe extern "C" fn();
+#[cfg(feature = "llama-runtime")]
+type LlamaBackendFree = unsafe extern "C" fn();
+#[cfg(feature = "llama-runtime")]
+type LlamaModelDefaultParams = unsafe extern "C" fn() -> LlamaModelParams;
+#[cfg(feature = "llama-runtime")]
+type LlamaModelLoadFromFile =
+    unsafe extern "C" fn(*const c_char, LlamaModelParams) -> *mut LlamaModel;
+#[cfg(feature = "llama-runtime")]
+type LlamaModelFree = unsafe extern "C" fn(*mut LlamaModel);
+#[cfg(feature = "llama-runtime")]
+type LlamaContextDefaultParams = unsafe extern "C" fn() -> LlamaContextParams;
+#[cfg(feature = "llama-runtime")]
+type LlamaInitFromModel =
+    unsafe extern "C" fn(*mut LlamaModel, LlamaContextParams) -> *mut LlamaContext;
+#[cfg(feature = "llama-runtime")]
+type LlamaFree = unsafe extern "C" fn(*mut LlamaContext);
+
+#[cfg(feature = "llama-runtime")]
+#[repr(C)]
+struct LlamaModel {
+    _private: [u8; 0],
+}
+
+#[cfg(feature = "llama-runtime")]
+#[repr(C)]
+struct LlamaContext {
+    _private: [u8; 0],
+}
+
+#[cfg(feature = "llama-runtime")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LlamaModelParams {
+    devices: *mut *mut c_void,
+    tensor_buft_overrides: *const c_void,
+    n_gpu_layers: i32,
+    split_mode: i32,
+    main_gpu: i32,
+    tensor_split: *const f32,
+    progress_callback: Option<unsafe extern "C" fn(f32, *mut c_void) -> bool>,
+    progress_callback_user_data: *mut c_void,
+    kv_overrides: *const c_void,
+    vocab_only: bool,
+    use_mmap: bool,
+    use_direct_io: bool,
+    use_mlock: bool,
+    check_tensors: bool,
+    use_extra_bufts: bool,
+    no_host: bool,
+    no_alloc: bool,
+}
+
+#[cfg(feature = "llama-runtime")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LlamaContextParams {
+    n_ctx: u32,
+    n_batch: u32,
+    n_ubatch: u32,
+    n_seq_max: u32,
+    n_threads: i32,
+    n_threads_batch: i32,
+    rope_scaling_type: i32,
+    pooling_type: i32,
+    attention_type: i32,
+    flash_attn_type: i32,
+    rope_freq_base: f32,
+    rope_freq_scale: f32,
+    yarn_ext_factor: f32,
+    yarn_attn_factor: f32,
+    yarn_beta_fast: f32,
+    yarn_beta_slow: f32,
+    yarn_orig_ctx: u32,
+    defrag_thold: f32,
+    cb_eval: *mut c_void,
+    cb_eval_user_data: *mut c_void,
+    type_k: i32,
+    type_v: i32,
+    abort_callback: *mut c_void,
+    abort_callback_data: *mut c_void,
+    embeddings: bool,
+    offload_kqv: bool,
+    no_perf: bool,
+    op_offload: bool,
+    swa_full: bool,
+    kv_unified: bool,
+    samplers: *mut c_void,
+    n_samplers: usize,
+}
+
+#[cfg(all(test, feature = "llama-runtime"))]
+impl LlamaContextParams {
+    const fn zeroed_for_tests() -> Self {
+        Self {
+            n_ctx: 0,
+            n_batch: 0,
+            n_ubatch: 0,
+            n_seq_max: 0,
+            n_threads: 0,
+            n_threads_batch: 0,
+            rope_scaling_type: 0,
+            pooling_type: 0,
+            attention_type: 0,
+            flash_attn_type: 0,
+            rope_freq_base: 0.0,
+            rope_freq_scale: 0.0,
+            yarn_ext_factor: 0.0,
+            yarn_attn_factor: 0.0,
+            yarn_beta_fast: 0.0,
+            yarn_beta_slow: 0.0,
+            yarn_orig_ctx: 0,
+            defrag_thold: 0.0,
+            cb_eval: core::ptr::null_mut(),
+            cb_eval_user_data: core::ptr::null_mut(),
+            type_k: 0,
+            type_v: 0,
+            abort_callback: core::ptr::null_mut(),
+            abort_callback_data: core::ptr::null_mut(),
+            embeddings: false,
+            offload_kqv: false,
+            no_perf: false,
+            op_offload: false,
+            swa_full: false,
+            kv_unified: false,
+            samplers: core::ptr::null_mut(),
+            n_samplers: 0,
+        }
+    }
+}
+
+#[cfg(feature = "llama-runtime")]
+struct LlamaBackendLease {
+    backend_free: LlamaBackendFree,
+}
+
+#[cfg(feature = "llama-runtime")]
+impl LlamaBackendLease {
+    /// { native has resolved llama backend lifecycle symbols }
+    /// fn acquire(native: &LlamaNativeLibrary) -> Self
+    /// { ret owns one backend reference until dropped }
+    fn acquire(native: &LlamaNativeLibrary) -> Self {
+        let mut refcount = lock_backend_refcount();
+        if *refcount == 0 {
             unsafe {
-                // SAFETY: symbols are looked up only to prove ABI presence.
-                // The returned function pointers are not called here.
-                library
-                    .get::<unsafe extern "C" fn()>(symbol.as_bytes())
-                    .map_err(|source| LlamaEngineError::MissingNativeSymbol {
-                        path: path.to_path_buf(),
-                        symbol,
-                        reason: source.to_string(),
-                    })?;
+                // SAFETY: llama_backend_init is a process-level initializer.
+                // The refcount serializes calls and keeps init/free balanced.
+                (native.backend_init)();
             }
         }
+        *refcount = refcount.saturating_add(1);
 
-        Ok(Self { _library: library })
+        Self {
+            backend_free: native.backend_free,
+        }
     }
+}
+
+#[cfg(feature = "llama-runtime")]
+impl Drop for LlamaBackendLease {
+    fn drop(&mut self) {
+        let mut refcount = lock_backend_refcount();
+        if *refcount == 0 {
+            return;
+        }
+
+        *refcount -= 1;
+        if *refcount == 0 {
+            unsafe {
+                // SAFETY: the final lease releases the process-level backend
+                // after all model/context handles in this translator dropped.
+                (self.backend_free)();
+            }
+        }
+    }
+}
+
+#[cfg(feature = "llama-runtime")]
+struct LlamaModelContext {
+    context: *mut LlamaContext,
+    model: *mut LlamaModel,
+    context_free: LlamaFree,
+    model_free: LlamaModelFree,
+}
+
+#[cfg(feature = "llama-runtime")]
+impl LlamaModelContext {
+    /// { native has loaded llama model/context symbols and plan points to a verified GGUF model }
+    /// fn load(native: &LlamaNativeLibrary, plan: &LlamaModelPlan, config: LlamaRuntimeConfig) -> Result<Self, LlamaEngineError>
+    /// { ret owns one loaded model and context until dropped }
+    fn load(
+        native: &LlamaNativeLibrary,
+        plan: &LlamaModelPlan,
+        config: LlamaRuntimeConfig,
+    ) -> Result<Self, LlamaEngineError> {
+        let model_path = plan.model_path();
+        let model_path_c = c_model_path(model_path)?;
+        let mut model_params = unsafe {
+            // SAFETY: this calls the resolved llama.cpp factory and receives a
+            // by-value params struct matching the pinned C ABI boundary.
+            (native.model_default_params)()
+        };
+        model_params.n_gpu_layers = 0;
+
+        let mut context_params = unsafe {
+            // SAFETY: this calls the resolved llama.cpp factory and receives a
+            // by-value params struct matching the pinned C ABI boundary.
+            (native.context_default_params)()
+        };
+        apply_runtime_config_to_context_params(&mut context_params, config)?;
+
+        let model = unsafe {
+            // SAFETY: model_path_c is NUL-terminated and model_params came from
+            // the same library that consumes it.
+            (native.model_load_from_file)(model_path_c.as_ptr(), model_params)
+        };
+        if model.is_null() {
+            return Err(LlamaEngineError::LoadModel {
+                path: model_path.to_path_buf(),
+                reason: "llama_model_load_from_file returned null",
+            });
+        }
+
+        let context = unsafe {
+            // SAFETY: model is a live llama_model pointer and context_params
+            // came from the same library that consumes it.
+            (native.init_from_model)(model, context_params)
+        };
+        if context.is_null() {
+            unsafe {
+                // SAFETY: model was returned by this library and context
+                // creation failed, so the model must be released here.
+                (native.model_free)(model);
+            }
+            return Err(LlamaEngineError::CreateContext {
+                path: model_path.to_path_buf(),
+                reason: "llama_init_from_model returned null",
+            });
+        }
+
+        Ok(Self {
+            context,
+            model,
+            context_free: native.context_free,
+            model_free: native.model_free,
+        })
+    }
+}
+
+#[cfg(feature = "llama-runtime")]
+impl Drop for LlamaModelContext {
+    fn drop(&mut self) {
+        unsafe {
+            // SAFETY: context and model were returned by the same llama.cpp
+            // library and are released in the required context-before-model
+            // order.
+            (self.context_free)(self.context);
+            (self.model_free)(self.model);
+        }
+    }
+}
+
+/// { true }
+/// fn lock_backend_refcount() -> MutexGuard<'static, usize>
+/// { ret is the global llama backend refcount lock, recovering from poison }
+#[cfg(feature = "llama-runtime")]
+fn lock_backend_refcount() -> MutexGuard<'static, usize> {
+    match LLAMA_BACKEND_REFCOUNT.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// { library is a loaded dynamic library and symbol names a required function }
+/// fn load_symbol<T: Copy>(library: &libloading::Library, path: &Path, symbol: &'static str) -> Result<T, LlamaEngineError>
+/// { ret is Ok only when the symbol is present and copied while library stays owned }
+#[cfg(feature = "llama-runtime")]
+fn load_symbol<T: Copy>(
+    library: &libloading::Library,
+    path: &Path,
+    symbol: &'static str,
+) -> Result<T, LlamaEngineError> {
+    let symbol = unsafe {
+        // SAFETY: this only resolves a typed function pointer and copies it;
+        // the owning Library remains stored in LlamaNativeLibrary.
+        library.get::<T>(symbol.as_bytes()).map_err(|source| {
+            LlamaEngineError::MissingNativeSymbol {
+                path: path.to_path_buf(),
+                symbol,
+                reason: source.to_string(),
+            }
+        })?
+    };
+    Ok(*symbol)
+}
+
+/// { path is the verified GGUF model path }
+/// fn c_model_path(path: &Path) -> Result<CString, LlamaEngineError>
+/// { ret is a NUL-terminated path accepted by llama.cpp }
+#[cfg(feature = "llama-runtime")]
+fn c_model_path(path: &Path) -> Result<CString, LlamaEngineError> {
+    let Some(path) = path.to_str() else {
+        return Err(LlamaEngineError::InvalidModelPath {
+            path: path.to_path_buf(),
+            reason: "path must be UTF-8",
+        });
+    };
+
+    CString::new(path).map_err(|_error| LlamaEngineError::InvalidModelPath {
+        path: PathBuf::from(path),
+        reason: "path contains an interior NUL byte",
+    })
+}
+
+/// { params came from llama_context_default_params and config is validated localmt config }
+/// fn apply_runtime_config_to_context_params(params: &mut LlamaContextParams, config: LlamaRuntimeConfig) -> Result<(), LlamaEngineError>
+/// { params carries localmt-owned context/thread overrides when ret is Ok }
+#[cfg(feature = "llama-runtime")]
+fn apply_runtime_config_to_context_params(
+    params: &mut LlamaContextParams,
+    config: LlamaRuntimeConfig,
+) -> Result<(), LlamaEngineError> {
+    params.n_ctx = nonzero_to_u32("context_tokens", config.context_tokens())?;
+    params.n_threads = nonzero_to_i32("cpu_threads", config.cpu_threads())?;
+    params.n_threads_batch = params.n_threads;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -429,6 +831,28 @@ fn nonzero_default(value: usize) -> NonZeroUsize {
     }
 
     NonZeroUsize::MIN
+}
+
+/// { value is non-zero }
+/// fn nonzero_to_u32(field: &'static str, value: NonZeroUsize) -> Result<u32, LlamaEngineError>
+/// { ret is Ok only when value fits the llama.cpp u32 ABI field }
+#[cfg(feature = "llama-runtime")]
+fn nonzero_to_u32(field: &'static str, value: NonZeroUsize) -> Result<u32, LlamaEngineError> {
+    u32::try_from(value.get()).map_err(|_error| LlamaEngineError::InvalidRuntimeConfig {
+        field,
+        reason: "must fit into u32",
+    })
+}
+
+/// { value is non-zero }
+/// fn nonzero_to_i32(field: &'static str, value: NonZeroUsize) -> Result<i32, LlamaEngineError>
+/// { ret is Ok only when value fits the llama.cpp i32 ABI field }
+#[cfg(feature = "llama-runtime")]
+fn nonzero_to_i32(field: &'static str, value: NonZeroUsize) -> Result<i32, LlamaEngineError> {
+    i32::try_from(value.get()).map_err(|_error| LlamaEngineError::InvalidRuntimeConfig {
+        field,
+        reason: "must fit into i32",
+    })
 }
 
 fn valid_temperature(value: f32) -> Result<f32, LlamaEngineError> {
@@ -573,6 +997,41 @@ mod tests {
             negative_temperature,
             Err(LlamaEngineError::InvalidRuntimeConfig {
                 field: "temperature",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "llama-runtime")]
+    fn runtime_config_applies_llama_context_limits() -> Result<(), Box<dyn std::error::Error>> {
+        let config = LlamaRuntimeConfig::from_json_str(
+            r#"{"context_tokens": 4096, "cpu_threads": 6, "temperature": 0.0}"#,
+        )?;
+        let mut params = super::LlamaContextParams::zeroed_for_tests();
+
+        super::apply_runtime_config_to_context_params(&mut params, config)?;
+
+        assert_eq!(params.n_ctx, 4096);
+        assert_eq!(params.n_threads, 6);
+        assert_eq!(params.n_threads_batch, 6);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "llama-runtime")]
+    fn runtime_config_rejects_threads_outside_llama_abi() {
+        let config = LlamaRuntimeConfig::from_json_str(r#"{"cpu_threads": 2147483648}"#);
+
+        let error = config.and_then(|config| {
+            let mut params = super::LlamaContextParams::zeroed_for_tests();
+            super::apply_runtime_config_to_context_params(&mut params, config)
+        });
+
+        assert!(matches!(
+            error,
+            Err(LlamaEngineError::InvalidRuntimeConfig {
+                field: "cpu_threads",
                 ..
             })
         ));

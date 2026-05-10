@@ -351,9 +351,10 @@ int32_t localmt_ffi_hf_mock_translate(
  * out_translator must point to writable pointer storage. It is set to NULL
  * before work and receives a non-null handle only on LOCALMT_FFI_OK.
  *
- * Current builds return LOCALMT_FFI_RUNTIME_DISABLED until model/context
- * creation is wired. llama-runtime builds first preflight the configured
- * native library and may return LOCALMT_FFI_RUNTIME_NOT_CONFIGURED.
+ * Default builds return LOCALMT_FFI_RUNTIME_DISABLED. llama-runtime builds
+ * preflight the configured native library, then load the verified GGUF model
+ * and create a llama context. Translation still returns
+ * LOCALMT_FFI_RUNTIME_DISABLED until the decode loop is wired.
  */
 int32_t localmt_ffi_llama_translator_open(
     const uint8_t *path_ptr,

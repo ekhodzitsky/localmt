@@ -57,14 +57,15 @@ the public facade.
   no-runtime config parsing.
 - Expose GGUF readiness through the Android-facing FFI ABI. Completed with
   `localmt ffi gguf-translate-smoke`, which validates the pack, prompt, and
-  open path before model/context loading exists.
+  open path before decode-loop inference exists.
 - Use dynamic llama.cpp loading as the integration boundary. Completed at the
   native-loader preflight layer through `localmt_ffi_llama_runtime_configure`
   and `LLAMA_CPP_DYLIB_PATH`; `llama-runtime` builds open the configured
   library and require the minimal llama.cpp model/context C API symbols before
   accepting it.
 - Bind to llama.cpp model/context creation through a narrow Rust-owned
-  interface.
+  interface. Completed for CPU-only model/context open and drop lifecycle.
+- Implement prompt tokenization, llama eval, sampling, and UTF-8 decode.
 - Support CPU-only `arm64-v8a` execution first.
 
 Exit criteria:

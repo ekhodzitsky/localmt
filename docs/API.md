@@ -126,23 +126,22 @@ Translate the following segment into {target_language}, without additional expla
 ```
 
 `LlamaRuntimeConfig` currently parses local JSON config for context size, CPU
-threads, and temperature. `LlamaTranslator::load` intentionally reports a
-disabled runtime until model and context creation are wired.
+threads, and temperature. `LlamaTranslator::load` opens the configured
+llama.cpp dynamic library, initializes the backend, loads the verified GGUF
+model, and creates a context when built with `llama-runtime`.
 The Android-facing FFI exposes the same readiness path through
 `localmt_ffi_gguf_model_pack_summary`,
 `localmt_ffi_llama_runtime_enabled`, and
 `localmt_ffi_llama_translator_open`. The CLI wrapper is
 `localmt ffi gguf-translate-smoke PACK FROM TO TEXT`; it validates the pack,
 builds the stable HY-MT prompt, preflights the native loader when
-`llama-runtime` is enabled, and reports `runtime disabled` until inference is
-available.
+`llama-runtime` is enabled, and reports `runtime disabled` at translate time
+until prompt tokenization, eval, and decoding are wired.
 The llama.cpp integration boundary is a dynamic library path configured either
 through `localmt_ffi_llama_runtime_configure()` or the
 `LLAMA_CPP_DYLIB_PATH` environment variable. Missing, relative, non-file,
 non-loadable, or incompatible library paths map to
-`LOCALMT_FFI_RUNTIME_NOT_CONFIGURED` before model loading starts. Compatible
-libraries must export the minimal llama.cpp model/context API used by the next
-load slice.
+`LOCALMT_FFI_RUNTIME_NOT_CONFIGURED` before model loading starts.
 
 `OfflineTranslatorPlan::from_pack(&verified_pack)` is the SDK-level bridge from
 a verified model pack to the assets needed by a future offline translator. It

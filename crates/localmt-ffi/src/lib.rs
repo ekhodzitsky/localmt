@@ -1020,6 +1020,10 @@ fn ffi_llama_engine_error_status(error: LlamaEngineError) -> i32 {
         | LlamaEngineError::InvalidLlamaDylibPath { .. }
         | LlamaEngineError::LoadNativeLibrary { .. }
         | LlamaEngineError::MissingNativeSymbol { .. } => LOCALMT_FFI_RUNTIME_NOT_CONFIGURED,
+        LlamaEngineError::CreateContext { .. } => LOCALMT_FFI_RUNTIME_NOT_CONFIGURED,
+        LlamaEngineError::InvalidModelPath { .. } | LlamaEngineError::LoadModel { .. } => {
+            LOCALMT_FFI_MODEL_PACK_ERROR
+        }
         LlamaEngineError::ReadRuntimeConfig { .. }
         | LlamaEngineError::ParseRuntimeConfig { .. }
         | LlamaEngineError::InvalidRuntimeConfig { .. } => LOCALMT_FFI_MODEL_PACK_ERROR,

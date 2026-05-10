@@ -18,8 +18,9 @@ FFI, and Android foundations.
       or vendored source build.
 - [x] Add FFI configuration for the llama.cpp dynamic library path.
 - [x] Add native loader preflight for configured llama.cpp dynamic libraries.
-- [ ] Implement llama.cpp model/context creation behind the existing GGUF FFI
+- [x] Implement llama.cpp model/context creation behind the existing GGUF FFI
       handle.
+- [ ] Implement prompt tokenization, llama eval, sampling, and UTF-8 decode.
 
 ## Android
 
