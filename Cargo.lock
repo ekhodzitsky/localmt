@@ -358,6 +358,7 @@ dependencies = [
 name = "localmt-engine-llama"
 version = "0.1.0"
 dependencies = [
+ "libloading",
  "localmt-core",
  "localmt-engine",
  "localmt-models",

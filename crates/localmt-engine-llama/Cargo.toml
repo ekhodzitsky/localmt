@@ -10,12 +10,20 @@ version.workspace = true
 localmt-core = { path = "../localmt-core" }
 localmt-engine = { path = "../localmt-engine" }
 localmt-models = { path = "../localmt-models" }
+libloading = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
 default = []
-llama-runtime = []
+llama-runtime = ["dep:libloading"]
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"

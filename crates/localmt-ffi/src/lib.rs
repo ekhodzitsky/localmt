@@ -1017,7 +1017,9 @@ fn ffi_llama_engine_error_status(error: LlamaEngineError) -> i32 {
     match error {
         LlamaEngineError::RuntimeDisabled => LOCALMT_FFI_RUNTIME_DISABLED,
         LlamaEngineError::MissingLlamaDylibPath
-        | LlamaEngineError::InvalidLlamaDylibPath { .. } => LOCALMT_FFI_RUNTIME_NOT_CONFIGURED,
+        | LlamaEngineError::InvalidLlamaDylibPath { .. }
+        | LlamaEngineError::LoadNativeLibrary { .. }
+        | LlamaEngineError::MissingNativeSymbol { .. } => LOCALMT_FFI_RUNTIME_NOT_CONFIGURED,
         LlamaEngineError::ReadRuntimeConfig { .. }
         | LlamaEngineError::ParseRuntimeConfig { .. }
         | LlamaEngineError::InvalidRuntimeConfig { .. } => LOCALMT_FFI_MODEL_PACK_ERROR,
@@ -2194,6 +2196,22 @@ mod tests {
         assert_eq!(status, LOCALMT_FFI_RUNTIME_NOT_CONFIGURED);
         #[cfg(not(feature = "llama-runtime"))]
         assert_eq!(status, LOCALMT_FFI_RUNTIME_DISABLED);
+    }
+
+    #[test]
+    fn ffi_llama_runtime_configure_reports_runtime_status_for_non_library_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_gguf_pack()?;
+        let path = root.join("not-libllama.so");
+        fs::write(&path, "not a dynamic library\n")?;
+        let path = path_bytes(&path)?;
+        let status = localmt_ffi_llama_runtime_configure(path.as_ptr(), path.len());
+
+        #[cfg(feature = "llama-runtime")]
+        assert_eq!(status, LOCALMT_FFI_RUNTIME_NOT_CONFIGURED);
+        #[cfg(not(feature = "llama-runtime"))]
+        assert_eq!(status, LOCALMT_FFI_RUNTIME_DISABLED);
+        Ok(())
     }
 
     #[test]

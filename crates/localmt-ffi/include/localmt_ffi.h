@@ -260,7 +260,8 @@ uint8_t localmt_ffi_llama_runtime_enabled(void);
  *
  * Default builds return LOCALMT_FFI_RUNTIME_DISABLED. llama-runtime builds
  * return LOCALMT_FFI_RUNTIME_NOT_CONFIGURED when the path is missing, relative,
- * or not a file.
+ * not a file, not loadable as a dynamic library, or missing required llama.cpp
+ * model/context symbols.
  */
 int32_t localmt_ffi_llama_runtime_configure(
     const uint8_t *path_ptr,
@@ -350,8 +351,9 @@ int32_t localmt_ffi_hf_mock_translate(
  * out_translator must point to writable pointer storage. It is set to NULL
  * before work and receives a non-null handle only on LOCALMT_FFI_OK.
  *
- * Current builds return LOCALMT_FFI_RUNTIME_DISABLED after pack planning until
- * the native llama.cpp loader is implemented.
+ * Current builds return LOCALMT_FFI_RUNTIME_DISABLED until model/context
+ * creation is wired. llama-runtime builds first preflight the configured
+ * native library and may return LOCALMT_FFI_RUNTIME_NOT_CONFIGURED.
  */
 int32_t localmt_ffi_llama_translator_open(
     const uint8_t *path_ptr,

@@ -93,11 +93,12 @@ localmt ffi gguf-translate-smoke ./models/hymt-1.25bit en ru "hello world"
 ```
 
 Today it verifies the Hy-MT GGUF pack, validates llama runtime metadata,
-constructs the Rust-owned prompt, and reports `runtime disabled` until the
-native llama.cpp loader is implemented. `llama-runtime` builds can also accept
-an explicit dynamic-library path through `localmt_ffi_llama_runtime_configure`
-or `LLAMA_CPP_DYLIB_PATH`; until the native loader exists, this only validates
-the runtime boundary. The lower-level GGUF model-pack doctor is:
+constructs the Rust-owned prompt, and reports `runtime disabled` until model
+and context creation are wired. `llama-runtime` builds can also accept an
+explicit dynamic-library path through `localmt_ffi_llama_runtime_configure` or
+`LLAMA_CPP_DYLIB_PATH`; the native loader opens that library and requires the
+minimal llama.cpp model/context C API symbols before the path is accepted. The
+lower-level GGUF model-pack doctor is:
 
 ```bash
 localmt model doctor ./models/hymt-1.25bit

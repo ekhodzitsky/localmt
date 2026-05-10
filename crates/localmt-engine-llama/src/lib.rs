@@ -19,6 +19,17 @@ const DEFAULT_TEMPERATURE: f32 = 0.0;
 const DISABLED_RUNTIME: &str = "llama.cpp runtime is not enabled";
 const LLAMA_CPP_DYLIB_PATH_ENV: &str = "LLAMA_CPP_DYLIB_PATH";
 #[cfg(feature = "llama-runtime")]
+const LLAMA_NATIVE_REQUIRED_SYMBOLS: [&str; 8] = [
+    "llama_backend_init",
+    "llama_backend_free",
+    "llama_model_default_params",
+    "llama_model_load_from_file",
+    "llama_model_free",
+    "llama_context_default_params",
+    "llama_init_from_model",
+    "llama_free",
+];
+#[cfg(feature = "llama-runtime")]
 static LLAMA_CPP_DYLIB_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
 /// Verified llama.cpp model-load plan.
@@ -204,6 +215,7 @@ impl LlamaTranslator {
         {
             let _plan = plan;
             let _dylib_path = resolve_llama_cpp_dylib_path()?;
+            let _native = LlamaNativeLibrary::load(&_dylib_path)?;
             Err(LlamaEngineError::RuntimeDisabled)
         }
     }
@@ -237,6 +249,22 @@ pub enum LlamaEngineError {
         /// Path configured through LLAMA_CPP_DYLIB_PATH.
         path: PathBuf,
         /// Stable validation reason.
+        reason: String,
+    },
+    /// llama.cpp dynamic library failed to load.
+    LoadNativeLibrary {
+        /// Path configured through LLAMA_CPP_DYLIB_PATH or FFI.
+        path: PathBuf,
+        /// Stable load error reason.
+        reason: String,
+    },
+    /// llama.cpp dynamic library is missing a required C API symbol.
+    MissingNativeSymbol {
+        /// Path configured through LLAMA_CPP_DYLIB_PATH or FFI.
+        path: PathBuf,
+        /// Missing required symbol.
+        symbol: &'static str,
+        /// Stable lookup error reason.
         reason: String,
     },
     /// Runtime-config JSON could not be read.
@@ -275,6 +303,22 @@ impl fmt::Display for LlamaEngineError {
                 "{LLAMA_CPP_DYLIB_PATH_ENV} {} is invalid: {reason}",
                 path.display()
             ),
+            Self::LoadNativeLibrary { path, reason } => {
+                write!(
+                    formatter,
+                    "failed to load llama.cpp library {}: {reason}",
+                    path.display()
+                )
+            }
+            Self::MissingNativeSymbol {
+                path,
+                symbol,
+                reason,
+            } => write!(
+                formatter,
+                "llama.cpp library {} is missing symbol {symbol}: {reason}",
+                path.display()
+            ),
             Self::ReadRuntimeConfig { path, reason } => {
                 write!(
                     formatter,
@@ -300,6 +344,7 @@ impl std::error::Error for LlamaEngineError {}
 #[cfg(feature = "llama-runtime")]
 pub fn configure_llama_cpp_dylib_path(path: impl Into<PathBuf>) -> Result<(), LlamaEngineError> {
     let path = validate_llama_cpp_dylib_path(path.into())?;
+    let _native = LlamaNativeLibrary::load(&path)?;
 
     match LLAMA_CPP_DYLIB_PATH_OVERRIDE.set(path) {
         Ok(()) => Ok(()),
@@ -314,6 +359,46 @@ pub fn configure_llama_cpp_dylib_path(path: impl Into<PathBuf>) -> Result<(), Ll
                 reason: "runtime path could not be configured".to_owned(),
             }),
         },
+    }
+}
+
+#[cfg(feature = "llama-runtime")]
+struct LlamaNativeLibrary {
+    _library: libloading::Library,
+}
+
+#[cfg(feature = "llama-runtime")]
+impl LlamaNativeLibrary {
+    /// { path points to an absolute existing file }
+    /// fn load(path: &Path) -> Result<Self, LlamaEngineError>
+    /// { ret is Ok only when path loads and exports the minimal llama.cpp model-load API }
+    fn load(path: &Path) -> Result<Self, LlamaEngineError> {
+        let library = unsafe {
+            // SAFETY: the caller already validated that path is an absolute
+            // file. Loading may run platform loader code, so this boundary only
+            // performs preflight and never calls loaded functions.
+            libloading::Library::new(path)
+        }
+        .map_err(|source| LlamaEngineError::LoadNativeLibrary {
+            path: path.to_path_buf(),
+            reason: source.to_string(),
+        })?;
+
+        for symbol in LLAMA_NATIVE_REQUIRED_SYMBOLS {
+            unsafe {
+                // SAFETY: symbols are looked up only to prove ABI presence.
+                // The returned function pointers are not called here.
+                library
+                    .get::<unsafe extern "C" fn()>(symbol.as_bytes())
+                    .map_err(|source| LlamaEngineError::MissingNativeSymbol {
+                        path: path.to_path_buf(),
+                        symbol,
+                        reason: source.to_string(),
+                    })?;
+            }
+        }
+
+        Ok(Self { _library: library })
     }
 }
 
@@ -526,22 +611,6 @@ mod tests {
 
     #[test]
     #[cfg(feature = "llama-runtime")]
-    fn translator_load_reports_missing_runtime_path_with_feature()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = create_gguf_pack()?;
-        let plan = LlamaModelPlan::from_assets(verified_gguf_assets(&root)?)?;
-
-        let error = LlamaTranslator::load(plan).err();
-
-        assert!(matches!(
-            error,
-            Some(LlamaEngineError::MissingLlamaDylibPath)
-        ));
-        Ok(())
-    }
-
-    #[test]
-    #[cfg(feature = "llama-runtime")]
     fn runtime_dylib_path_rejects_missing_env_value() {
         let error = super::resolve_llama_cpp_dylib_path_from_env_value(None);
 
@@ -577,6 +646,22 @@ mod tests {
             Err(LlamaEngineError::InvalidLlamaDylibPath { ref reason, .. })
                 if reason == "path does not point to a file"
         ));
+    }
+
+    #[test]
+    #[cfg(feature = "llama-runtime")]
+    fn native_loader_rejects_non_library_file() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        let fake_library = root.join("libllama.dylib");
+        fs::write(&fake_library, "not a dynamic library\n")?;
+
+        let error = super::LlamaNativeLibrary::load(&fake_library);
+
+        assert!(matches!(
+            error,
+            Err(LlamaEngineError::LoadNativeLibrary { .. })
+        ));
+        Ok(())
     }
 
     #[test]

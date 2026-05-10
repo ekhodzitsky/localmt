@@ -41,9 +41,10 @@ adapter to fit GGUF.
 
 Planned crate:
 
-- `localmt-engine-llama`: owns llama.cpp/GGUF integration details. The first
+- `localmt-engine-llama`: owns llama.cpp/GGUF integration details. The current
   slice is present: Rust-owned GGUF model plan, HY-MT prompt formatting, typed
-  runtime config parsing, and disabled-runtime behavior before native loading.
+  runtime config parsing, and native loader preflight for a configured
+  `libllama` before model/context creation.
 
 Existing crates remain responsible for:
 
