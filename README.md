@@ -96,9 +96,10 @@ Today it verifies the Hy-MT GGUF pack, validates llama runtime metadata, and
 constructs the Rust-owned prompt. Default builds report `runtime disabled`.
 `llama-runtime` builds can also accept an explicit dynamic-library path through
 `localmt_ffi_llama_runtime_configure` or `LLAMA_CPP_DYLIB_PATH`; the native
-loader opens that library, requires the minimal llama.cpp model/context C API
-symbols, and opens the GGUF model/context before translation still stops at the
-explicit decode-loop boundary. The lower-level GGUF model-pack doctor is:
+loader opens that library, requires the llama.cpp model/context/tokenizer/
+sampler C API symbols, opens the GGUF model/context, and runs bounded
+tokenization, eval, sampling, and UTF-8 decode. The lower-level GGUF model-pack
+doctor is:
 
 ```bash
 localmt model doctor ./models/hymt-1.25bit

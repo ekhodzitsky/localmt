@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "llama-runtime")]
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+#[cfg(any(test, feature = "llama-runtime"))]
+use localmt_core::NonEmptyText;
 use localmt_core::{Language, TranslateRequest, Translation};
 use localmt_engine::{TranslationError, TranslatorEngine};
 use localmt_models::{GgufModelAssetPlan, ModelId};
@@ -17,9 +19,18 @@ use serde::Deserialize;
 
 const DEFAULT_CONTEXT_TOKENS: usize = 2048;
 const DEFAULT_CPU_THREADS: usize = 1;
+const DEFAULT_MAX_OUTPUT_TOKENS: usize = 256;
 const DEFAULT_TEMPERATURE: f32 = 0.0;
 const DISABLED_RUNTIME: &str = "llama.cpp runtime is not enabled";
 const LLAMA_CPP_DYLIB_PATH_ENV: &str = "LLAMA_CPP_DYLIB_PATH";
+#[cfg(feature = "llama-runtime")]
+const LLAMA_TOKEN_NULL: i32 = -1;
+#[cfg(feature = "llama-runtime")]
+const LLAMA_DEFAULT_SEED: u32 = 0xFFFF_FFFF;
+#[cfg(feature = "llama-runtime")]
+const TOKEN_PIECE_BUFFER_BYTES: usize = 128;
+#[cfg(feature = "llama-runtime")]
+const MAX_TOKEN_PIECE_BUFFER_BYTES: usize = 16 * 1024;
 #[cfg(feature = "llama-runtime")]
 static LLAMA_CPP_DYLIB_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 #[cfg(feature = "llama-runtime")]
@@ -91,6 +102,7 @@ impl LlamaModelPlan {
 pub struct LlamaRuntimeConfig {
     context_tokens: NonZeroUsize,
     cpu_threads: NonZeroUsize,
+    max_output_tokens: NonZeroUsize,
     temperature: f32,
 }
 
@@ -136,6 +148,13 @@ impl LlamaRuntimeConfig {
     }
 
     /// { true }
+    /// fn max_output_tokens(&self) -> NonZeroUsize
+    /// { ret is the maximum number of generated llama tokens per request }
+    pub const fn max_output_tokens(&self) -> NonZeroUsize {
+        self.max_output_tokens
+    }
+
+    /// { true }
     /// fn temperature(&self) -> f32
     /// { ret is the configured sampling temperature }
     pub const fn temperature(&self) -> f32 {
@@ -150,6 +169,11 @@ impl LlamaRuntimeConfig {
                 DEFAULT_CONTEXT_TOKENS,
             )?,
             cpu_threads: nonzero_or_default("cpu_threads", raw.cpu_threads, DEFAULT_CPU_THREADS)?,
+            max_output_tokens: nonzero_or_default(
+                "max_output_tokens",
+                raw.max_output_tokens,
+                DEFAULT_MAX_OUTPUT_TOKENS,
+            )?,
             temperature: valid_temperature(raw.temperature.unwrap_or(DEFAULT_TEMPERATURE))?,
         })
     }
@@ -160,6 +184,7 @@ impl Default for LlamaRuntimeConfig {
         Self {
             context_tokens: nonzero_default(DEFAULT_CONTEXT_TOKENS),
             cpu_threads: nonzero_default(DEFAULT_CPU_THREADS),
+            max_output_tokens: nonzero_default(DEFAULT_MAX_OUTPUT_TOKENS),
             temperature: DEFAULT_TEMPERATURE,
         }
     }
@@ -192,11 +217,13 @@ impl LlamaTranslationPrompt {
 /// llama.cpp translator handle.
 pub struct LlamaTranslator {
     #[cfg(feature = "llama-runtime")]
-    _model_context: Option<LlamaModelContext>,
+    model_context: Option<Mutex<LlamaModelContext>>,
     #[cfg(feature = "llama-runtime")]
     _backend: Option<LlamaBackendLease>,
     #[cfg(feature = "llama-runtime")]
     _native: Option<LlamaNativeLibrary>,
+    #[cfg(feature = "llama-runtime")]
+    runtime_config: LlamaRuntimeConfig,
 }
 
 impl fmt::Debug for LlamaTranslator {
@@ -224,9 +251,10 @@ impl LlamaTranslator {
             let backend = LlamaBackendLease::acquire(&native);
             let model_context = LlamaModelContext::load(&native, &plan, runtime_config)?;
             Ok(Self {
-                _model_context: Some(model_context),
+                model_context: Some(Mutex::new(model_context)),
                 _backend: Some(backend),
                 _native: Some(native),
+                runtime_config,
             })
         }
     }
@@ -238,20 +266,50 @@ impl LlamaTranslator {
     pub(crate) fn disabled_for_tests() -> Self {
         Self {
             #[cfg(feature = "llama-runtime")]
-            _model_context: None,
+            model_context: None,
             #[cfg(feature = "llama-runtime")]
             _backend: None,
             #[cfg(feature = "llama-runtime")]
             _native: None,
+            #[cfg(feature = "llama-runtime")]
+            runtime_config: LlamaRuntimeConfig::default(),
         }
+    }
+
+    /// { self may own a loaded llama.cpp model/context and request is valid }
+    /// fn translate_with_llama(&self, request: &TranslateRequest) -> Result<Translation, TranslationError>
+    /// { ret is Ok only when llama.cpp generates non-empty UTF-8 text }
+    #[cfg(feature = "llama-runtime")]
+    fn translate_with_llama(
+        &self,
+        request: &TranslateRequest,
+    ) -> Result<Translation, TranslationError> {
+        let Some(model_context) = self.model_context.as_ref() else {
+            return Err(TranslationError::EngineUnavailable(
+                "llama.cpp model context is not loaded".to_owned(),
+            ));
+        };
+
+        let prompt = LlamaTranslationPrompt::from_request(request);
+        let mut model_context = lock_model_context(model_context);
+        model_context.translate_prompt(&prompt, self.runtime_config)
     }
 }
 
 impl TranslatorEngine for LlamaTranslator {
-    fn translate(&self, _request: &TranslateRequest) -> Result<Translation, TranslationError> {
-        Err(TranslationError::EngineUnavailable(
-            DISABLED_RUNTIME.to_owned(),
-        ))
+    fn translate(&self, request: &TranslateRequest) -> Result<Translation, TranslationError> {
+        #[cfg(not(feature = "llama-runtime"))]
+        {
+            let _request = request;
+            Err(TranslationError::EngineUnavailable(
+                DISABLED_RUNTIME.to_owned(),
+            ))
+        }
+
+        #[cfg(feature = "llama-runtime")]
+        {
+            self.translate_with_llama(request)
+        }
     }
 }
 
@@ -432,6 +490,27 @@ struct LlamaNativeLibrary {
     context_default_params: LlamaContextDefaultParams,
     init_from_model: LlamaInitFromModel,
     context_free: LlamaFree,
+    model_get_vocab: LlamaModelGetVocab,
+    get_memory: LlamaGetMemory,
+    memory_clear: LlamaMemoryClear,
+    model_has_encoder: LlamaModelHasEncoder,
+    model_decoder_start_token: LlamaModelDecoderStartToken,
+    vocab_bos: LlamaVocabBos,
+    tokenize: LlamaTokenize,
+    batch_get_one: LlamaBatchGetOne,
+    encode: LlamaEncode,
+    decode: LlamaDecode,
+    sampler_chain_default_params: LlamaSamplerChainDefaultParams,
+    sampler_chain_init: LlamaSamplerChainInit,
+    sampler_chain_add: LlamaSamplerChainAdd,
+    sampler_init_greedy: LlamaSamplerInitGreedy,
+    sampler_init_temp: LlamaSamplerInitTemp,
+    sampler_init_dist: LlamaSamplerInitDist,
+    sampler_accept: LlamaSamplerAccept,
+    sampler_sample: LlamaSamplerSample,
+    sampler_free: LlamaSamplerFree,
+    vocab_is_eog: LlamaVocabIsEog,
+    token_to_piece: LlamaTokenToPiece,
     _library: libloading::Library,
 }
 
@@ -460,6 +539,29 @@ impl LlamaNativeLibrary {
         let context_default_params = load_symbol(&library, path, "llama_context_default_params")?;
         let init_from_model = load_symbol(&library, path, "llama_init_from_model")?;
         let context_free = load_symbol(&library, path, "llama_free")?;
+        let model_get_vocab = load_symbol(&library, path, "llama_model_get_vocab")?;
+        let get_memory = load_symbol(&library, path, "llama_get_memory")?;
+        let memory_clear = load_symbol(&library, path, "llama_memory_clear")?;
+        let model_has_encoder = load_symbol(&library, path, "llama_model_has_encoder")?;
+        let model_decoder_start_token =
+            load_symbol(&library, path, "llama_model_decoder_start_token")?;
+        let vocab_bos = load_symbol(&library, path, "llama_vocab_bos")?;
+        let tokenize = load_symbol(&library, path, "llama_tokenize")?;
+        let batch_get_one = load_symbol(&library, path, "llama_batch_get_one")?;
+        let encode = load_symbol(&library, path, "llama_encode")?;
+        let decode = load_symbol(&library, path, "llama_decode")?;
+        let sampler_chain_default_params =
+            load_symbol(&library, path, "llama_sampler_chain_default_params")?;
+        let sampler_chain_init = load_symbol(&library, path, "llama_sampler_chain_init")?;
+        let sampler_chain_add = load_symbol(&library, path, "llama_sampler_chain_add")?;
+        let sampler_init_greedy = load_symbol(&library, path, "llama_sampler_init_greedy")?;
+        let sampler_init_temp = load_symbol(&library, path, "llama_sampler_init_temp")?;
+        let sampler_init_dist = load_symbol(&library, path, "llama_sampler_init_dist")?;
+        let sampler_accept = load_symbol(&library, path, "llama_sampler_accept")?;
+        let sampler_sample = load_symbol(&library, path, "llama_sampler_sample")?;
+        let sampler_free = load_symbol(&library, path, "llama_sampler_free")?;
+        let vocab_is_eog = load_symbol(&library, path, "llama_vocab_is_eog")?;
+        let token_to_piece = load_symbol(&library, path, "llama_token_to_piece")?;
 
         Ok(Self {
             backend_init,
@@ -470,6 +572,27 @@ impl LlamaNativeLibrary {
             context_default_params,
             init_from_model,
             context_free,
+            model_get_vocab,
+            get_memory,
+            memory_clear,
+            model_has_encoder,
+            model_decoder_start_token,
+            vocab_bos,
+            tokenize,
+            batch_get_one,
+            encode,
+            decode,
+            sampler_chain_default_params,
+            sampler_chain_init,
+            sampler_chain_add,
+            sampler_init_greedy,
+            sampler_init_temp,
+            sampler_init_dist,
+            sampler_accept,
+            sampler_sample,
+            sampler_free,
+            vocab_is_eog,
+            token_to_piece,
             _library: library,
         })
     }
@@ -493,6 +616,65 @@ type LlamaInitFromModel =
     unsafe extern "C" fn(*mut LlamaModel, LlamaContextParams) -> *mut LlamaContext;
 #[cfg(feature = "llama-runtime")]
 type LlamaFree = unsafe extern "C" fn(*mut LlamaContext);
+#[cfg(feature = "llama-runtime")]
+type LlamaModelGetVocab = unsafe extern "C" fn(*const LlamaModel) -> *const LlamaVocab;
+#[cfg(feature = "llama-runtime")]
+type LlamaGetMemory = unsafe extern "C" fn(*const LlamaContext) -> *mut LlamaMemory;
+#[cfg(feature = "llama-runtime")]
+type LlamaMemoryClear = unsafe extern "C" fn(*mut LlamaMemory, bool);
+#[cfg(feature = "llama-runtime")]
+type LlamaModelHasEncoder = unsafe extern "C" fn(*const LlamaModel) -> bool;
+#[cfg(feature = "llama-runtime")]
+type LlamaModelDecoderStartToken = unsafe extern "C" fn(*const LlamaModel) -> LlamaToken;
+#[cfg(feature = "llama-runtime")]
+type LlamaVocabBos = unsafe extern "C" fn(*const LlamaVocab) -> LlamaToken;
+#[cfg(feature = "llama-runtime")]
+type LlamaTokenize = unsafe extern "C" fn(
+    *const LlamaVocab,
+    *const c_char,
+    i32,
+    *mut LlamaToken,
+    i32,
+    bool,
+    bool,
+) -> i32;
+#[cfg(feature = "llama-runtime")]
+type LlamaBatchGetOne = unsafe extern "C" fn(*mut LlamaToken, i32) -> LlamaBatch;
+#[cfg(feature = "llama-runtime")]
+type LlamaEncode = unsafe extern "C" fn(*mut LlamaContext, LlamaBatch) -> i32;
+#[cfg(feature = "llama-runtime")]
+type LlamaDecode = unsafe extern "C" fn(*mut LlamaContext, LlamaBatch) -> i32;
+#[cfg(feature = "llama-runtime")]
+type LlamaSamplerChainDefaultParams = unsafe extern "C" fn() -> LlamaSamplerChainParams;
+#[cfg(feature = "llama-runtime")]
+type LlamaSamplerChainInit = unsafe extern "C" fn(LlamaSamplerChainParams) -> *mut LlamaSampler;
+#[cfg(feature = "llama-runtime")]
+type LlamaSamplerChainAdd = unsafe extern "C" fn(*mut LlamaSampler, *mut LlamaSampler);
+#[cfg(feature = "llama-runtime")]
+type LlamaSamplerInitGreedy = unsafe extern "C" fn() -> *mut LlamaSampler;
+#[cfg(feature = "llama-runtime")]
+type LlamaSamplerInitTemp = unsafe extern "C" fn(f32) -> *mut LlamaSampler;
+#[cfg(feature = "llama-runtime")]
+type LlamaSamplerInitDist = unsafe extern "C" fn(u32) -> *mut LlamaSampler;
+#[cfg(feature = "llama-runtime")]
+type LlamaSamplerAccept = unsafe extern "C" fn(*mut LlamaSampler, LlamaToken);
+#[cfg(feature = "llama-runtime")]
+type LlamaSamplerSample =
+    unsafe extern "C" fn(*mut LlamaSampler, *mut LlamaContext, i32) -> LlamaToken;
+#[cfg(feature = "llama-runtime")]
+type LlamaSamplerFree = unsafe extern "C" fn(*mut LlamaSampler);
+#[cfg(feature = "llama-runtime")]
+type LlamaVocabIsEog = unsafe extern "C" fn(*const LlamaVocab, LlamaToken) -> bool;
+#[cfg(feature = "llama-runtime")]
+type LlamaTokenToPiece =
+    unsafe extern "C" fn(*const LlamaVocab, LlamaToken, *mut c_char, i32, i32, bool) -> i32;
+
+#[cfg(feature = "llama-runtime")]
+type LlamaToken = i32;
+#[cfg(feature = "llama-runtime")]
+type LlamaPos = i32;
+#[cfg(feature = "llama-runtime")]
+type LlamaSeqId = i32;
 
 #[cfg(feature = "llama-runtime")]
 #[repr(C)]
@@ -504,6 +686,44 @@ struct LlamaModel {
 #[repr(C)]
 struct LlamaContext {
     _private: [u8; 0],
+}
+
+#[cfg(feature = "llama-runtime")]
+#[repr(C)]
+struct LlamaVocab {
+    _private: [u8; 0],
+}
+
+#[cfg(feature = "llama-runtime")]
+#[repr(C)]
+struct LlamaMemory {
+    _private: [u8; 0],
+}
+
+#[cfg(feature = "llama-runtime")]
+#[repr(C)]
+struct LlamaSampler {
+    _private: [u8; 0],
+}
+
+#[cfg(feature = "llama-runtime")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LlamaBatch {
+    n_tokens: i32,
+    token: *mut LlamaToken,
+    embd: *mut f32,
+    pos: *mut LlamaPos,
+    n_seq_id: *mut i32,
+    seq_id: *mut *mut LlamaSeqId,
+    logits: *mut i8,
+}
+
+#[cfg(feature = "llama-runtime")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LlamaSamplerChainParams {
+    no_perf: bool,
 }
 
 #[cfg(feature = "llama-runtime")]
@@ -657,8 +877,29 @@ impl Drop for LlamaBackendLease {
 struct LlamaModelContext {
     context: *mut LlamaContext,
     model: *mut LlamaModel,
+    vocab: *const LlamaVocab,
     context_free: LlamaFree,
     model_free: LlamaModelFree,
+    get_memory: LlamaGetMemory,
+    memory_clear: LlamaMemoryClear,
+    model_has_encoder: LlamaModelHasEncoder,
+    model_decoder_start_token: LlamaModelDecoderStartToken,
+    vocab_bos: LlamaVocabBos,
+    tokenize: LlamaTokenize,
+    batch_get_one: LlamaBatchGetOne,
+    encode: LlamaEncode,
+    decode: LlamaDecode,
+    sampler_chain_default_params: LlamaSamplerChainDefaultParams,
+    sampler_chain_init: LlamaSamplerChainInit,
+    sampler_chain_add: LlamaSamplerChainAdd,
+    sampler_init_greedy: LlamaSamplerInitGreedy,
+    sampler_init_temp: LlamaSamplerInitTemp,
+    sampler_init_dist: LlamaSamplerInitDist,
+    sampler_accept: LlamaSamplerAccept,
+    sampler_sample: LlamaSamplerSample,
+    sampler_free: LlamaSamplerFree,
+    vocab_is_eog: LlamaVocabIsEog,
+    token_to_piece: LlamaTokenToPiece,
 }
 
 #[cfg(feature = "llama-runtime")]
@@ -715,13 +956,325 @@ impl LlamaModelContext {
                 reason: "llama_init_from_model returned null",
             });
         }
+        let vocab = unsafe {
+            // SAFETY: model is a live llama_model pointer created by the
+            // library that exports the vocabulary accessor.
+            (native.model_get_vocab)(model)
+        };
+        if vocab.is_null() {
+            unsafe {
+                // SAFETY: context/model were returned by this library and
+                // cannot be used without a vocabulary.
+                (native.context_free)(context);
+                (native.model_free)(model);
+            }
+            return Err(LlamaEngineError::LoadModel {
+                path: model_path.to_path_buf(),
+                reason: "llama_model_get_vocab returned null",
+            });
+        }
 
         Ok(Self {
             context,
             model,
+            vocab,
             context_free: native.context_free,
             model_free: native.model_free,
+            get_memory: native.get_memory,
+            memory_clear: native.memory_clear,
+            model_has_encoder: native.model_has_encoder,
+            model_decoder_start_token: native.model_decoder_start_token,
+            vocab_bos: native.vocab_bos,
+            tokenize: native.tokenize,
+            batch_get_one: native.batch_get_one,
+            encode: native.encode,
+            decode: native.decode,
+            sampler_chain_default_params: native.sampler_chain_default_params,
+            sampler_chain_init: native.sampler_chain_init,
+            sampler_chain_add: native.sampler_chain_add,
+            sampler_init_greedy: native.sampler_init_greedy,
+            sampler_init_temp: native.sampler_init_temp,
+            sampler_init_dist: native.sampler_init_dist,
+            sampler_accept: native.sampler_accept,
+            sampler_sample: native.sampler_sample,
+            sampler_free: native.sampler_free,
+            vocab_is_eog: native.vocab_is_eog,
+            token_to_piece: native.token_to_piece,
         })
+    }
+
+    /// { prompt is a bounded localmt translation prompt and config is validated }
+    /// fn translate_prompt(&mut self, prompt: &LlamaTranslationPrompt, config: LlamaRuntimeConfig) -> Result<Translation, TranslationError>
+    /// { ret is Ok only when llama.cpp decodes a non-empty UTF-8 completion }
+    fn translate_prompt(
+        &mut self,
+        prompt: &LlamaTranslationPrompt,
+        config: LlamaRuntimeConfig,
+    ) -> Result<Translation, TranslationError> {
+        self.clear_memory()?;
+        let mut current_tokens = self.tokenize_prompt(prompt)?;
+        validate_generation_window(current_tokens.len(), config)?;
+
+        let mut sampler = LlamaSamplerHandle::new(self, config)?;
+        let mut batch = self.batch_for_tokens(&mut current_tokens)?;
+        let mut output = Vec::new();
+        let mut piece_buffer = vec![0_u8; TOKEN_PIECE_BUFFER_BYTES];
+
+        if self.model_has_encoder() {
+            self.encode_batch(batch)?;
+            let decoder_start_token = self.decoder_start_token();
+            current_tokens.clear();
+            current_tokens.push(decoder_start_token);
+            batch = self.batch_for_tokens(&mut current_tokens)?;
+        }
+
+        for _ in 0..config.max_output_tokens().get() {
+            self.decode_batch(batch)?;
+
+            let next_token = sampler.sample_next(self);
+            sampler.accept(next_token);
+            if self.is_eog(next_token) {
+                break;
+            }
+
+            self.append_token_piece(next_token, &mut output, &mut piece_buffer)?;
+            current_tokens.clear();
+            current_tokens.push(next_token);
+            batch = self.batch_for_tokens(&mut current_tokens)?;
+        }
+
+        translation_from_llama_bytes(output)
+    }
+
+    /// { self.context is a live llama context }
+    /// fn clear_memory(&mut self) -> Result<(), TranslationError>
+    /// { llama memory for the next request is empty when ret is Ok }
+    fn clear_memory(&mut self) -> Result<(), TranslationError> {
+        let memory = unsafe {
+            // SAFETY: context is owned by this LlamaModelContext and remains
+            // live for the duration of the call.
+            (self.get_memory)(self.context)
+        };
+        if memory.is_null() {
+            return Err(TranslationError::EngineUnavailable(
+                "llama.cpp context has no memory".to_owned(),
+            ));
+        }
+
+        unsafe {
+            // SAFETY: memory came from the live context and data=true clears
+            // both KV metadata and backing buffers between independent calls.
+            (self.memory_clear)(memory, true);
+        }
+        Ok(())
+    }
+
+    /// { prompt is valid UTF-8 text }
+    /// fn tokenize_prompt(&self, prompt: &LlamaTranslationPrompt) -> Result<Vec<LlamaToken>, TranslationError>
+    /// { ret contains at least one prompt token when llama.cpp tokenization succeeds }
+    fn tokenize_prompt(
+        &self,
+        prompt: &LlamaTranslationPrompt,
+    ) -> Result<Vec<LlamaToken>, TranslationError> {
+        let bytes = prompt.as_str().as_bytes();
+        let text_len = i32::try_from(bytes.len()).map_err(|_error| {
+            TranslationError::EngineUnavailable(
+                "llama.cpp prompt is too large to tokenize".to_owned(),
+            )
+        })?;
+
+        let needed = unsafe {
+            // SAFETY: bytes points to valid memory for text_len bytes. The
+            // first pass asks llama.cpp for the required token capacity.
+            (self.tokenize)(
+                self.vocab,
+                bytes.as_ptr().cast::<c_char>(),
+                text_len,
+                core::ptr::null_mut(),
+                0,
+                true,
+                true,
+            )
+        };
+        let capacity = token_capacity_from_llama_result(needed)?;
+        let mut tokens = vec![0; capacity];
+        let max_tokens = i32::try_from(tokens.len()).map_err(|_error| {
+            TranslationError::EngineUnavailable(
+                "llama.cpp token buffer exceeds ABI limits".to_owned(),
+            )
+        })?;
+
+        let written = unsafe {
+            // SAFETY: tokens owns max_tokens writable llama_token slots and
+            // bytes remains alive for the duration of tokenization.
+            (self.tokenize)(
+                self.vocab,
+                bytes.as_ptr().cast::<c_char>(),
+                text_len,
+                tokens.as_mut_ptr(),
+                max_tokens,
+                true,
+                true,
+            )
+        };
+        if written < 0 {
+            return Err(TranslationError::EngineUnavailable(
+                "llama.cpp token buffer was too small".to_owned(),
+            ));
+        }
+        if written == 0 {
+            return Err(TranslationError::EngineUnavailable(
+                "llama.cpp tokenized the prompt to zero tokens".to_owned(),
+            ));
+        }
+
+        let written = usize::try_from(written).map_err(|_error| {
+            TranslationError::EngineUnavailable(
+                "llama.cpp returned an invalid token count".to_owned(),
+            )
+        })?;
+        tokens.truncate(written);
+        Ok(tokens)
+    }
+
+    /// { tokens is non-empty and stored for at least the next llama call }
+    /// fn batch_for_tokens(&self, tokens: &mut [LlamaToken]) -> Result<LlamaBatch, TranslationError>
+    /// { ret is a llama batch view over tokens }
+    fn batch_for_tokens(&self, tokens: &mut [LlamaToken]) -> Result<LlamaBatch, TranslationError> {
+        if tokens.is_empty() {
+            return Err(TranslationError::EngineUnavailable(
+                "llama.cpp cannot decode an empty token batch".to_owned(),
+            ));
+        }
+        let token_count = i32::try_from(tokens.len()).map_err(|_error| {
+            TranslationError::EngineUnavailable(
+                "llama.cpp token batch exceeds ABI limits".to_owned(),
+            )
+        })?;
+
+        let batch = unsafe {
+            // SAFETY: tokens is a live mutable slice and llama_batch_get_one
+            // returns a by-value view consumed immediately by encode/decode.
+            (self.batch_get_one)(tokens.as_mut_ptr(), token_count)
+        };
+        Ok(batch)
+    }
+
+    /// { batch references live token storage }
+    /// fn encode_batch(&mut self, batch: LlamaBatch) -> Result<(), TranslationError>
+    /// { ret is Ok only when llama_encode accepts the prompt batch }
+    fn encode_batch(&mut self, batch: LlamaBatch) -> Result<(), TranslationError> {
+        let status = unsafe {
+            // SAFETY: context is live and batch was built from live token
+            // storage for this call.
+            (self.encode)(self.context, batch)
+        };
+        if status == 0 {
+            return Ok(());
+        }
+
+        Err(TranslationError::EngineUnavailable(format!(
+            "llama.cpp encode failed with status {status}"
+        )))
+    }
+
+    /// { batch references live token storage }
+    /// fn decode_batch(&mut self, batch: LlamaBatch) -> Result<(), TranslationError>
+    /// { ret is Ok only when llama_decode accepts the batch }
+    fn decode_batch(&mut self, batch: LlamaBatch) -> Result<(), TranslationError> {
+        let status = unsafe {
+            // SAFETY: context is live and batch was built from live token
+            // storage for this call.
+            (self.decode)(self.context, batch)
+        };
+        if status == 0 {
+            return Ok(());
+        }
+
+        Err(TranslationError::EngineUnavailable(format!(
+            "llama.cpp decode failed with status {status}"
+        )))
+    }
+
+    /// { self.model is a live llama model }
+    /// fn model_has_encoder(&self) -> bool
+    /// { ret mirrors llama_model_has_encoder for the loaded model }
+    fn model_has_encoder(&self) -> bool {
+        unsafe {
+            // SAFETY: model is owned by this context and remains live.
+            (self.model_has_encoder)(self.model)
+        }
+    }
+
+    /// { self.model and self.vocab are live }
+    /// fn decoder_start_token(&self) -> LlamaToken
+    /// { ret is the model decoder start token or BOS fallback }
+    fn decoder_start_token(&self) -> LlamaToken {
+        let token = unsafe {
+            // SAFETY: model is owned by this context and remains live.
+            (self.model_decoder_start_token)(self.model)
+        };
+        if token != LLAMA_TOKEN_NULL {
+            return token;
+        }
+
+        unsafe {
+            // SAFETY: vocab belongs to the live model.
+            (self.vocab_bos)(self.vocab)
+        }
+    }
+
+    /// { token came from llama_sampler_sample for this vocabulary }
+    /// fn is_eog(&self, token: LlamaToken) -> bool
+    /// { ret is true only for llama.cpp end-of-generation tokens }
+    fn is_eog(&self, token: LlamaToken) -> bool {
+        unsafe {
+            // SAFETY: vocab belongs to the live model and token is a llama
+            // token id returned by the same runtime.
+            (self.vocab_is_eog)(self.vocab, token)
+        }
+    }
+
+    /// { token is a non-EOG token from this vocabulary }
+    /// fn append_token_piece(&self, token: LlamaToken, output: &mut Vec<u8>, buffer: &mut Vec<u8>) -> Result<(), TranslationError>
+    /// { output is extended with the rendered llama token bytes when ret is Ok }
+    fn append_token_piece(
+        &self,
+        token: LlamaToken,
+        output: &mut Vec<u8>,
+        buffer: &mut Vec<u8>,
+    ) -> Result<(), TranslationError> {
+        loop {
+            let length = i32::try_from(buffer.len()).map_err(|_error| {
+                TranslationError::EngineUnavailable(
+                    "llama.cpp token piece buffer exceeds ABI limits".to_owned(),
+                )
+            })?;
+            let written = unsafe {
+                // SAFETY: buffer is writable for length bytes and vocab belongs
+                // to the live model.
+                (self.token_to_piece)(
+                    self.vocab,
+                    token,
+                    buffer.as_mut_ptr().cast::<c_char>(),
+                    length,
+                    0,
+                    true,
+                )
+            };
+            if written >= 0 {
+                let written = usize::try_from(written).map_err(|_error| {
+                    TranslationError::EngineUnavailable(
+                        "llama.cpp returned an invalid token text length".to_owned(),
+                    )
+                })?;
+                output.extend_from_slice(&buffer[..written]);
+                return Ok(());
+            }
+
+            let capacity = token_piece_retry_capacity(written, buffer.len())?;
+            buffer.resize(capacity, 0);
+        }
     }
 }
 
@@ -738,12 +1291,167 @@ impl Drop for LlamaModelContext {
     }
 }
 
+#[cfg(feature = "llama-runtime")]
+struct LlamaSamplerHandle {
+    sampler: *mut LlamaSampler,
+    sampler_accept: LlamaSamplerAccept,
+    sampler_sample: LlamaSamplerSample,
+    sampler_free: LlamaSamplerFree,
+}
+
+#[cfg(feature = "llama-runtime")]
+impl LlamaSamplerHandle {
+    /// { context owns resolved sampler symbols and config was validated }
+    /// fn new(context: &LlamaModelContext, config: LlamaRuntimeConfig) -> Result<Self, TranslationError>
+    /// { ret owns a llama sampler chain until dropped }
+    fn new(
+        context: &LlamaModelContext,
+        config: LlamaRuntimeConfig,
+    ) -> Result<Self, TranslationError> {
+        let mut params = unsafe {
+            // SAFETY: this calls the resolved llama.cpp factory and receives a
+            // by-value params struct matching the pinned C ABI boundary.
+            (context.sampler_chain_default_params)()
+        };
+        params.no_perf = true;
+
+        let sampler = unsafe {
+            // SAFETY: params came from the same library that consumes it.
+            (context.sampler_chain_init)(params)
+        };
+        if sampler.is_null() {
+            return Err(TranslationError::EngineUnavailable(
+                "llama.cpp failed to create sampler chain".to_owned(),
+            ));
+        }
+
+        let handle = Self {
+            sampler,
+            sampler_accept: context.sampler_accept,
+            sampler_sample: context.sampler_sample,
+            sampler_free: context.sampler_free,
+        };
+        handle.add_sampling_stage(context, config)?;
+        Ok(handle)
+    }
+
+    /// { self.sampler is a live sampler chain }
+    /// fn add_sampling_stage(&self, context: &LlamaModelContext, config: LlamaRuntimeConfig) -> Result<(), TranslationError>
+    /// { self.sampler ends with a token-selecting sampler when ret is Ok }
+    fn add_sampling_stage(
+        &self,
+        context: &LlamaModelContext,
+        config: LlamaRuntimeConfig,
+    ) -> Result<(), TranslationError> {
+        if config.temperature() == 0.0 {
+            let greedy = unsafe {
+                // SAFETY: initializes an owned greedy sampler from the same
+                // library as the chain.
+                (context.sampler_init_greedy)()
+            };
+            return self.add_component(context, greedy, "greedy");
+        }
+
+        let temperature = unsafe {
+            // SAFETY: initializes an owned temperature sampler from the same
+            // library as the chain.
+            (context.sampler_init_temp)(config.temperature())
+        };
+        self.add_component(context, temperature, "temperature")?;
+
+        let distribution = unsafe {
+            // SAFETY: initializes an owned distribution sampler from the same
+            // library as the chain.
+            (context.sampler_init_dist)(LLAMA_DEFAULT_SEED)
+        };
+        self.add_component(context, distribution, "distribution")
+    }
+
+    /// { self.sampler is live and component is either null or owned by llama.cpp }
+    /// fn add_component(&self, context: &LlamaModelContext, component: *mut LlamaSampler, name: &'static str) -> Result<(), TranslationError>
+    /// { component ownership has moved into self.sampler when ret is Ok }
+    fn add_component(
+        &self,
+        context: &LlamaModelContext,
+        component: *mut LlamaSampler,
+        name: &'static str,
+    ) -> Result<(), TranslationError> {
+        if component.is_null() {
+            return Err(TranslationError::EngineUnavailable(format!(
+                "llama.cpp failed to create {name} sampler"
+            )));
+        }
+
+        unsafe {
+            // SAFETY: sampler and component were created by the same library;
+            // the chain takes ownership of the component.
+            (context.sampler_chain_add)(self.sampler, component);
+        }
+        Ok(())
+    }
+
+    /// { self.sampler and context.context are live after a successful decode }
+    /// fn sample_next(&mut self, context: &mut LlamaModelContext) -> LlamaToken
+    /// { ret is the token selected from the latest logits }
+    fn sample_next(&mut self, context: &mut LlamaModelContext) -> LlamaToken {
+        unsafe {
+            // SAFETY: sampler and context are live; -1 asks llama.cpp to sample
+            // from the latest token logits.
+            (self.sampler_sample)(self.sampler, context.context, -1)
+        }
+    }
+
+    /// { token came from this sampler }
+    /// fn accept(&mut self, token: LlamaToken)
+    /// { self sampler state includes token }
+    fn accept(&mut self, token: LlamaToken) {
+        unsafe {
+            // SAFETY: sampler is live and token came from the same sampler.
+            (self.sampler_accept)(self.sampler, token);
+        }
+    }
+}
+
+#[cfg(feature = "llama-runtime")]
+impl Drop for LlamaSamplerHandle {
+    fn drop(&mut self) {
+        unsafe {
+            // SAFETY: sampler is an owned chain returned by llama.cpp and is
+            // released once here.
+            (self.sampler_free)(self.sampler);
+        }
+    }
+}
+
+/// { bytes are raw token pieces emitted by llama.cpp }
+/// fn translation_from_llama_bytes(bytes: Vec<u8>) -> Result<Translation, TranslationError>
+/// { ret is Ok only when bytes are non-empty valid UTF-8 after text validation }
+#[cfg(any(test, feature = "llama-runtime"))]
+fn translation_from_llama_bytes(bytes: Vec<u8>) -> Result<Translation, TranslationError> {
+    let output = String::from_utf8(bytes).map_err(|_error| {
+        TranslationError::EngineUnavailable("llama.cpp produced non-UTF-8 output".to_owned())
+    })?;
+    let text = NonEmptyText::new(output).map_err(TranslationError::InvalidOutput)?;
+    Ok(Translation::new(text))
+}
+
 /// { true }
 /// fn lock_backend_refcount() -> MutexGuard<'static, usize>
 /// { ret is the global llama backend refcount lock, recovering from poison }
 #[cfg(feature = "llama-runtime")]
 fn lock_backend_refcount() -> MutexGuard<'static, usize> {
     match LLAMA_BACKEND_REFCOUNT.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// { context is the loaded llama model/context mutex }
+/// fn lock_model_context(context: &Mutex<LlamaModelContext>) -> MutexGuard<'_, LlamaModelContext>
+/// { ret is the model/context lock, recovering from poison }
+#[cfg(feature = "llama-runtime")]
+fn lock_model_context(context: &Mutex<LlamaModelContext>) -> MutexGuard<'_, LlamaModelContext> {
+    match context.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
@@ -799,8 +1507,13 @@ fn apply_runtime_config_to_context_params(
     config: LlamaRuntimeConfig,
 ) -> Result<(), LlamaEngineError> {
     params.n_ctx = nonzero_to_u32("context_tokens", config.context_tokens())?;
+    params.n_batch = params.n_ctx;
+    if params.n_ubatch == 0 || params.n_ubatch > params.n_batch {
+        params.n_ubatch = params.n_batch;
+    }
     params.n_threads = nonzero_to_i32("cpu_threads", config.cpu_threads())?;
     params.n_threads_batch = params.n_threads;
+    params.no_perf = true;
     Ok(())
 }
 
@@ -808,7 +1521,91 @@ fn apply_runtime_config_to_context_params(
 struct RawLlamaRuntimeConfig {
     context_tokens: Option<usize>,
     cpu_threads: Option<usize>,
+    max_output_tokens: Option<usize>,
     temperature: Option<f32>,
+}
+
+/// { result came from llama_tokenize first pass }
+/// fn token_capacity_from_llama_result(result: i32) -> Result<usize, TranslationError>
+/// { ret is Ok only when llama.cpp reported a positive token capacity }
+#[cfg(feature = "llama-runtime")]
+fn token_capacity_from_llama_result(result: i32) -> Result<usize, TranslationError> {
+    let capacity = if result < 0 {
+        result.checked_neg().ok_or_else(|| {
+            TranslationError::EngineUnavailable(
+                "llama.cpp returned an invalid token capacity".to_owned(),
+            )
+        })?
+    } else {
+        result
+    };
+    if capacity == 0 {
+        return Err(TranslationError::EngineUnavailable(
+            "llama.cpp reported zero prompt tokens".to_owned(),
+        ));
+    }
+
+    usize::try_from(capacity).map_err(|_error| {
+        TranslationError::EngineUnavailable(
+            "llama.cpp returned an invalid token capacity".to_owned(),
+        )
+    })
+}
+
+/// { result is a negative llama_token_to_piece return and current_capacity is positive }
+/// fn token_piece_retry_capacity(result: i32, current_capacity: usize) -> Result<usize, TranslationError>
+/// { ret is the next bounded token-piece buffer capacity }
+#[cfg(feature = "llama-runtime")]
+fn token_piece_retry_capacity(
+    result: i32,
+    current_capacity: usize,
+) -> Result<usize, TranslationError> {
+    let reported = result.checked_neg().ok_or_else(|| {
+        TranslationError::EngineUnavailable(
+            "llama.cpp returned an invalid token text length".to_owned(),
+        )
+    })?;
+    let reported = usize::try_from(reported).map_err(|_error| {
+        TranslationError::EngineUnavailable(
+            "llama.cpp returned an invalid token text length".to_owned(),
+        )
+    })?;
+    let doubled = current_capacity.checked_mul(2).ok_or_else(|| {
+        TranslationError::EngineUnavailable(
+            "llama.cpp token text buffer resize overflowed".to_owned(),
+        )
+    })?;
+    let next = reported.max(doubled);
+    if next <= MAX_TOKEN_PIECE_BUFFER_BYTES {
+        return Ok(next);
+    }
+
+    Err(TranslationError::EngineUnavailable(
+        "llama.cpp token text exceeds localmt buffer limit".to_owned(),
+    ))
+}
+
+/// { prompt_tokens is the tokenized prompt length and config is validated }
+/// fn validate_generation_window(prompt_tokens: usize, config: LlamaRuntimeConfig) -> Result<(), TranslationError>
+/// { ret is Ok only when prompt plus generation budget fits configured context }
+#[cfg(feature = "llama-runtime")]
+fn validate_generation_window(
+    prompt_tokens: usize,
+    config: LlamaRuntimeConfig,
+) -> Result<(), TranslationError> {
+    let required_tokens = prompt_tokens
+        .checked_add(config.max_output_tokens().get())
+        .and_then(|value| value.checked_sub(1))
+        .ok_or_else(|| {
+            TranslationError::EngineUnavailable("llama.cpp generation window overflowed".to_owned())
+        })?;
+    if required_tokens <= config.context_tokens().get() {
+        return Ok(());
+    }
+
+    Err(TranslationError::EngineUnavailable(
+        "llama.cpp prompt and output budget exceed configured context window".to_owned(),
+    ))
 }
 
 fn nonzero_or_default(
@@ -971,12 +1768,13 @@ mod tests {
     #[test]
     fn runtime_config_parses_optional_json_limits() -> Result<(), Box<dyn std::error::Error>> {
         let config = LlamaRuntimeConfig::from_json_str(
-            r#"{"context_tokens": 2048, "cpu_threads": 4, "temperature": 0.0}"#,
+            r#"{"context_tokens": 2048, "cpu_threads": 4, "temperature": 0.0, "max_output_tokens": 96}"#,
         )?;
 
         assert_eq!(config.context_tokens().get(), 2048);
         assert_eq!(config.cpu_threads().get(), 4);
         assert_eq!(config.temperature(), 0.0);
+        assert_eq!(config.max_output_tokens().get(), 96);
         Ok(())
     }
 
@@ -985,6 +1783,8 @@ mod tests {
         let zero_threads =
             LlamaRuntimeConfig::from_json_str(r#"{"context_tokens": 2048, "cpu_threads": 0}"#);
         let negative_temperature = LlamaRuntimeConfig::from_json_str(r#"{"temperature": -0.1}"#);
+        let zero_max_output_tokens =
+            LlamaRuntimeConfig::from_json_str(r#"{"max_output_tokens": 0}"#);
 
         assert!(matches!(
             zero_threads,
@@ -999,6 +1799,46 @@ mod tests {
                 field: "temperature",
                 ..
             })
+        ));
+        assert!(matches!(
+            zero_max_output_tokens,
+            Err(LlamaEngineError::InvalidRuntimeConfig {
+                field: "max_output_tokens",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn llama_output_bytes_become_translation_text() {
+        let translation = super::translation_from_llama_bytes("Привет офлайн".as_bytes().to_vec());
+
+        assert!(matches!(
+            translation,
+            Ok(ref item) if item.text().as_str() == "Привет офлайн"
+        ));
+    }
+
+    #[test]
+    fn llama_output_bytes_reject_empty_text() {
+        let translation = super::translation_from_llama_bytes(b" \n ".to_vec());
+
+        assert!(matches!(
+            translation,
+            Err(localmt_engine::TranslationError::InvalidOutput(
+                localmt_core::TextError::Empty
+            ))
+        ));
+    }
+
+    #[test]
+    fn llama_output_bytes_reject_invalid_utf8() {
+        let translation = super::translation_from_llama_bytes(vec![0xff]);
+
+        assert!(matches!(
+            translation,
+            Err(localmt_engine::TranslationError::EngineUnavailable(reason))
+                if reason == "llama.cpp produced non-UTF-8 output"
         ));
     }
 
@@ -1034,6 +1874,45 @@ mod tests {
                 field: "cpu_threads",
                 ..
             })
+        ));
+    }
+
+    #[test]
+    #[cfg(feature = "llama-runtime")]
+    fn generation_window_rejects_prompt_and_output_budget_overflow()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config =
+            LlamaRuntimeConfig::from_json_str(r#"{"context_tokens": 8, "max_output_tokens": 4}"#)?;
+
+        let error = super::validate_generation_window(6, config);
+
+        assert!(matches!(
+            error,
+            Err(localmt_engine::TranslationError::EngineUnavailable(reason))
+                if reason == "llama.cpp prompt and output budget exceed configured context window"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "llama-runtime")]
+    fn token_piece_retry_capacity_uses_llama_reported_size()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let capacity = super::token_piece_retry_capacity(-300, 128)?;
+
+        assert_eq!(capacity, 300);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "llama-runtime")]
+    fn token_piece_retry_capacity_rejects_invalid_result() {
+        let capacity = super::token_piece_retry_capacity(i32::MIN, 128);
+
+        assert!(matches!(
+            capacity,
+            Err(localmt_engine::TranslationError::EngineUnavailable(reason))
+                if reason == "llama.cpp returned an invalid token text length"
         ));
     }
 

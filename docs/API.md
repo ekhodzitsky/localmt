@@ -126,17 +126,17 @@ Translate the following segment into {target_language}, without additional expla
 ```
 
 `LlamaRuntimeConfig` currently parses local JSON config for context size, CPU
-threads, and temperature. `LlamaTranslator::load` opens the configured
-llama.cpp dynamic library, initializes the backend, loads the verified GGUF
-model, and creates a context when built with `llama-runtime`.
+threads, max generated tokens, and temperature. `LlamaTranslator::load` opens
+the configured llama.cpp dynamic library, initializes the backend, loads the
+verified GGUF model, and creates a context when built with `llama-runtime`.
 The Android-facing FFI exposes the same readiness path through
 `localmt_ffi_gguf_model_pack_summary`,
 `localmt_ffi_llama_runtime_enabled`, and
 `localmt_ffi_llama_translator_open`. The CLI wrapper is
 `localmt ffi gguf-translate-smoke PACK FROM TO TEXT`; it validates the pack,
 builds the stable HY-MT prompt, preflights the native loader when
-`llama-runtime` is enabled, and reports `runtime disabled` at translate time
-until prompt tokenization, eval, and decoding are wired.
+`llama-runtime` is enabled, and runs bounded llama.cpp tokenization, eval,
+sampling, token-to-piece rendering, and UTF-8 output validation.
 The llama.cpp integration boundary is a dynamic library path configured either
 through `localmt_ffi_llama_runtime_configure()` or the
 `LLAMA_CPP_DYLIB_PATH` environment variable. Missing, relative, non-file,

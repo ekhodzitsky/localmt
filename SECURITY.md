@@ -24,3 +24,8 @@ Include:
 - FFI callers own all input/output buffers and must treat non-zero status codes
   as hard failures.
 - Model files are not committed to this repository.
+- The configured `libllama` dynamic library and GGUF model files are local
+  trusted artifacts, not arbitrary remote inputs. Production builds must pin a
+  patched llama.cpp revision and record its provenance; as of May 10, 2026,
+  upstream advisories list fixes for token-to-piece vocabulary overflow in
+  `b5662` and GGUF tensor-size overflow in `b7824`.

@@ -20,7 +20,8 @@ FFI, and Android foundations.
 - [x] Add native loader preflight for configured llama.cpp dynamic libraries.
 - [x] Implement llama.cpp model/context creation behind the existing GGUF FFI
       handle.
-- [ ] Implement prompt tokenization, llama eval, sampling, and UTF-8 decode.
+- [x] Implement prompt tokenization, llama eval, sampling, and UTF-8 decode.
+- [ ] Run the llama path against a real local `libllama` and Hy-MT GGUF model.
 
 ## Android
 
@@ -38,6 +39,8 @@ FFI, and Android foundations.
       `vi`, and `ja`.
 - [ ] Encode the HY-MT prompt template in Rust-owned backend config.
 - [ ] Verify STQ1_0 support status in llama.cpp before claiming stable support.
+- [ ] Pin a patched llama.cpp build revision and record build provenance in
+      release artifacts.
 - [ ] Document model license and redistribution constraints.
 - [ ] Add a local-only download/build guide for users who accept the upstream
       model terms.

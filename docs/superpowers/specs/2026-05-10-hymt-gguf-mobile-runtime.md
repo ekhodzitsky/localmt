@@ -44,7 +44,8 @@ Planned crate:
 - `localmt-engine-llama`: owns llama.cpp/GGUF integration details. The current
   slice is present: Rust-owned GGUF model plan, HY-MT prompt formatting, typed
   runtime config parsing, native loader preflight for a configured `libllama`,
-  and CPU-only model/context open lifecycle before decode-loop inference.
+  CPU-only model/context open lifecycle, and bounded prompt tokenization,
+  eval, sampling, and UTF-8 decode through the dynamic llama.cpp C ABI.
 
 Existing crates remain responsible for:
 

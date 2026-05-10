@@ -20,4 +20,5 @@ llama-runtime.json
 
 Only `hymt.gguf` is required by the model-pack verifier. The
 `gguf-translate-smoke` readiness path also validates `llama-runtime.json` when
-the manifest declares it.
+the manifest declares it. `max_output_tokens` bounds generation for mobile
+latency and memory predictability.

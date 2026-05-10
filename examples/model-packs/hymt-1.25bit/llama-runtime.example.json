@@ -1,5 +1,6 @@
 {
   "context_tokens": 2048,
   "cpu_threads": 1,
+  "max_output_tokens": 256,
   "temperature": 0.0
 }

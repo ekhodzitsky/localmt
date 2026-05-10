@@ -1036,7 +1036,7 @@ fn ffi_llama_engine_error_status(error: LlamaEngineError) -> i32 {
 #[cfg(feature = "llama-runtime")]
 fn ffi_llama_translation_error_status(error: TranslationError) -> i32 {
     match error {
-        TranslationError::EngineUnavailable(_reason) => LOCALMT_FFI_RUNTIME_DISABLED,
+        TranslationError::EngineUnavailable(_reason) => LOCALMT_FFI_TRANSLATION_ERROR,
         TranslationError::UnsupportedPair(_pair) => LOCALMT_FFI_INVALID_PAIR,
         TranslationError::InvalidOutput(_error) => LOCALMT_FFI_TRANSLATION_ERROR,
     }
@@ -1438,6 +1438,8 @@ mod tests {
     use super::LOCALMT_FFI_TOKENIZER_DISABLED;
     #[cfg(feature = "hf-tokenizers")]
     use super::LOCALMT_FFI_TOKENIZER_ERROR;
+    #[cfg(feature = "llama-runtime")]
+    use super::LOCALMT_FFI_TRANSLATION_ERROR;
     use super::{
         LOCALMT_FFI_BUFFER_TOO_SMALL, LOCALMT_FFI_INVALID_LANGUAGE, LOCALMT_FFI_INVALID_PAIR,
         LOCALMT_FFI_INVALID_UTF8, LOCALMT_FFI_MODEL_PACK_ERROR,
@@ -2296,6 +2298,16 @@ mod tests {
             ),
             LOCALMT_FFI_NULL_POINTER
         );
+    }
+
+    #[test]
+    #[cfg(feature = "llama-runtime")]
+    fn ffi_llama_translation_runtime_failures_map_to_translation_error() {
+        let status = super::ffi_llama_translation_error_status(
+            localmt::TranslationError::EngineUnavailable("decode failed".to_owned()),
+        );
+
+        assert_eq!(status, LOCALMT_FFI_TRANSLATION_ERROR);
     }
 
     #[test]

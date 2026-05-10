@@ -353,8 +353,8 @@ int32_t localmt_ffi_hf_mock_translate(
  *
  * Default builds return LOCALMT_FFI_RUNTIME_DISABLED. llama-runtime builds
  * preflight the configured native library, then load the verified GGUF model
- * and create a llama context. Translation still returns
- * LOCALMT_FFI_RUNTIME_DISABLED until the decode loop is wired.
+ * and create a llama context. Translation runs bounded tokenization, eval,
+ * sampling, token-to-piece rendering, and UTF-8 validation through llama.cpp.
  */
 int32_t localmt_ffi_llama_translator_open(
     const uint8_t *path_ptr,
