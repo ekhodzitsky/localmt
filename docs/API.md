@@ -25,13 +25,18 @@ declared files exist, SHA-256 digests match, and the first supported languages
 are present: `en`, `ru`, `th`, `vi`, and `ja`.
 
 Each file `kind` is parsed as a typed role, not a free-form string. Supported
-roles are `encoder`, `decoder`, `decoder_with_past`, `tokenizer`, `vocab`,
-`config`, and `generation_config`. A manifest cannot declare the same role more
-than once. After verification, `ModelPack<Verified>::file_path(role)` resolves a
-declared role to its model-pack-root-qualified file path; missing optional roles
-return `None`.
+ONNX-style roles are `encoder`, `decoder`, `decoder_with_past`, `tokenizer`,
+`vocab`, `config`, and `generation_config`. Supported GGUF/llama.cpp roles are
+`gguf_model`, `chat_template`, and `llama_runtime_config`. A manifest cannot
+declare the same role more than once. After verification,
+`ModelPack<Verified>::file_path(role)` resolves a declared role to its
+model-pack-root-qualified file path; missing optional roles return `None`.
 The optional `config` role can carry tokenizer metadata and, for ONNX Runtime
 packs, the local `ort_io` tensor-name contract consumed by `localmt-engine-ort`.
+For Hy-MT/GGUF packs, `GgufModelAssetPlan::from_pack` requires
+`runtime: "llama.cpp"` and a `gguf_model` role, then carries optional
+`chat_template` and `llama_runtime_config` paths for the future llama.cpp
+backend.
 
 Minimal manifest shape:
 
@@ -66,6 +71,7 @@ localmt model verify ./models/m2m100-418m-int8
 localmt model trust ./models/m2m100-418m-int8
 localmt model plan ./models/m2m100-418m-int8
 localmt model doctor ./models/m2m100-418m-int8
+localmt model doctor ./models/hymt-1.25bit
 localmt model runtime-config ./models/m2m100-418m-int8
 localmt model tokenize ./models/m2m100-418m-int8 en ru "hello offline"
 localmt ffi startup
@@ -95,12 +101,14 @@ not load ONNX Runtime sessions or execute decoder graphs.
 `model runtime-config` is the stricter no-inference gate for future ORT
 generation: it requires both a valid `generation_config` and a valid `ort_io`
 contract, then prints the selected generation limit and tensor names.
-`model doctor` is the single local readiness gate for a pack: it runs facade
-planning, the Android startup ABI summary, the shared FFI model-pack summary,
-deterministic mock FFI translation, HF mock translation, ORT generator
-preflight, and the ORT translator FFI smoke path. In default builds, disabled
-tokenizer and runtime features are reported as diagnostic lines instead of
-command failures.
+`model doctor` is the single local readiness gate for a pack. For ONNX-style
+packs it runs facade planning, the Android startup ABI summary, the shared FFI
+model-pack summary, deterministic mock FFI translation, HF mock translation,
+ORT generator preflight, and the ORT translator FFI smoke path. In default
+builds, disabled tokenizer and runtime features are reported as diagnostic
+lines instead of command failures. For `runtime: "llama.cpp"` packs, it runs
+GGUF model-pack validation and reports the verified GGUF, chat-template, and
+runtime-config asset readiness without loading llama.cpp.
 
 ## Facade Planning
 

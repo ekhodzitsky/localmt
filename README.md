@@ -7,8 +7,13 @@
 
 `localmt` is a Rust library for running neural machine translation entirely on
 device: no network, no cloud round-trips, no data leaving the phone. Built for
-high-end Android devices first (Xiaomi 17 / `arm64-v8a`), designed to
-generalise to any platform.
+Android `arm64-v8a` devices first, with Xiaomi 17-class phones as the
+performance target and Redmi Note 14 as the first real-device smoke target.
+
+The production model strategy is now Hy-MT1.5-first: use Tencent Hunyuan's
+Hy-MT1.5-1.8B-1.25bit GGUF model as the first real mobile translation target,
+run it through a llama.cpp/STQ1_0 backend, and keep ONNX Runtime as an
+experimental compatibility backend.
 
 ```bash
 # Translate offline in one command
@@ -23,10 +28,13 @@ cargo run -p localmt-cli --features "hf-tokenizers ort-runtime" -- \
 - **Privacy-first** - text never leaves the device. No API keys, no telemetry.
 - **Offline by default** - works in airplane mode, in remote areas, behind
   corporate firewalls.
+- **Hy-MT ready** - the first production path targets Hy-MT1.5-1.8B-1.25bit
+  GGUF, a 440 MB on-device translation model that covers the starting language
+  set.
 - **Verified model packs** - SHA-256 checksums, typed file roles, and trust
   artifacts so you know exactly what model is running.
-- **Swappable backends** - ONNX Runtime Mobile today, Candle or custom engines
-  tomorrow. Your app code stays the same.
+- **Swappable backends** - llama.cpp/GGUF first, ONNX Runtime experimental, and
+  future engines behind the same Rust traits. Your app code stays the same.
 
 ## Supported languages
 
@@ -53,8 +61,11 @@ cargo install --path crates/localmt-cli --features "hf-tokenizers ort-runtime" -
 
 ### 2. Grab or build a model pack
 
-A model pack is a directory with a `manifest.json` and the ONNX/graph files it
-declares. You can generate a manifest for an existing directory:
+A model pack is a directory with a `manifest.json` and the local model/runtime
+files it declares. The next production pack format will support Hy-MT GGUF
+assets; the current implemented pack flow supports ONNX/graph roles.
+
+You can generate a manifest for an existing ONNX-style directory:
 
 ```bash
 localmt model write-manifest ./models/m2m100-418m-int8 \
@@ -75,6 +86,25 @@ export ORT_DYLIB_PATH=/opt/homebrew/lib/libonnxruntime.dylib
 localmt ffi ort-translate-smoke ./models/m2m100-418m-int8 en ja "hello"
 ```
 
+The next implementation milestone is:
+
+```bash
+localmt ffi gguf-translate-smoke ./models/hymt-1.25bit en ru "hello world"
+```
+
+That command will load a verified Hy-MT1.5 GGUF model pack through a
+llama.cpp-backed runtime.
+
+The current GGUF preflight milestone is already available through model-pack
+doctor:
+
+```bash
+localmt model doctor ./models/hymt-1.25bit
+```
+
+See [`examples/model-packs/hymt-1.25bit`](examples/model-packs/hymt-1.25bit)
+for the expected manifest shape.
+
 ### 4. Embed in Android
 
 Build the FFI crate for `arm64-v8a` and link it in your NDK project:
@@ -92,18 +122,39 @@ The C header is at `crates/localmt-ffi/include/localmt_ffi.h`. See
 localmt-cli  ->  localmt facade  ->  localmt-engine
      |                 |                    |
      v                 v                    v
-localmt-ffi  ->  localmt-pipeline  ->  localmt-engine-ort
+localmt-ffi  ->  localmt-pipeline  ->  localmt-engine-llama
      |                 |                    |
      v                 v                    v
-Android app  ->  localmt-tokenizer ->  localmt-models
+Android app  ->  localmt-models   ->  llama.cpp / GGUF
 ```
 
 - **Library-first** - every crate is a reusable building block. Apps and mobile
   shells are thin adapters around the Rust API.
 - **Feature-gated backends** - default builds compile in milliseconds with mock
-  engines; enable `hf-tokenizers` and `ort-runtime` for real inference.
+  engines; enable backend features for real inference.
 - **Pointer-free C ABI** - null-safe FFI handles, explicit buffer contracts, and
   no undefined behaviour across the JNI boundary.
+
+## Production Model Target
+
+The first production target is Hy-MT1.5-1.8B-1.25bit GGUF:
+
+- 440 MB compressed translation model package.
+- 33 languages and 1,056 translation directions reported by Tencent Hunyuan.
+- Covers the initial `localmt` languages: English, Russian, Thai, Vietnamese,
+  and Japanese.
+- Intended for on-device offline mobile translation.
+- Requires llama.cpp support for STQ1_0 / Sherry quantization before it can be
+  treated as stable in this project.
+
+Model assets stay outside the repository. `localmt` should verify and load
+user-supplied model packs; it must not commit or redistribute model weights.
+
+References:
+
+- https://huggingface.co/tencent/Hy-MT1.5-1.8B-1.25bit-GGUF
+- https://huggingface.co/tencent/HY-MT1.5-1.8B
+- https://github.com/ggml-org/llama.cpp/pull/22836
 
 ## Platform support
 
@@ -120,6 +171,8 @@ Android app  ->  localmt-tokenizer ->  localmt-models
 | [`docs/API.md`](docs/API.md) | Internal architecture, crate boundaries, FFI contract, model-pack format, generation config |
 | [`docs/android-build.md`](docs/android-build.md) | Android/JNI build notes, feature flags, and FFI call flow |
 | [`docs/performance.md`](docs/performance.md) | Real-model latency baselines and bottleneck notes |
+| [`ROADMAP.md`](ROADMAP.md) | Hy-MT/GGUF product and engineering roadmap |
+| [`TODO.md`](TODO.md) | Current implementation checklist |
 
 ## License
 

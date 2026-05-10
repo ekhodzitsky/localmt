@@ -17,6 +17,7 @@ const TRUST_FILE_NAME: &str = ".localmt-trust.json";
 const SCHEMA_VERSION: u16 = 0;
 const TRUST_SCHEMA_VERSION: u16 = 1;
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
+const LLAMA_CPP_RUNTIME: &str = "llama.cpp";
 const REQUIRED_LANGUAGES: [Language; 5] = [
     Language::English,
     Language::Russian,
@@ -383,6 +384,12 @@ pub enum ModelFileRole {
     Config,
     /// Generation configuration file.
     GenerationConfig,
+    /// GGUF model file for llama.cpp-compatible runtimes.
+    GgufModel,
+    /// Prompt chat-template file for prompt-completion runtimes.
+    ChatTemplate,
+    /// llama.cpp runtime configuration metadata.
+    LlamaRuntimeConfig,
 }
 
 /// Backward-compatible name for manifest-declared file roles.
@@ -408,6 +415,9 @@ impl ModelFileRole {
             "vocab" => Ok(Self::Vocabulary),
             "config" => Ok(Self::Config),
             "generation_config" => Ok(Self::GenerationConfig),
+            "gguf_model" => Ok(Self::GgufModel),
+            "chat_template" => Ok(Self::ChatTemplate),
+            "llama_runtime_config" => Ok(Self::LlamaRuntimeConfig),
             _ => Err(ModelPackError::UnsupportedFileRole(value.to_owned())),
         }
     }
@@ -424,6 +434,9 @@ impl ModelFileRole {
             Self::Vocabulary => "vocab",
             Self::Config => "config",
             Self::GenerationConfig => "generation_config",
+            Self::GgufModel => "gguf_model",
+            Self::ChatTemplate => "chat_template",
+            Self::LlamaRuntimeConfig => "llama_runtime_config",
         }
     }
 }
@@ -552,6 +565,101 @@ impl ModelFile {
         &self.sha256
     }
 }
+
+/// Verified GGUF model-pack asset plan for llama.cpp-compatible runtimes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GgufModelAssetPlan {
+    model_id: ModelId,
+    model_path: PathBuf,
+    chat_template_path: Option<PathBuf>,
+    runtime_config_path: Option<PathBuf>,
+}
+
+impl GgufModelAssetPlan {
+    /// { pack has verified manifest, files, and checksums }
+    /// fn from_pack(pack: &`ModelPack<Verified>`) -> Result<Self, GgufModelAssetPlanError>
+    /// { ret is Ok only when pack declares llama.cpp runtime and a gguf_model role }
+    pub fn from_pack(pack: &ModelPack<Verified>) -> Result<Self, GgufModelAssetPlanError> {
+        let runtime = pack.manifest().runtime();
+        if runtime.as_str() != LLAMA_CPP_RUNTIME {
+            return Err(GgufModelAssetPlanError::UnsupportedRuntime {
+                expected: LLAMA_CPP_RUNTIME,
+                actual: runtime.clone(),
+            });
+        }
+
+        let model_path = pack.file_path(ModelFileRole::GgufModel).ok_or(
+            GgufModelAssetPlanError::MissingRequiredFileRole(ModelFileRole::GgufModel),
+        )?;
+
+        Ok(Self {
+            model_id: pack.manifest().model_id().clone(),
+            model_path,
+            chat_template_path: pack.file_path(ModelFileRole::ChatTemplate),
+            runtime_config_path: pack.file_path(ModelFileRole::LlamaRuntimeConfig),
+        })
+    }
+
+    /// { true }
+    /// fn model_id(&self) -> &ModelId
+    /// { ret is the verified GGUF model-pack id }
+    pub const fn model_id(&self) -> &ModelId {
+        &self.model_id
+    }
+
+    /// { true }
+    /// fn model_path(&self) -> &Path
+    /// { ret is the root-qualified GGUF model path }
+    pub fn model_path(&self) -> &Path {
+        &self.model_path
+    }
+
+    /// { true }
+    /// fn chat_template_path(&self) -> `Option<&Path>`
+    /// { ret is Some only when a chat_template role was declared }
+    pub fn chat_template_path(&self) -> Option<&Path> {
+        self.chat_template_path.as_deref()
+    }
+
+    /// { true }
+    /// fn runtime_config_path(&self) -> `Option<&Path>`
+    /// { ret is Some only when a llama_runtime_config role was declared }
+    pub fn runtime_config_path(&self) -> Option<&Path> {
+        self.runtime_config_path.as_deref()
+    }
+}
+
+/// GGUF asset planning error.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GgufModelAssetPlanError {
+    /// Manifest runtime is not the llama.cpp runtime required by GGUF planning.
+    UnsupportedRuntime {
+        /// Expected runtime id.
+        expected: &'static str,
+        /// Actual manifest runtime.
+        actual: ModelRuntime,
+    },
+    /// A required GGUF model-pack file role is missing.
+    MissingRequiredFileRole(ModelFileRole),
+}
+
+impl fmt::Display for GgufModelAssetPlanError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedRuntime { expected, actual } => {
+                write!(
+                    formatter,
+                    "unsupported GGUF runtime: expected {expected}, got {actual}"
+                )
+            }
+            Self::MissingRequiredFileRole(role) => {
+                write!(formatter, "missing required GGUF model file role: {role}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for GgufModelAssetPlanError {}
 
 /// Model-pack manifest and verification error.
 #[derive(Debug)]
@@ -1222,14 +1330,20 @@ mod tests {
     use localmt_core::Language;
 
     use crate::{
-        Discovered, MODEL_PACK_TRUST_SCHEMA_VERSION, ModelArchitecture, ModelFile, ModelFileRole,
-        ModelId, ModelLicense, ModelManifest, ModelPack, ModelPackError, ModelPackVersion,
-        ModelRelativePath, ModelRuntime, Sha256Digest,
+        Discovered, GgufModelAssetPlan, GgufModelAssetPlanError, MODEL_PACK_TRUST_SCHEMA_VERSION,
+        ModelArchitecture, ModelFile, ModelFileRole, ModelId, ModelLicense, ModelManifest,
+        ModelPack, ModelPackError, ModelPackVersion, ModelRelativePath, ModelRuntime, Sha256Digest,
     };
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
     const TOKENIZER_SHA256: &str =
         "38395078aa8c0af1657b8fc788f358d57e5f5fea99c8cdc004198e3c6fffbe71";
+    const GGUF_MODEL_SHA256: &str =
+        "a561ab462e9c80d55c2ca56fd846a30001aac1dea00c99d7e13e2b1320b88024";
+    const CHAT_TEMPLATE_SHA256: &str =
+        "90d69c78fb9ef942c8ce0a0d88a7455572ada06044bc1516473472664ddd013b";
+    const LLAMA_RUNTIME_CONFIG_SHA256: &str =
+        "4b825731b61ba8b6858381a904d807b1ae1f24bd163cc485d8082cd2198e0d0e";
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
@@ -1266,6 +1380,83 @@ mod tests {
             vec![ModelFileRole::Encoder, ModelFileRole::Tokenizer]
         );
         assert_eq!(ModelFileRole::Decoder.as_str(), "decoder");
+        Ok(())
+    }
+
+    #[test]
+    fn gguf_roles_round_trip_through_verified_manifest() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_gguf_pack()?;
+
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+        let roles = pack
+            .manifest()
+            .files()
+            .iter()
+            .map(|file| file.role())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            roles,
+            vec![
+                ModelFileRole::GgufModel,
+                ModelFileRole::ChatTemplate,
+                ModelFileRole::LlamaRuntimeConfig,
+            ]
+        );
+        assert_eq!(ModelFileRole::GgufModel.as_str(), "gguf_model");
+        assert_eq!(
+            pack.file_path(ModelFileRole::GgufModel),
+            Some(root.join("hymt.gguf"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn gguf_asset_plan_requires_llama_runtime_and_model_role()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_gguf_pack()?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+
+        let plan = GgufModelAssetPlan::from_pack(&pack)?;
+
+        assert_eq!(plan.model_id().as_str(), "hymt-1.25bit");
+        assert_eq!(plan.model_path(), root.join("hymt.gguf"));
+        assert_eq!(
+            plan.chat_template_path(),
+            Some(root.join("chat-template.jinja")).as_deref()
+        );
+        assert_eq!(
+            plan.runtime_config_path(),
+            Some(root.join("llama-runtime.json")).as_deref()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn gguf_asset_plan_rejects_missing_gguf_model_role() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        fs::write(root.join("chat-template.jinja"), "template\n")?;
+        fs::write(
+            root.join("manifest.json"),
+            manifest_json_for_files_with_runtime(
+                &["en", "ru", "th", "vi", "ja"],
+                "hymt-1.25bit",
+                "hunyuan-dense",
+                "llama.cpp",
+                "Tencent Hunyuan Community",
+                &[("chat-template.jinja", "chat_template", CHAT_TEMPLATE_SHA256)],
+            ),
+        )?;
+        let pack = ModelPack::<Discovered>::discover(&root)?.verify()?;
+
+        let error = GgufModelAssetPlan::from_pack(&pack);
+
+        assert!(matches!(
+            error,
+            Err(GgufModelAssetPlanError::MissingRequiredFileRole(
+                ModelFileRole::GgufModel
+            ))
+        ));
         Ok(())
     }
 
@@ -1565,6 +1756,33 @@ mod tests {
         Ok(root)
     }
 
+    fn create_gguf_pack() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        fs::write(root.join("hymt.gguf"), "hymt gguf\n")?;
+        fs::write(root.join("chat-template.jinja"), "template\n")?;
+        fs::write(root.join("llama-runtime.json"), "llama runtime\n")?;
+        fs::write(
+            root.join("manifest.json"),
+            manifest_json_for_files_with_runtime(
+                &["en", "ru", "th", "vi", "ja"],
+                "hymt-1.25bit",
+                "hunyuan-dense",
+                "llama.cpp",
+                "Tencent Hunyuan Community",
+                &[
+                    ("hymt.gguf", "gguf_model", GGUF_MODEL_SHA256),
+                    ("chat-template.jinja", "chat_template", CHAT_TEMPLATE_SHA256),
+                    (
+                        "llama-runtime.json",
+                        "llama_runtime_config",
+                        LLAMA_RUNTIME_CONFIG_SHA256,
+                    ),
+                ],
+            ),
+        )?;
+        Ok(root)
+    }
+
     fn create_temp_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -1612,6 +1830,24 @@ mod tests {
     }
 
     fn manifest_json_for_files(languages: &[&str], files: &[(&str, &str, &str)]) -> String {
+        manifest_json_for_files_with_runtime(
+            languages,
+            "m2m100-418m-int8",
+            "m2m100",
+            "onnx-runtime",
+            "MIT",
+            files,
+        )
+    }
+
+    fn manifest_json_for_files_with_runtime(
+        languages: &[&str],
+        model_id: &str,
+        architecture: &str,
+        runtime: &str,
+        license: &str,
+        files: &[(&str, &str, &str)],
+    ) -> String {
         let language_json = languages
             .iter()
             .map(|language| format!("\"{language}\""))
@@ -1628,11 +1864,11 @@ mod tests {
         format!(
             r#"{{
   "schema_version": 0,
-  "model_id": "m2m100-418m-int8",
+  "model_id": "{model_id}",
   "version": "0.1.0",
-  "architecture": "m2m100",
-  "runtime": "onnx-runtime",
-  "license": "MIT",
+  "architecture": "{architecture}",
+  "runtime": "{runtime}",
+  "license": "{license}",
   "languages": [{language_json}],
   "files": [
 {file_json}

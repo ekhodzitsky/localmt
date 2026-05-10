@@ -4,8 +4,10 @@
 
 Build a Rust library for offline machine translation on Xiaomi 17-class Android
 devices. The first implementation target is library correctness and API shape;
-real ONNX Runtime inference enters after the API and benchmark harness are
-stable.
+real mobile inference enters after the API and benchmark harness are stable.
+As of 2026-05-10, the production model direction is Hy-MT1.5-1.8B-1.25bit
+GGUF through a llama.cpp/STQ1_0 backend. ONNX Runtime remains an experimental
+compatibility backend.
 
 ## Product Contract
 
@@ -20,8 +22,10 @@ the Rust crates.
 - OS: Android 16 / HyperOS 3
 - Architecture: arm64-v8a
 - RAM class: 12GB
-- Preferred runtime: ONNX Runtime Mobile with XNNPACK CPU execution
-- Experimental runtime: NNAPI
+- Preferred runtime: llama.cpp CPU backend with GGUF and STQ1_0 / Sherry
+  quantization support
+- Experimental runtime: ONNX Runtime Mobile with XNNPACK CPU execution
+- First available smoke device: Redmi Note 14
 
 ## Languages
 
@@ -38,6 +42,9 @@ The workspace is split into narrow crates:
 - `localmt-engine`: `TranslatorEngine` trait plus a deterministic mock engine.
 - `localmt-engine-ort`: selects ONNX files from a verified model pack and loads
   an ONNX Runtime session only when the `ort-runtime` feature is enabled.
+  This backend is experimental after the Hy-MT/GGUF pivot.
+- `localmt-engine-llama` (planned): loads verified GGUF model packs through a
+  llama.cpp boundary and owns prompt-completion translation for Hy-MT.
 - `localmt-models`: manifest parsing, safe relative path validation, required
   language checks, typed file-role validation, and SHA-256 verification for
   model-pack files.
@@ -135,10 +142,18 @@ optional generation config, and avoids ONNX Runtime session loading.
 
 ## Model Strategy
 
-The first real benchmark candidate is M2M100 418M INT8/ORT because it supports
-the starting language set and has a permissive model license. NLLB-200
-distilled 600M can be supported as a user-supplied optional model pack, but it
-must carry a license warning and must not become the default bundled option.
+The first production model target is Hy-MT1.5-1.8B-1.25bit GGUF. It is a
+440 MB on-device translation model reported by Tencent Hunyuan to support 33
+languages and 1,056 translation directions. It covers the starting language
+set: English, Russian, Thai, Vietnamese, and Japanese.
+
+The implementation path is a llama.cpp-backed GGUF runtime with STQ1_0 /
+Sherry quantization support. Model weights are not committed to this
+repository; users provide local model packs and accept upstream model terms.
+
+The earlier M2M100/NLLB ONNX path remains useful for compatibility experiments
+and backend abstraction tests, but it is no longer the preferred production
+direction.
 
 ## Acceptance Criteria For The First Slice
 

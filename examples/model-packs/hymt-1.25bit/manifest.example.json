@@ -1,0 +1,26 @@
+{
+  "schema_version": 0,
+  "model_id": "hymt-1.25bit",
+  "version": "0.1.0",
+  "architecture": "hunyuan-dense",
+  "runtime": "llama.cpp",
+  "license": "Tencent Hunyuan Community",
+  "languages": ["en", "ru", "th", "vi", "ja"],
+  "files": [
+    {
+      "path": "hymt.gguf",
+      "kind": "gguf_model",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "path": "chat-template.jinja",
+      "kind": "chat_template",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "path": "llama-runtime.json",
+      "kind": "llama_runtime_config",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

@@ -4,14 +4,15 @@ use std::process::ExitCode;
 use std::ptr;
 use std::time::Instant;
 
+use localmt::{
+    GgufModelAssetPlan, GgufModelAssetPlanError, Language, LanguagePair, MockTokenGenerator,
+    MockTokenizer, ModelArchitecture, ModelFile, ModelFileRole, ModelId, ModelLicense,
+    ModelManifest, ModelPackVersion, ModelRelativePath, ModelRuntime, NonEmptyText,
+    OfflineTranslatorAssets, OfflineTranslatorPlan, Sha256Digest, TranslateRequest,
+    TranslationPipeline, Translator,
+};
 #[cfg(feature = "hf-tokenizers")]
 use localmt::{HfTokenizer, TokenizerEngine, TokenizerInput};
-use localmt::{
-    Language, LanguagePair, MockTokenGenerator, MockTokenizer, ModelArchitecture, ModelFile,
-    ModelFileRole, ModelId, ModelLicense, ModelManifest, ModelPackVersion, ModelRelativePath,
-    ModelRuntime, NonEmptyText, OfflineTranslatorAssets, OfflineTranslatorPlan, Sha256Digest,
-    TranslateRequest, TranslationPipeline, Translator,
-};
 use localmt_models::{Discovered, ModelPack};
 
 const HELP_TEXT: &str = "\
@@ -408,7 +409,17 @@ fn runtime_config_model(path: String) -> Result<String, CliError> {
 /// fn doctor_model(path: String) -> Result<String, CliError>
 /// { ret reports Ok only when required no-network preflight checks complete }
 fn doctor_model(path: String) -> Result<String, CliError> {
-    OfflineTranslatorAssets::from_model_pack_path(path.clone()).map_err(CliError::OfflineAssets)?;
+    let pack = ModelPack::<Discovered>::discover(&path)
+        .and_then(ModelPack::verify)
+        .map_err(CliError::ModelPack)?;
+    if is_llama_runtime(pack.manifest().runtime()) {
+        let gguf_plan = GgufModelAssetPlan::from_pack(&pack).map_err(CliError::GgufPlan)?;
+        return Ok(doctor_gguf_model(&gguf_plan));
+    }
+
+    OfflineTranslatorAssets::from_pack(&pack).map_err(|error| {
+        CliError::OfflineAssets(localmt::OfflineTranslatorAssetsError::Plan(error))
+    })?;
     let path_bytes = path.as_bytes();
     let _summary = ffi_bytes(|output_ptr, output_capacity, written_len| {
         localmt_ffi::localmt_ffi_model_pack_summary(
@@ -430,6 +441,36 @@ fn doctor_model(path: String) -> Result<String, CliError> {
     Ok(format!(
         "doctor: ok\nmodel_plan: ok\nffi_startup: {startup_status}\nffi_model_pack_summary: ok\nffi_mock_translate: {mock_status}\nffi_hf_mock_translate: {hf_status}\nffi_ort_generator: {ort_status}\nffi_ort_translate: {ort_translate_status}"
     ))
+}
+
+/// { runtime came from a parsed model-pack manifest }
+/// fn is_llama_runtime(runtime: &ModelRuntime) -> bool
+/// { ret is true only for the llama.cpp runtime id }
+fn is_llama_runtime(runtime: &ModelRuntime) -> bool {
+    runtime.as_str() == "llama.cpp"
+}
+
+/// { plan was built from a verified GGUF model pack }
+/// fn doctor_gguf_model(plan: &GgufModelAssetPlan) -> String
+/// { ret summarizes readiness checks that do not load llama.cpp }
+fn doctor_gguf_model(plan: &GgufModelAssetPlan) -> String {
+    format!(
+        "doctor: ok\nmodel_pack: ok\ngguf_model_pack: ok\nruntime: llama.cpp\nmodel_id: {}\ngguf_model: {}\nchat_template: {}\nllama_runtime_config: {}",
+        plan.model_id(),
+        plan.model_path().display(),
+        optional_path_status(plan.chat_template_path()),
+        optional_path_status(plan.runtime_config_path())
+    )
+}
+
+/// { path may be absent or point to a verified optional asset }
+/// fn optional_path_status(path: `Option<&Path>`) -> String
+/// { ret identifies whether the optional asset is present }
+fn optional_path_status(path: Option<&Path>) -> String {
+    match path {
+        Some(path) => format!("present ({})", path.display()),
+        None => "absent".to_owned(),
+    }
 }
 
 /// { true }
@@ -1371,6 +1412,7 @@ enum CliError {
     ModelPack(localmt_models::ModelPackError),
     OfflinePlan(localmt::OfflineTranslatorPlanError),
     OfflineAssets(localmt::OfflineTranslatorAssetsError),
+    GgufPlan(GgufModelAssetPlanError),
     Benchmark(localmt_bench::BenchmarkError),
     InvalidBenchArguments(String),
     MissingStandardModelFile(&'static str),
@@ -1408,6 +1450,7 @@ impl fmt::Display for CliError {
             Self::ModelPack(error) => write!(formatter, "{error}"),
             Self::OfflinePlan(error) => write!(formatter, "{error}"),
             Self::OfflineAssets(error) => write!(formatter, "{error}"),
+            Self::GgufPlan(error) => write!(formatter, "{error}"),
             Self::Benchmark(error) => write!(formatter, "{error}"),
             Self::InvalidBenchArguments(message) => write!(formatter, "{message}"),
             Self::MissingStandardModelFile(path) => {
@@ -1489,6 +1532,12 @@ mod tests {
         "3ed8af0b5a58d51e246f3081e973d8683b89bf3cacf23c26243fec19ab31a721";
     const TOKENIZER_SHA256: &str =
         "38395078aa8c0af1657b8fc788f358d57e5f5fea99c8cdc004198e3c6fffbe71";
+    const GGUF_MODEL_SHA256: &str =
+        "a561ab462e9c80d55c2ca56fd846a30001aac1dea00c99d7e13e2b1320b88024";
+    const CHAT_TEMPLATE_SHA256: &str =
+        "90d69c78fb9ef942c8ce0a0d88a7455572ada06044bc1516473472664ddd013b";
+    const LLAMA_RUNTIME_CONFIG_SHA256: &str =
+        "4b825731b61ba8b6858381a904d807b1ae1f24bd163cc485d8082cd2198e0d0e";
     const GENERATION_CONFIG: &str = r#"{
   "max_new_tokens": 32,
   "bos_token_id": 0,
@@ -1691,6 +1740,30 @@ mod tests {
             doctor_ort_readiness_status(localmt_ffi::LOCALMT_FFI_RUNTIME_NOT_CONFIGURED).as_deref(),
             Some("runtime not configured")
         );
+    }
+
+    #[test]
+    fn cli_model_doctor_reports_gguf_pack_readiness() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_gguf_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "model".to_owned(),
+            "doctor".to_owned(),
+            root.display().to_string(),
+        ];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("doctor: ok"));
+        assert!(output.contains("model_pack: ok"));
+        assert!(output.contains("gguf_model_pack: ok"));
+        assert!(output.contains("runtime: llama.cpp"));
+        assert!(output.contains("model_id: hymt-1.25bit"));
+        assert!(output.contains("gguf_model:"));
+        assert!(output.contains("hymt.gguf"));
+        assert!(output.contains("chat_template: present"));
+        assert!(output.contains("llama_runtime_config: present"));
+        Ok(())
     }
 
     #[test]
@@ -2295,6 +2368,33 @@ mod tests {
     {{ "path": "tokenizer.json", "kind": "tokenizer", "sha256": "{TOKENIZER_SHA256}" }},
     {{ "path": "generation.json", "kind": "generation_config", "sha256": "{GENERATION_CONFIG_SHA256}" }},
     {{ "path": "config.json", "kind": "config", "sha256": "{ORT_IO_CONFIG_SHA256}" }}
+  ]
+}}"#
+            ),
+        )?;
+        Ok(root)
+    }
+
+    fn create_gguf_pack() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let root = create_temp_dir()?;
+        fs::write(root.join("hymt.gguf"), "hymt gguf\n")?;
+        fs::write(root.join("chat-template.jinja"), "template\n")?;
+        fs::write(root.join("llama-runtime.json"), "llama runtime\n")?;
+        fs::write(
+            root.join("manifest.json"),
+            format!(
+                r#"{{
+  "schema_version": 0,
+  "model_id": "hymt-1.25bit",
+  "version": "0.1.0",
+  "architecture": "hunyuan-dense",
+  "runtime": "llama.cpp",
+  "license": "Tencent Hunyuan Community",
+  "languages": ["en", "ru", "th", "vi", "ja"],
+  "files": [
+    {{ "path": "hymt.gguf", "kind": "gguf_model", "sha256": "{GGUF_MODEL_SHA256}" }},
+    {{ "path": "chat-template.jinja", "kind": "chat_template", "sha256": "{CHAT_TEMPLATE_SHA256}" }},
+    {{ "path": "llama-runtime.json", "kind": "llama_runtime_config", "sha256": "{LLAMA_RUNTIME_CONFIG_SHA256}" }}
   ]
 }}"#
             ),
