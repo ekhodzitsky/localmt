@@ -23,10 +23,11 @@ extern "C" {
 #define LOCALMT_FFI_TOKENIZER_ERROR 12
 #define LOCALMT_FFI_RUNTIME_NOT_CONFIGURED 13
 
-#define LOCALMT_FFI_ABI_VERSION 13
+#define LOCALMT_FFI_ABI_VERSION 14
 #define LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION 1
 #define LOCALMT_FFI_ANDROID_ABI_ARM64_V8A 1
 #define LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK 1
+#define LOCALMT_FFI_RUNTIME_LLAMA_CPP 2
 
 /* Two-byte ISO 639-1 language code. Invalid ids return {0, 0}. */
 typedef struct LocalmtFfiLanguageCode {
@@ -70,6 +71,16 @@ typedef struct LocalmtFfiOrtGenerator LocalmtFfiOrtGenerator;
  * verified tokenizer.json plus ORT encoder/decoder sessions for translation.
  */
 typedef struct LocalmtFfiOrtTranslator LocalmtFfiOrtTranslator;
+
+/*
+ * Opaque Rust-owned llama.cpp translator handle.
+ *
+ * Handles are created by localmt_ffi_llama_translator_open and must be
+ * released exactly once with localmt_ffi_llama_translator_close. This path
+ * verifies GGUF/HY-MT packs and validates llama runtime metadata before
+ * loading the native backend.
+ */
+typedef struct LocalmtFfiLlamaTranslator LocalmtFfiLlamaTranslator;
 
 /*
  * Opaque Rust-owned HF tokenizer preflight handle.
@@ -150,6 +161,21 @@ int32_t localmt_ffi_model_pack_summary(
     size_t *written_len);
 
 /*
+ * Verifies and plans a GGUF/llama.cpp model pack, validates llama runtime
+ * configuration, then writes a stable UTF-8 newline summary.
+ *
+ * This does not load the native llama.cpp backend. It only performs model-pack
+ * discovery, checksum verification, GGUF asset planning, and runtime config
+ * parsing through the Rust facade.
+ */
+int32_t localmt_ffi_gguf_model_pack_summary(
+    const uint8_t *path_ptr,
+    size_t path_len,
+    uint8_t *output_ptr,
+    size_t output_capacity,
+    size_t *written_len);
+
+/*
  * Fully verifies a model pack and writes its local trust artifact.
  *
  * This is the install/update-time path: it performs checksum verification and
@@ -221,6 +247,12 @@ int32_t localmt_ffi_ort_runtime_configure(
 uint8_t localmt_ffi_hf_tokenizer_enabled(void);
 
 /*
+ * Returns 1 when localmt-ffi was built with the llama-runtime feature,
+ * otherwise 0.
+ */
+uint8_t localmt_ffi_llama_runtime_enabled(void);
+
+/*
  * Opens a verified local model pack and constructs the deterministic mock
  * translator used for Android/JNI smoke checks before real inference exists.
  *
@@ -288,6 +320,45 @@ void localmt_ffi_hf_mock_translator_close(LocalmtFfiHfMockTranslator *translator
  */
 int32_t localmt_ffi_hf_mock_translate(
     const LocalmtFfiHfMockTranslator *translator,
+    uint8_t source_id,
+    uint8_t target_id,
+    const uint8_t *input_ptr,
+    size_t input_len,
+    uint8_t *output_ptr,
+    size_t output_capacity,
+    size_t *written_len);
+
+/*
+ * Opens a verified GGUF/llama.cpp model pack and constructs the llama-backed
+ * translator.
+ *
+ * path_ptr/path_len must be valid UTF-8 bytes for the model-pack directory.
+ * out_translator must point to writable pointer storage. It is set to NULL
+ * before work and receives a non-null handle only on LOCALMT_FFI_OK.
+ *
+ * Current builds return LOCALMT_FFI_RUNTIME_DISABLED after pack planning until
+ * the native llama.cpp loader is implemented.
+ */
+int32_t localmt_ffi_llama_translator_open(
+    const uint8_t *path_ptr,
+    size_t path_len,
+    LocalmtFfiLlamaTranslator **out_translator);
+
+/*
+ * Releases a llama translator handle. NULL is accepted as a no-op.
+ */
+void localmt_ffi_llama_translator_close(LocalmtFfiLlamaTranslator *translator);
+
+/*
+ * Translates UTF-8 bytes through the llama-backed translator.
+ *
+ * input_ptr/input_len must be valid UTF-8 bytes. output_ptr/output_capacity is
+ * caller-owned byte storage and is not NUL terminated by Rust. written_len must
+ * point to writable size_t storage. On LOCALMT_FFI_BUFFER_TOO_SMALL,
+ * written_len contains the required byte count and output is not written.
+ */
+int32_t localmt_ffi_llama_translate(
+    const LocalmtFfiLlamaTranslator *translator,
     uint8_t source_id,
     uint8_t target_id,
     const uint8_t *input_ptr,

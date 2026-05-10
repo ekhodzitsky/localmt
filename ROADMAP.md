@@ -55,6 +55,9 @@ the public facade.
   Completed at the prompt-boundary layer.
 - Expose backend config through typed localmt-owned structs. Completed for
   no-runtime config parsing.
+- Expose GGUF readiness through the Android-facing FFI ABI. Completed with
+  `localmt ffi gguf-translate-smoke`, which validates the pack, prompt, and
+  open path before native loading exists.
 - Bind to llama.cpp through a narrow Rust-owned interface.
 - Support CPU-only `arm64-v8a` execution first.
 

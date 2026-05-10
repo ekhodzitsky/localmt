@@ -86,17 +86,16 @@ export ORT_DYLIB_PATH=/opt/homebrew/lib/libonnxruntime.dylib
 localmt ffi ort-translate-smoke ./models/m2m100-418m-int8 en ja "hello"
 ```
 
-The next implementation milestone is:
+The GGUF/Hy-MT FFI readiness gate is:
 
 ```bash
 localmt ffi gguf-translate-smoke ./models/hymt-1.25bit en ru "hello world"
 ```
 
-That command will load a verified Hy-MT1.5 GGUF model pack through a
-llama.cpp-backed runtime.
-
-The current GGUF preflight milestone is already available through model-pack
-doctor:
+Today it verifies the Hy-MT GGUF pack, validates llama runtime metadata,
+constructs the Rust-owned prompt, and reports `runtime disabled` until the
+native llama.cpp loader is implemented. The lower-level GGUF model-pack doctor
+is:
 
 ```bash
 localmt model doctor ./models/hymt-1.25bit

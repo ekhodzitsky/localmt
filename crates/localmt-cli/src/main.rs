@@ -5,9 +5,9 @@ use std::ptr;
 use std::time::Instant;
 
 use localmt::{
-    GgufModelAssetPlan, GgufModelAssetPlanError, Language, LanguagePair, MockTokenGenerator,
-    MockTokenizer, ModelArchitecture, ModelFile, ModelFileRole, ModelId, ModelLicense,
-    ModelManifest, ModelPackVersion, ModelRelativePath, ModelRuntime, NonEmptyText,
+    GgufModelAssetPlan, GgufModelAssetPlanError, Language, LanguagePair, LlamaTranslationPrompt,
+    MockTokenGenerator, MockTokenizer, ModelArchitecture, ModelFile, ModelFileRole, ModelId,
+    ModelLicense, ModelManifest, ModelPackVersion, ModelRelativePath, ModelRuntime, NonEmptyText,
     OfflineTranslatorAssets, OfflineTranslatorPlan, Sha256Digest, TranslateRequest,
     TranslationPipeline, Translator,
 };
@@ -37,6 +37,7 @@ usage:
   localmt ffi hf-smoke PACK FROM TO TEXT
   localmt ffi ort-smoke PACK
   localmt ffi ort-translate-smoke PACK FROM TO TEXT
+  localmt ffi gguf-translate-smoke PACK FROM TO TEXT
   localmt ffi ort-translate-bench PACK FROM TO TEXT RUNS
   localmt ffi ort-translate-bench-trusted PACK FROM TO TEXT RUNS
   localmt bench --profile xiaomi17 --model-pack PACK
@@ -54,6 +55,7 @@ usage:
   localmt ffi hf-smoke PACK FROM TO TEXT
   localmt ffi ort-smoke PACK
   localmt ffi ort-translate-smoke PACK FROM TO TEXT
+  localmt ffi gguf-translate-smoke PACK FROM TO TEXT
   localmt ffi ort-translate-bench PACK FROM TO TEXT RUNS
   localmt ffi ort-translate-bench-trusted PACK FROM TO TEXT RUNS
 ";
@@ -202,6 +204,7 @@ fn run_ffi(mut args: impl Iterator<Item = String>) -> Result<String, CliError> {
         "hf-smoke" => run_ffi_hf_smoke(args),
         "ort-smoke" => run_ffi_ort_smoke(args),
         "ort-translate-smoke" => run_ffi_ort_translate_smoke(args),
+        "gguf-translate-smoke" => run_ffi_gguf_translate_smoke(args),
         "ort-translate-bench" => run_ffi_ort_translate_bench(args),
         "ort-translate-bench-trusted" => run_ffi_ort_translate_bench_trusted(args),
         _ => Err(CliError::UnknownFfiCommand(command)),
@@ -872,6 +875,79 @@ fn run_ffi_ort_translate_smoke(mut args: impl Iterator<Item = String>) -> Result
     ))
 }
 
+/// { args contains FFI GGUF translation smoke command arguments }
+/// fn run_ffi_gguf_translate_smoke(args: impl Iterator<Item = String>) -> Result<String, CliError>
+/// { ret is Ok when GGUF planning, prompt construction, and llama open readiness are reported }
+fn run_ffi_gguf_translate_smoke(
+    mut args: impl Iterator<Item = String>,
+) -> Result<String, CliError> {
+    let path = args.next().ok_or(CliError::MissingArgument("MODEL_PACK"))?;
+    let source = parse_language(args.next(), "FROM")?;
+    let target = parse_language(args.next(), "TO")?;
+    let text = args.next().ok_or(CliError::MissingArgument("TEXT"))?;
+
+    if args.next().is_some() {
+        return Err(CliError::TooManyArguments);
+    }
+
+    let request_text = NonEmptyText::new(text).map_err(CliError::InvalidText)?;
+    let request =
+        TranslateRequest::new(source, target, request_text).map_err(CliError::InvalidPair)?;
+    let prompt = LlamaTranslationPrompt::from_request(&request);
+    let path_bytes = path.as_bytes();
+    let summary = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_gguf_model_pack_summary(
+            path_bytes.as_ptr(),
+            path_bytes.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
+    })?;
+    let _summary = String::from_utf8(summary).map_err(CliError::FfiOutputUtf8)?;
+    let source_id = ffi_language_id(source)?;
+    let target_id = ffi_language_id(target)?;
+
+    let mut translator: *mut localmt_ffi::LocalmtFfiLlamaTranslator = ptr::null_mut();
+    let status = localmt_ffi::localmt_ffi_llama_translator_open(
+        path_bytes.as_ptr(),
+        path_bytes.len(),
+        &mut translator,
+    );
+    if status == localmt_ffi::LOCALMT_FFI_RUNTIME_DISABLED {
+        return Ok(format!(
+            "ffi_abi: {}\ngguf_model_pack_summary: ok\nllama_runtime_enabled: {}\nllama_prompt: ok\nprompt_bytes: {}\nllama_translator_open: {}",
+            localmt_ffi::localmt_ffi_abi_version(),
+            ffi_enabled_status(localmt_ffi::localmt_ffi_llama_runtime_enabled()),
+            prompt.as_str().len(),
+            ffi_status_text(status),
+        ));
+    }
+    ffi_ok(status)?;
+
+    let input = request.text().as_str().as_bytes();
+    let translation = ffi_bytes(|output_ptr, output_capacity, written_len| {
+        localmt_ffi::localmt_ffi_llama_translate(
+            translator,
+            source_id,
+            target_id,
+            input.as_ptr(),
+            input.len(),
+            output_ptr,
+            output_capacity,
+            written_len,
+        )
+    });
+    localmt_ffi::localmt_ffi_llama_translator_close(translator);
+    let translation = String::from_utf8(translation?).map_err(CliError::FfiOutputUtf8)?;
+
+    Ok(format!(
+        "ffi_abi: {}\ngguf_model_pack_summary: ok\nllama_runtime_enabled: {}\nllama_prompt: ok\nllama_translator_open: ok\nllama_translate: ok\ntranslation: {translation}",
+        localmt_ffi::localmt_ffi_abi_version(),
+        ffi_enabled_status(localmt_ffi::localmt_ffi_llama_runtime_enabled())
+    ))
+}
+
 /// { args contains FFI ORT translation benchmark command arguments }
 /// fn run_ffi_ort_translate_bench(args: impl Iterator<Item = String>) -> Result<String, CliError>
 /// { ret is Ok only when ORT-backed FFI translation succeeds for every requested run }
@@ -1313,6 +1389,13 @@ fn ffi_status_text(status: i32) -> String {
     String::from_utf8(bytes).unwrap_or_else(|_error| "status message invalid utf-8".to_owned())
 }
 
+/// { enabled is an FFI feature flag }
+/// fn ffi_enabled_status(enabled: u8) -> &'static str
+/// { ret is enabled only when enabled is nonzero }
+const fn ffi_enabled_status(enabled: u8) -> &'static str {
+    if enabled == 0 { "disabled" } else { "enabled" }
+}
+
 /// { args contains benchmark command arguments }
 /// fn run_bench(args: impl Iterator<Item = String>) -> Result<String, CliError>
 /// { ret is Ok only when profile and model-pack arguments are valid }
@@ -1537,7 +1620,7 @@ mod tests {
     const CHAT_TEMPLATE_SHA256: &str =
         "90d69c78fb9ef942c8ce0a0d88a7455572ada06044bc1516473472664ddd013b";
     const LLAMA_RUNTIME_CONFIG_SHA256: &str =
-        "4b825731b61ba8b6858381a904d807b1ae1f24bd163cc485d8082cd2198e0d0e";
+        "e9d711e2ea9a26d364db2b3047ee9142e10ec0c1a45dfc35bf8b219d24d1a354";
     const GENERATION_CONFIG: &str = r#"{
   "max_new_tokens": 32,
   "bos_token_id": 0,
@@ -1570,6 +1653,11 @@ mod tests {
       "logits": "past_logits"
     }
   }
+}"#;
+    const LLAMA_RUNTIME_CONFIG: &str = r#"{
+  "context_tokens": 2048,
+  "cpu_threads": 1,
+  "temperature": 0.0
 }"#;
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1654,7 +1742,7 @@ mod tests {
         assert!(output.contains("profile: xiaomi17"));
         assert!(output.contains("android_abi: arm64-v8a"));
         assert!(output.contains("ram_class_gib: 12"));
-        assert!(output.contains("preferred_runtime: onnx-runtime-mobile-xnnpack"));
+        assert!(output.contains("preferred_runtime: llama.cpp"));
         assert!(output.contains("runtime: mock-pipeline"));
         assert!(output.contains("model_id: m2m100-418m-int8"));
         assert!(output.contains("scenarios: 10"));
@@ -1701,7 +1789,7 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 13"));
+        assert!(output.contains("ffi_abi: 14"));
         assert!(output.contains("model_pack_summary: ok"));
         assert!(output.contains("mock_translator_open: ok"));
         assert!(output.contains("mock_translate: ok"));
@@ -1767,6 +1855,31 @@ mod tests {
     }
 
     #[test]
+    fn cli_ffi_gguf_translate_smoke_reports_llama_runtime_readiness()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_gguf_pack()?;
+        let args = [
+            "localmt".to_owned(),
+            "ffi".to_owned(),
+            "gguf-translate-smoke".to_owned(),
+            root.display().to_string(),
+            "en".to_owned(),
+            "ru".to_owned(),
+            "hello offline".to_owned(),
+        ];
+
+        let output = run(args.into_iter())?;
+
+        assert!(output.contains("ffi_abi: 14"));
+        assert!(output.contains("gguf_model_pack_summary: ok"));
+        assert!(output.contains("llama_runtime_enabled:"));
+        assert!(output.contains("llama_prompt: ok"));
+        assert!(output.contains("prompt_bytes:"));
+        assert!(output.contains("llama_translator_open: runtime disabled"));
+        Ok(())
+    }
+
+    #[test]
     fn cli_ffi_header_prints_bundled_header() -> Result<(), Box<dyn std::error::Error>> {
         let args = ["localmt".to_owned(), "ffi".to_owned(), "header".to_owned()];
 
@@ -1784,10 +1897,14 @@ mod tests {
         assert!(output.contains("uint16_t localmt_ffi_model_pack_trust_schema_version(void);"));
         assert!(output.contains("int32_t localmt_ffi_ort_runtime_configure("));
         assert!(output.contains("int32_t localmt_ffi_model_pack_summary("));
+        assert!(output.contains("int32_t localmt_ffi_gguf_model_pack_summary("));
         assert!(output.contains("int32_t localmt_ffi_model_pack_trust("));
         assert!(output.contains("int32_t localmt_ffi_model_pack_trusted_summary("));
         assert!(output.contains("int32_t localmt_ffi_runtime_config_summary("));
         assert!(output.contains("int32_t localmt_ffi_mock_translate("));
+        assert!(output.contains("uint8_t localmt_ffi_llama_runtime_enabled(void);"));
+        assert!(output.contains("int32_t localmt_ffi_llama_translator_open("));
+        assert!(output.contains("int32_t localmt_ffi_llama_translate("));
         assert!(output.contains("int32_t localmt_ffi_ort_generator_open("));
         assert!(output.contains("int32_t localmt_ffi_ort_translator_open("));
         assert!(output.contains("int32_t localmt_ffi_ort_translator_open_trusted("));
@@ -1801,10 +1918,12 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 13"));
+        assert!(output.contains("ffi_abi: 14"));
         assert!(output.contains("model_pack_trust_schema: 1"));
         assert!(output.contains("max_text_chars: 4096"));
         assert!(output.contains("xiaomi17_android_abi: arm64-v8a"));
+        assert!(output.contains("xiaomi17_preferred_runtime: llama.cpp"));
+        assert!(output.contains("llama_runtime:"));
         assert!(output.contains("languages: en, ru, th, vi, ja"));
         Ok(())
     }
@@ -1822,7 +1941,7 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 13"));
+        assert!(output.contains("ffi_abi: 14"));
         assert!(output.contains("runtime_config_summary: ok"));
         assert!(output.contains("runtime_config: ok"));
         assert!(output.contains("decoder_logits: decoder_logits"));
@@ -1926,7 +2045,7 @@ mod tests {
 
         let output = run(args.into_iter())?;
 
-        assert!(output.contains("ffi_abi: 13"));
+        assert!(output.contains("ffi_abi: 14"));
         assert!(output.contains("model_pack_summary: ok"));
         assert!(output.contains("hf_mock_translator_open: ok"));
         assert!(output.contains("hf_mock_translate: ok"));
@@ -2122,6 +2241,7 @@ mod tests {
         assert!(output.contains("localmt ffi hf-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-smoke PACK"));
         assert!(output.contains("localmt ffi ort-translate-smoke PACK FROM TO TEXT"));
+        assert!(output.contains("localmt ffi gguf-translate-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-translate-bench PACK FROM TO TEXT RUNS"));
         assert!(output.contains("localmt ffi ort-translate-bench-trusted PACK FROM TO TEXT RUNS"));
         assert!(output.contains("localmt bench --profile xiaomi17 --model-pack PACK"));
@@ -2142,6 +2262,7 @@ mod tests {
         assert!(output.contains("localmt ffi hf-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-smoke PACK"));
         assert!(output.contains("localmt ffi ort-translate-smoke PACK FROM TO TEXT"));
+        assert!(output.contains("localmt ffi gguf-translate-smoke PACK FROM TO TEXT"));
         assert!(output.contains("localmt ffi ort-translate-bench PACK FROM TO TEXT RUNS"));
         assert!(output.contains("localmt ffi ort-translate-bench-trusted PACK FROM TO TEXT RUNS"));
         Ok(())
@@ -2379,7 +2500,7 @@ mod tests {
         let root = create_temp_dir()?;
         fs::write(root.join("hymt.gguf"), "hymt gguf\n")?;
         fs::write(root.join("chat-template.jinja"), "template\n")?;
-        fs::write(root.join("llama-runtime.json"), "llama runtime\n")?;
+        fs::write(root.join("llama-runtime.json"), LLAMA_RUNTIME_CONFIG)?;
         fs::write(
             root.join("manifest.json"),
             format!(

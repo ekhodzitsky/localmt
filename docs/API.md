@@ -128,6 +128,13 @@ Translate the following segment into {target_language}, without additional expla
 `LlamaRuntimeConfig` currently parses local JSON config for context size, CPU
 threads, and temperature. `LlamaTranslator::load` intentionally reports a
 disabled runtime until the native llama.cpp boundary is implemented.
+The Android-facing FFI exposes the same readiness path through
+`localmt_ffi_gguf_model_pack_summary`,
+`localmt_ffi_llama_runtime_enabled`, and
+`localmt_ffi_llama_translator_open`. The CLI wrapper is
+`localmt ffi gguf-translate-smoke PACK FROM TO TEXT`; it validates the pack,
+builds the stable HY-MT prompt, and reports `runtime disabled` until native
+loading is available.
 
 `OfflineTranslatorPlan::from_pack(&verified_pack)` is the SDK-level bridge from
 a verified model pack to the assets needed by a future offline translator. It
@@ -498,9 +505,9 @@ language pair scenarios through `TranslationPipeline<MockTokenizer,
 MockTokenGenerator>`. It is intentionally labeled `runtime: mock-pipeline`.
 Real ORT latency measurement lives in `localmt ffi ort-translate-bench`, which
 uses the same FFI translator path as Android adapters and keeps one translator
-handle warm across repeated runs. The first profile is `xiaomi17`, with Android
-ABI `arm64-v8a`, 12 GiB RAM class, and preferred runtime hint
-`onnx-runtime-mobile-xnnpack`.
+handle warm across repeated runs. ONNX Runtime remains an experimental
+compatibility backend. The first profile is `xiaomi17`, with Android ABI
+`arm64-v8a`, 12 GiB RAM class, and preferred runtime hint `llama.cpp`.
 
 ```bash
 localmt bench --profile xiaomi17 --model-pack ./models/m2m100-418m-int8

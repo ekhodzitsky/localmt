@@ -12,10 +12,11 @@ FFI, and Android foundations.
 - [x] Create `localmt-engine-llama` as a feature-gated backend crate.
 - [x] Add Rust-owned HY-MT prompt formatting for llama.cpp completion.
 - [x] Add typed llama runtime config parsing without native loading.
+- [x] Add host CLI/FFI readiness command:
+      `localmt ffi gguf-translate-smoke ./models/hymt-1.25bit en ru "hello"`.
 - [ ] Decide the llama.cpp integration boundary: dynamic library, static build,
       or vendored source build.
-- [ ] Add host CLI smoke command:
-      `localmt ffi gguf-translate-smoke ./models/hymt-1.25bit en ru "hello"`.
+- [ ] Implement native llama.cpp loading behind the existing GGUF FFI handle.
 
 ## Android
 

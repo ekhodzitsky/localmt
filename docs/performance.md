@@ -27,7 +27,7 @@ Model pack:
 Observed on the macOS development machine:
 
 ```text
-ffi_abi: 13
+ffi_abi: 14
 model_pack_summary: ok
 ort_translator_open: ok
 ort_translate_bench: ok
@@ -48,8 +48,7 @@ large-file hashing is isolated to `model trust` / install-update time. The
 remaining cold-start cost is ORT session loading and graph initialization.
 
 Warm translation is real offline inference through the Android-facing FFI
-translator handle. The current NLLB pack has no `decoder_with_past` graph, so
-generation still uses the non-cached decoder loop. The highest-impact next
-performance work is to ship a pack with cached decoder support or a smaller
-mobile-tuned model and then measure on Xiaomi 17 with the production
-`libonnxruntime.so`.
+translator handle. This ONNX/NLLB baseline remains useful as a compatibility
+regression check, but the production model direction is now Hy-MT GGUF through
+llama.cpp. The highest-impact next performance work is to wire native llama.cpp
+loading behind the existing GGUF FFI handle and then measure on Xiaomi 17.

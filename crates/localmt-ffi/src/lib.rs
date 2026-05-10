@@ -5,12 +5,15 @@ use std::{ptr, slice, str};
 #[cfg(feature = "ort-runtime")]
 use localmt::configure_ort_dylib_path;
 use localmt::{
-    DeviceProfile, Discovered, Language, LanguagePair, MAX_TEXT_CHARS,
-    MODEL_PACK_TRUST_SCHEMA_VERSION, MockOfflineTranslator, ModelPack, NonEmptyText,
-    OfflineTranslatorAssets, OrtEngineError, OrtTokenGenerator, TranslateRequest,
+    DeviceProfile, Discovered, GgufModelAssetPlan, Language, LanguagePair, LlamaEngineError,
+    LlamaModelPlan, MAX_TEXT_CHARS, MODEL_PACK_TRUST_SCHEMA_VERSION, MockOfflineTranslator,
+    ModelPack, NonEmptyText, OfflineTranslatorAssets, OrtEngineError, OrtTokenGenerator,
+    TranslateRequest,
 };
 #[cfg(feature = "hf-tokenizers")]
 use localmt::{HfMockOfflineTranslator, HfMockOfflineTranslatorError, HfTokenizer};
+#[cfg(feature = "llama-runtime")]
+use localmt::{LlamaTranslator, TranslationError, TranslatorEngine};
 #[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
 use localmt::{OrtOfflineTranslator, OrtOfflineTranslatorError};
 
@@ -32,7 +35,7 @@ pub const LOCALMT_FFI_TEXT_ERROR: i32 = 6;
 pub const LOCALMT_FFI_TRANSLATION_ERROR: i32 = 7;
 /// FFI status when the caller output buffer is too small.
 pub const LOCALMT_FFI_BUFFER_TOO_SMALL: i32 = 8;
-/// FFI status when the build does not enable the ORT runtime.
+/// FFI status when the requested runtime is not available in this build.
 pub const LOCALMT_FFI_RUNTIME_DISABLED: i32 = 9;
 /// FFI status when ONNX Runtime session loading fails.
 pub const LOCALMT_FFI_ORT_ERROR: i32 = 10;
@@ -44,13 +47,15 @@ pub const LOCALMT_FFI_TOKENIZER_ERROR: i32 = 12;
 pub const LOCALMT_FFI_RUNTIME_NOT_CONFIGURED: i32 = 13;
 
 /// Pointer-free C ABI version.
-pub const LOCALMT_FFI_ABI_VERSION: u32 = 13;
+pub const LOCALMT_FFI_ABI_VERSION: u32 = 14;
 /// Local trust-artifact schema version expected by trusted model-pack APIs.
 pub const LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION: u16 = MODEL_PACK_TRUST_SCHEMA_VERSION;
 /// FFI code for Android arm64-v8a.
 pub const LOCALMT_FFI_ANDROID_ABI_ARM64_V8A: u16 = 1;
 /// FFI code for ONNX Runtime Mobile with XNNPACK.
 pub const LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK: u16 = 1;
+/// FFI code for llama.cpp / GGUF.
+pub const LOCALMT_FFI_RUNTIME_LLAMA_CPP: u16 = 2;
 const LANGUAGES: [Language; 5] = [
     Language::English,
     Language::Russian,
@@ -89,6 +94,12 @@ pub struct LocalmtFfiOrtGenerator {
 pub struct LocalmtFfiOrtTranslator {
     #[cfg(all(feature = "hf-tokenizers", feature = "ort-runtime"))]
     translator: OrtOfflineTranslator,
+}
+
+/// Opaque Rust-owned llama.cpp translator handle for FFI callers.
+pub struct LocalmtFfiLlamaTranslator {
+    #[cfg(feature = "llama-runtime")]
+    translator: LlamaTranslator,
 }
 
 /// Opaque Rust-owned HF tokenizer preflight handle for FFI callers.
@@ -279,7 +290,7 @@ fn ffi_startup_summary() -> String {
         .join(", ");
 
     format!(
-        "ffi_abi: {}\nmodel_pack_trust_schema: {}\nmax_text_chars: {}\nxiaomi17_android_abi: {}\nxiaomi17_ram_class_gib: {}\nxiaomi17_preferred_runtime: {}\nhf_tokenizers: {}\nort_runtime: {}\nlanguages: {languages}",
+        "ffi_abi: {}\nmodel_pack_trust_schema: {}\nmax_text_chars: {}\nxiaomi17_android_abi: {}\nxiaomi17_ram_class_gib: {}\nxiaomi17_preferred_runtime: {}\nhf_tokenizers: {}\nort_runtime: {}\nllama_runtime: {}\nlanguages: {languages}",
         LOCALMT_FFI_ABI_VERSION,
         LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION,
         MAX_TEXT_CHARS,
@@ -288,6 +299,7 @@ fn ffi_startup_summary() -> String {
         DeviceProfile::Xiaomi17.preferred_runtime(),
         feature_status(cfg!(feature = "hf-tokenizers")),
         feature_status(cfg!(feature = "ort-runtime")),
+        feature_status(cfg!(feature = "llama-runtime")),
     )
 }
 
@@ -324,6 +336,7 @@ pub extern "C" fn localmt_ffi_xiaomi17_ram_class_gib() -> u16 {
 pub extern "C" fn localmt_ffi_xiaomi17_preferred_runtime_code() -> u16 {
     match DeviceProfile::Xiaomi17.preferred_runtime() {
         "onnx-runtime-mobile-xnnpack" => LOCALMT_FFI_RUNTIME_ONNX_MOBILE_XNNPACK,
+        "llama.cpp" => LOCALMT_FFI_RUNTIME_LLAMA_CPP,
         _ => 0,
     }
 }
@@ -369,6 +382,92 @@ pub extern "C" fn localmt_ffi_model_pack_summary(
     unsafe { ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, output.len()) }; // SAFETY: output buffer capacity was checked.
 
     LOCALMT_FFI_OK
+}
+
+/// { path_ptr points to path_len readable bytes and output/written pointers follow the header contract }
+/// fn localmt_ffi_gguf_model_pack_summary(path_ptr: *const u8, path_len: usize, output_ptr: *mut u8, output_capacity: usize, written_len: *mut usize) -> i32
+/// { ret is OK only when output receives written_len UTF-8 GGUF summary bytes }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_gguf_model_pack_summary(
+    path_ptr: *const u8,
+    path_len: usize,
+    output_ptr: *mut u8,
+    output_capacity: usize,
+    written_len: *mut usize,
+) -> i32 {
+    if written_len.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *written_len = 0 }; // SAFETY: non-null writable length pointer.
+
+    let path = match read_ffi_utf8(path_ptr, path_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let summary = match ffi_gguf_model_pack_summary(path) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let output = summary.as_bytes();
+
+    unsafe { *written_len = output.len() }; // SAFETY: non-null writable length pointer.
+
+    if output_capacity < output.len() {
+        return LOCALMT_FFI_BUFFER_TOO_SMALL;
+    }
+    if output_ptr.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, output.len()) }; // SAFETY: output buffer capacity was checked.
+
+    LOCALMT_FFI_OK
+}
+
+/// { path names a GGUF model-pack root candidate }
+/// fn ffi_gguf_model_pack_summary(path: &str) -> Result<String, i32>
+/// { ret is Ok only when the verified llama.cpp model pack and runtime config can be summarized }
+fn ffi_gguf_model_pack_summary(path: &str) -> Result<String, i32> {
+    let plan = ffi_llama_model_plan(path)?;
+    let config = plan
+        .parse_runtime_config()
+        .map_err(ffi_llama_engine_error_status)?;
+
+    Ok(format!(
+        "gguf_model_pack: ok\nruntime: llama.cpp\nmodel_id: {}\ngguf_model: {}\nchat_template: {}\nllama_runtime_config: {}\ncontext_tokens: {}\ncpu_threads: {}\ntemperature: {}",
+        plan.model_id(),
+        plan.model_path().display(),
+        ffi_optional_path_status(plan.chat_template_path()),
+        ffi_optional_path_status(plan.runtime_config_path()),
+        config.context_tokens(),
+        config.cpu_threads(),
+        config.temperature(),
+    ))
+}
+
+/// { path names a GGUF model-pack root candidate }
+/// fn ffi_llama_model_plan(path: &str) -> Result<LlamaModelPlan, i32>
+/// { ret is Ok only when path verifies as a llama.cpp GGUF model pack }
+fn ffi_llama_model_plan(path: &str) -> Result<LlamaModelPlan, i32> {
+    let pack = ModelPack::<Discovered>::discover(path)
+        .and_then(ModelPack::verify)
+        .map_err(|_error| LOCALMT_FFI_MODEL_PACK_ERROR)?;
+    let assets =
+        GgufModelAssetPlan::from_pack(&pack).map_err(|_error| LOCALMT_FFI_MODEL_PACK_ERROR)?;
+
+    LlamaModelPlan::from_assets(assets).map_err(ffi_llama_engine_error_status)
+}
+
+/// { path may be absent or point to a verified optional asset }
+/// fn ffi_optional_path_status(path: `Option<&std::path::Path>`) -> String
+/// { ret identifies whether the optional asset is present }
+fn ffi_optional_path_status(path: Option<&std::path::Path>) -> String {
+    match path {
+        Some(path) => format!("present ({})", path.display()),
+        None => "absent".to_owned(),
+    }
 }
 
 /// { path_ptr points to path_len readable bytes }
@@ -736,6 +835,176 @@ pub extern "C" fn localmt_ffi_hf_mock_translate(
         unsafe { ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, output.len()) }; // SAFETY: output buffer capacity was checked.
 
         LOCALMT_FFI_OK
+    }
+}
+
+/// { true }
+/// fn localmt_ffi_llama_runtime_enabled() -> u8
+/// { ret is 1 only when localmt-ffi was built with llama-runtime }
+#[unsafe(no_mangle)] // SAFETY: pointer-free C export.
+pub extern "C" fn localmt_ffi_llama_runtime_enabled() -> u8 {
+    u8::from(cfg!(feature = "llama-runtime"))
+}
+
+/// { path_ptr points to path_len readable bytes and out_translator is writable }
+/// fn localmt_ffi_llama_translator_open(path_ptr: *const u8, path_len: usize, out_translator: *mut *mut LocalmtFfiLlamaTranslator) -> i32
+/// { ret is OK only when out_translator receives an owned non-null llama translator handle }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_llama_translator_open(
+    path_ptr: *const u8,
+    path_len: usize,
+    out_translator: *mut *mut LocalmtFfiLlamaTranslator,
+) -> i32 {
+    if out_translator.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *out_translator = ptr::null_mut() }; // SAFETY: non-null writable out pointer.
+
+    let path = match read_ffi_utf8(path_ptr, path_len) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let plan = match ffi_llama_model_plan(path) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let _config = match plan.parse_runtime_config() {
+        Ok(value) => value,
+        Err(error) => return ffi_llama_engine_error_status(error),
+    };
+
+    #[cfg(not(feature = "llama-runtime"))]
+    {
+        let _plan = plan;
+        LOCALMT_FFI_RUNTIME_DISABLED
+    }
+
+    #[cfg(feature = "llama-runtime")]
+    {
+        match LlamaTranslator::load(plan) {
+            Ok(translator) => {
+                let handle = Box::new(LocalmtFfiLlamaTranslator { translator });
+                unsafe { *out_translator = Box::into_raw(handle) }; // SAFETY: non-null writable out pointer.
+                LOCALMT_FFI_OK
+            }
+            Err(error) => ffi_llama_engine_error_status(error),
+        }
+    }
+}
+
+/// { translator is null or was returned by localmt_ffi_llama_translator_open }
+/// fn localmt_ffi_llama_translator_close(translator: *mut LocalmtFfiLlamaTranslator)
+/// { translator is consumed when non-null }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_llama_translator_close(translator: *mut LocalmtFfiLlamaTranslator) {
+    if translator.is_null() {
+        return;
+    }
+
+    unsafe { drop(Box::from_raw(translator)) }; // SAFETY: handle came from open and closes once.
+}
+
+/// { translator is a valid llama translator handle, input/output/written pointers follow the header contract }
+/// fn localmt_ffi_llama_translate(translator: *const LocalmtFfiLlamaTranslator, source_id: u8, target_id: u8, input_ptr: *const u8, input_len: usize, output_ptr: *mut u8, output_capacity: usize, written_len: *mut usize) -> i32
+/// { ret is OK only when output receives written_len UTF-8 bytes }
+#[unsafe(no_mangle)] // SAFETY: FFI export validates raw pointers before use.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn localmt_ffi_llama_translate(
+    translator: *const LocalmtFfiLlamaTranslator,
+    source_id: u8,
+    target_id: u8,
+    input_ptr: *const u8,
+    input_len: usize,
+    output_ptr: *mut u8,
+    output_capacity: usize,
+    written_len: *mut usize,
+) -> i32 {
+    if translator.is_null() || written_len.is_null() {
+        return LOCALMT_FFI_NULL_POINTER;
+    }
+
+    unsafe { *written_len = 0 }; // SAFETY: non-null writable length pointer.
+
+    #[cfg(not(feature = "llama-runtime"))]
+    {
+        let _ = (
+            source_id,
+            target_id,
+            input_ptr,
+            input_len,
+            output_ptr,
+            output_capacity,
+        );
+        LOCALMT_FFI_RUNTIME_DISABLED
+    }
+
+    #[cfg(feature = "llama-runtime")]
+    {
+        let Some(source) = language_from_id(source_id) else {
+            return LOCALMT_FFI_INVALID_LANGUAGE;
+        };
+        let Some(target) = language_from_id(target_id) else {
+            return LOCALMT_FFI_INVALID_LANGUAGE;
+        };
+
+        let input = match read_ffi_utf8(input_ptr, input_len) {
+            Ok(value) => value,
+            Err(status) => return status,
+        };
+        let text = match NonEmptyText::new(input.to_owned()) {
+            Ok(value) => value,
+            Err(_error) => return LOCALMT_FFI_TEXT_ERROR,
+        };
+        let request = match TranslateRequest::new(source, target, text) {
+            Ok(value) => value,
+            Err(_error) => return LOCALMT_FFI_INVALID_PAIR,
+        };
+        let translator = unsafe { &*translator }; // SAFETY: non-null live handle pointer.
+        let translation = match translator.translator.translate(&request) {
+            Ok(value) => value,
+            Err(error) => return ffi_llama_translation_error_status(error),
+        };
+        let output = translation.text().as_str().as_bytes();
+
+        unsafe { *written_len = output.len() }; // SAFETY: non-null writable length pointer.
+
+        if output_capacity < output.len() {
+            return LOCALMT_FFI_BUFFER_TOO_SMALL;
+        }
+        if output_ptr.is_null() {
+            return LOCALMT_FFI_NULL_POINTER;
+        }
+
+        unsafe { ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, output.len()) }; // SAFETY: output buffer capacity was checked.
+
+        LOCALMT_FFI_OK
+    }
+}
+
+/// { error came from the llama engine boundary }
+/// fn ffi_llama_engine_error_status(error: LlamaEngineError) -> i32
+/// { ret is the stable FFI status for the llama error class }
+fn ffi_llama_engine_error_status(error: LlamaEngineError) -> i32 {
+    match error {
+        LlamaEngineError::RuntimeDisabled => LOCALMT_FFI_RUNTIME_DISABLED,
+        LlamaEngineError::ReadRuntimeConfig { .. }
+        | LlamaEngineError::ParseRuntimeConfig { .. }
+        | LlamaEngineError::InvalidRuntimeConfig { .. } => LOCALMT_FFI_MODEL_PACK_ERROR,
+    }
+}
+
+/// { error came from a llama translation call }
+/// fn ffi_llama_translation_error_status(error: TranslationError) -> i32
+/// { ret is the stable FFI status for the llama translation error class }
+#[cfg(feature = "llama-runtime")]
+fn ffi_llama_translation_error_status(error: TranslationError) -> i32 {
+    match error {
+        TranslationError::EngineUnavailable(_reason) => LOCALMT_FFI_RUNTIME_DISABLED,
+        TranslationError::UnsupportedPair(_pair) => LOCALMT_FFI_INVALID_PAIR,
+        TranslationError::InvalidOutput(_error) => LOCALMT_FFI_TRANSLATION_ERROR,
     }
 }
 
@@ -1139,26 +1408,29 @@ mod tests {
         LOCALMT_FFI_BUFFER_TOO_SMALL, LOCALMT_FFI_INVALID_LANGUAGE, LOCALMT_FFI_INVALID_PAIR,
         LOCALMT_FFI_INVALID_UTF8, LOCALMT_FFI_MODEL_PACK_ERROR,
         LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION, LOCALMT_FFI_NULL_POINTER, LOCALMT_FFI_OK,
+        LOCALMT_FFI_RUNTIME_DISABLED, LOCALMT_FFI_RUNTIME_LLAMA_CPP,
         LOCALMT_FFI_RUNTIME_NOT_CONFIGURED, LOCALMT_FFI_TEXT_ERROR, LocalmtFfiHfMockTranslator,
-        LocalmtFfiHfTokenizer, LocalmtFfiOrtGenerator, LocalmtFfiOrtTranslator,
-        LocalmtFfiTranslator, OrtEngineError, ffi_ort_engine_error_status, localmt_ffi_abi_version,
+        LocalmtFfiHfTokenizer, LocalmtFfiLlamaTranslator, LocalmtFfiOrtGenerator,
+        LocalmtFfiOrtTranslator, LocalmtFfiTranslator, OrtEngineError, ffi_ort_engine_error_status,
+        localmt_ffi_abi_version, localmt_ffi_gguf_model_pack_summary,
         localmt_ffi_hf_mock_translate, localmt_ffi_hf_mock_translator_close,
         localmt_ffi_hf_mock_translator_open, localmt_ffi_hf_tokenizer_close,
         localmt_ffi_hf_tokenizer_enabled, localmt_ffi_hf_tokenizer_open, localmt_ffi_language_code,
-        localmt_ffi_language_from_iso_639_1, localmt_ffi_max_text_chars,
-        localmt_ffi_mock_translate, localmt_ffi_mock_translator_close,
-        localmt_ffi_mock_translator_open, localmt_ffi_model_pack_summary,
-        localmt_ffi_model_pack_trust, localmt_ffi_model_pack_trust_schema_version,
-        localmt_ffi_model_pack_trusted_summary, localmt_ffi_ort_generator_open,
-        localmt_ffi_ort_runtime_configure, localmt_ffi_ort_runtime_enabled,
-        localmt_ffi_ort_translate, localmt_ffi_ort_translator_close,
-        localmt_ffi_ort_translator_open, localmt_ffi_ort_translator_open_trusted,
-        localmt_ffi_runtime_config_summary, localmt_ffi_startup_summary,
-        localmt_ffi_status_message, localmt_ffi_supported_language_count,
-        localmt_ffi_validate_language_pair, localmt_ffi_xiaomi17_android_abi_code,
-        localmt_ffi_xiaomi17_preferred_runtime_code, localmt_ffi_xiaomi17_ram_class_gib,
+        localmt_ffi_language_from_iso_639_1, localmt_ffi_llama_runtime_enabled,
+        localmt_ffi_llama_translate, localmt_ffi_llama_translator_close,
+        localmt_ffi_llama_translator_open, localmt_ffi_max_text_chars, localmt_ffi_mock_translate,
+        localmt_ffi_mock_translator_close, localmt_ffi_mock_translator_open,
+        localmt_ffi_model_pack_summary, localmt_ffi_model_pack_trust,
+        localmt_ffi_model_pack_trust_schema_version, localmt_ffi_model_pack_trusted_summary,
+        localmt_ffi_ort_generator_open, localmt_ffi_ort_runtime_configure,
+        localmt_ffi_ort_runtime_enabled, localmt_ffi_ort_translate,
+        localmt_ffi_ort_translator_close, localmt_ffi_ort_translator_open,
+        localmt_ffi_ort_translator_open_trusted, localmt_ffi_runtime_config_summary,
+        localmt_ffi_startup_summary, localmt_ffi_status_message,
+        localmt_ffi_supported_language_count, localmt_ffi_validate_language_pair,
+        localmt_ffi_xiaomi17_android_abi_code, localmt_ffi_xiaomi17_preferred_runtime_code,
+        localmt_ffi_xiaomi17_ram_class_gib,
     };
-    #[cfg(feature = "hf-tokenizers")]
     use localmt::Sha256Digest;
 
     const ENCODER_SHA256: &str = "b1c4c05f286afb2531d4c847c4ca1e56260fc61281b7a04d50e09d09ab7a682b";
@@ -1169,6 +1441,10 @@ mod tests {
         "3ed8af0b5a58d51e246f3081e973d8683b89bf3cacf23c26243fec19ab31a721";
     const TOKENIZER_SHA256: &str =
         "38395078aa8c0af1657b8fc788f358d57e5f5fea99c8cdc004198e3c6fffbe71";
+    const GGUF_MODEL_SHA256: &str =
+        "a561ab462e9c80d55c2ca56fd846a30001aac1dea00c99d7e13e2b1320b88024";
+    const CHAT_TEMPLATE_SHA256: &str =
+        "90d69c78fb9ef942c8ce0a0d88a7455572ada06044bc1516473472664ddd013b";
     const GENERATION_CONFIG: &str = r#"{
   "max_new_tokens": 32,
   "bos_token_id": 0,
@@ -1202,6 +1478,11 @@ mod tests {
     }
   }
 }"#;
+    const LLAMA_RUNTIME_CONFIG: &str = r#"{
+  "context_tokens": 2048,
+  "cpu_threads": 1,
+  "temperature": 0.0
+}"#;
     static PACK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
@@ -1229,13 +1510,16 @@ mod tests {
 
     #[test]
     fn ffi_reports_abi_and_xiaomi17_contract() {
-        assert_eq!(localmt_ffi_abi_version(), 13);
+        assert_eq!(localmt_ffi_abi_version(), 14);
         assert_eq!(LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION, 1);
         assert_eq!(localmt_ffi_model_pack_trust_schema_version(), 1);
         assert_eq!(localmt_ffi_max_text_chars(), 4096);
         assert_eq!(localmt_ffi_xiaomi17_android_abi_code(), 1);
         assert_eq!(localmt_ffi_xiaomi17_ram_class_gib(), 12);
-        assert_eq!(localmt_ffi_xiaomi17_preferred_runtime_code(), 1);
+        assert_eq!(
+            localmt_ffi_xiaomi17_preferred_runtime_code(),
+            LOCALMT_FFI_RUNTIME_LLAMA_CPP
+        );
     }
 
     #[test]
@@ -1249,12 +1533,12 @@ mod tests {
         );
         let summary = std::str::from_utf8(&output[..written_len])?;
 
-        assert!(summary.contains("ffi_abi: 13"));
+        assert!(summary.contains("ffi_abi: 14"));
         assert!(summary.contains("model_pack_trust_schema: 1"));
         assert!(summary.contains("max_text_chars: 4096"));
         assert!(summary.contains("xiaomi17_android_abi: arm64-v8a"));
         assert!(summary.contains("xiaomi17_ram_class_gib: 12"));
-        assert!(summary.contains("xiaomi17_preferred_runtime: onnx-runtime-mobile-xnnpack"));
+        assert!(summary.contains("xiaomi17_preferred_runtime: llama.cpp"));
         assert!(summary.contains("languages: en, ru, th, vi, ja"));
 
         #[cfg(not(feature = "hf-tokenizers"))]
@@ -1265,6 +1549,10 @@ mod tests {
         assert!(summary.contains("ort_runtime: disabled"));
         #[cfg(feature = "ort-runtime")]
         assert!(summary.contains("ort_runtime: enabled"));
+        #[cfg(not(feature = "llama-runtime"))]
+        assert!(summary.contains("llama_runtime: disabled"));
+        #[cfg(feature = "llama-runtime")]
+        assert!(summary.contains("llama_runtime: enabled"));
 
         Ok(())
     }
@@ -1548,6 +1836,133 @@ mod tests {
     }
 
     #[test]
+    fn ffi_gguf_model_pack_summary_reports_verified_llama_assets()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_gguf_pack()?;
+        let path = path_bytes(&root)?;
+        let mut output = [0_u8; 512];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_gguf_model_pack_summary(
+                path.as_ptr(),
+                path.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_OK
+        );
+
+        let summary = std::str::from_utf8(&output[..written_len])?;
+        assert!(summary.contains("gguf_model_pack: ok"));
+        assert!(summary.contains("runtime: llama.cpp"));
+        assert!(summary.contains("model_id: hymt-1.25bit"));
+        assert!(summary.contains("gguf_model:"));
+        assert!(summary.contains("hymt.gguf"));
+        assert!(summary.contains("chat_template: present"));
+        assert!(summary.contains("llama_runtime_config: present"));
+        assert!(summary.contains("context_tokens: 2048"));
+        assert!(summary.contains("cpu_threads: 1"));
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_gguf_model_pack_summary_reports_required_buffer_len()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_gguf_pack()?;
+        let path = path_bytes(&root)?;
+        let mut output = [0_u8; 3];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_gguf_model_pack_summary(
+                path.as_ptr(),
+                path.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_BUFFER_TOO_SMALL
+        );
+        assert!(written_len > output.len());
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_gguf_model_pack_summary_rejects_nulls_and_invalid_utf8()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_gguf_pack()?;
+        let path = path_bytes(&root)?;
+        let mut output = [0_u8; 512];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_gguf_model_pack_summary(
+                path.as_ptr(),
+                path.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                ptr::null_mut(),
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_gguf_model_pack_summary(
+                ptr::null(),
+                0,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_gguf_model_pack_summary(
+                [0xff].as_ptr(),
+                1,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_INVALID_UTF8
+        );
+        assert_eq!(
+            localmt_ffi_gguf_model_pack_summary(
+                path.as_ptr(),
+                path.len(),
+                ptr::null_mut(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_gguf_model_pack_summary_maps_config_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_gguf_pack_with_runtime_config("not json")?;
+        let path = path_bytes(&root)?;
+        let mut output = [0_u8; 512];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_gguf_model_pack_summary(
+                path.as_ptr(),
+                path.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_MODEL_PACK_ERROR
+        );
+        assert_eq!(written_len, 0);
+        Ok(())
+    }
+
+    #[test]
     fn ffi_model_pack_trust_writes_artifact_and_trusted_summary()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = create_verified_pack()?;
@@ -1714,6 +2129,93 @@ mod tests {
     #[cfg(feature = "ort-runtime")]
     fn ffi_ort_runtime_enabled_reports_feature_build() {
         assert_eq!(localmt_ffi_ort_runtime_enabled(), 1);
+    }
+
+    #[test]
+    #[cfg(not(feature = "llama-runtime"))]
+    fn ffi_llama_runtime_enabled_reports_default_build() {
+        assert_eq!(localmt_ffi_llama_runtime_enabled(), 0);
+    }
+
+    #[test]
+    #[cfg(feature = "llama-runtime")]
+    fn ffi_llama_runtime_enabled_reports_feature_build() {
+        assert_eq!(localmt_ffi_llama_runtime_enabled(), 1);
+    }
+
+    #[test]
+    fn ffi_llama_translator_open_reports_runtime_disabled_after_pack_planning()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_gguf_pack()?;
+        let path = path_bytes(&root)?;
+        let mut translator: *mut LocalmtFfiLlamaTranslator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_llama_translator_open(path.as_ptr(), path.len(), &mut translator),
+            LOCALMT_FFI_RUNTIME_DISABLED
+        );
+        assert!(translator.is_null());
+
+        localmt_ffi_llama_translator_close(translator);
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_llama_translator_open_rejects_nulls_and_invalid_utf8()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_gguf_pack()?;
+        let path = path_bytes(&root)?;
+        let mut translator: *mut LocalmtFfiLlamaTranslator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_llama_translator_open(path.as_ptr(), path.len(), ptr::null_mut()),
+            LOCALMT_FFI_NULL_POINTER
+        );
+        assert_eq!(
+            localmt_ffi_llama_translator_open([0xff].as_ptr(), 1, &mut translator),
+            LOCALMT_FFI_INVALID_UTF8
+        );
+        assert!(translator.is_null());
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_llama_translator_open_maps_config_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let root = create_gguf_pack_with_runtime_config(r#"{"cpu_threads": 0}"#)?;
+        let path = path_bytes(&root)?;
+        let mut translator: *mut LocalmtFfiLlamaTranslator = ptr::null_mut();
+
+        assert_eq!(
+            localmt_ffi_llama_translator_open(path.as_ptr(), path.len(), &mut translator),
+            LOCALMT_FFI_MODEL_PACK_ERROR
+        );
+        assert!(translator.is_null());
+        Ok(())
+    }
+
+    #[test]
+    fn ffi_llama_translator_close_accepts_null_handle() {
+        localmt_ffi_llama_translator_close(ptr::null_mut());
+    }
+
+    #[test]
+    fn ffi_llama_translate_rejects_null_handle() {
+        let mut output = [0_u8; 32];
+        let mut written_len = 0_usize;
+
+        assert_eq!(
+            localmt_ffi_llama_translate(
+                ptr::null(),
+                0,
+                1,
+                b"hello".as_ptr(),
+                5,
+                output.as_mut_ptr(),
+                output.len(),
+                &mut written_len,
+            ),
+            LOCALMT_FFI_NULL_POINTER
+        );
     }
 
     #[test]
@@ -2313,6 +2815,30 @@ mod tests {
         Ok(root)
     }
 
+    fn create_gguf_pack() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        create_gguf_pack_with_runtime_config(LLAMA_RUNTIME_CONFIG)
+    }
+
+    fn create_gguf_pack_with_runtime_config(
+        runtime_config: &str,
+    ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let counter = PACK_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("localmt-ffi-gguf-test-{nanos}-{counter}",));
+
+        fs::create_dir_all(&root)?;
+        fs::write(root.join("hymt.gguf"), "hymt gguf\n")?;
+        fs::write(root.join("chat-template.jinja"), "template\n")?;
+        fs::write(root.join("llama-runtime.json"), runtime_config)?;
+        let runtime_config_sha256 = Sha256Digest::from_file(root.join("llama-runtime.json"))?;
+        fs::write(
+            root.join("manifest.json"),
+            gguf_manifest_json(runtime_config_sha256.as_str()),
+        )?;
+
+        Ok(root)
+    }
+
     #[cfg(feature = "hf-tokenizers")]
     fn create_hf_verified_pack() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
@@ -2350,6 +2876,25 @@ mod tests {
     {{ "path": "encoder.onnx", "kind": "encoder", "sha256": "{ENCODER_SHA256}" }},
     {{ "path": "decoder.onnx", "kind": "decoder", "sha256": "{DECODER_SHA256}" }},
     {{ "path": "tokenizer.json", "kind": "tokenizer", "sha256": "{tokenizer_sha256}" }}
+  ]
+}}"#
+        )
+    }
+
+    fn gguf_manifest_json(runtime_config_sha256: &str) -> String {
+        format!(
+            r#"{{
+  "schema_version": 0,
+  "model_id": "hymt-1.25bit",
+  "version": "0.1.0",
+  "architecture": "hunyuan-dense",
+  "runtime": "llama.cpp",
+  "license": "Tencent Hunyuan Community",
+  "languages": ["en", "ru", "th", "vi", "ja"],
+  "files": [
+    {{ "path": "hymt.gguf", "kind": "gguf_model", "sha256": "{GGUF_MODEL_SHA256}" }},
+    {{ "path": "chat-template.jinja", "kind": "chat_template", "sha256": "{CHAT_TEMPLATE_SHA256}" }},
+    {{ "path": "llama-runtime.json", "kind": "llama_runtime_config", "sha256": "{runtime_config_sha256}" }}
   ]
 }}"#
         )

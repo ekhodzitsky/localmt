@@ -74,7 +74,7 @@ impl DeviceProfile {
     /// { ret is the preferred inference runtime hint for profile }
     pub const fn preferred_runtime(self) -> &'static str {
         match self {
-            Self::Xiaomi17 => "onnx-runtime-mobile-xnnpack",
+            Self::Xiaomi17 => "llama.cpp",
         }
     }
 }
@@ -273,7 +273,7 @@ mod tests {
         assert_eq!(report.runtime(), "mock-pipeline");
         assert_eq!(report.android_abi(), "arm64-v8a");
         assert_eq!(report.ram_class_gib(), 12);
-        assert_eq!(report.preferred_runtime(), "onnx-runtime-mobile-xnnpack");
+        assert_eq!(report.preferred_runtime(), "llama.cpp");
         assert_eq!(report.model_id(), "m2m100-418m-int8");
         assert_eq!(report.scenario_count(), 10);
         assert_eq!(report.translation_count(), 10);
@@ -289,10 +289,7 @@ mod tests {
         ));
         assert_eq!(DeviceProfile::Xiaomi17.android_abi(), "arm64-v8a");
         assert_eq!(DeviceProfile::Xiaomi17.ram_class_gib(), 12);
-        assert_eq!(
-            DeviceProfile::Xiaomi17.preferred_runtime(),
-            "onnx-runtime-mobile-xnnpack"
-        );
+        assert_eq!(DeviceProfile::Xiaomi17.preferred_runtime(), "llama.cpp");
     }
 
     #[test]
