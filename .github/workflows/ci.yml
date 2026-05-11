@@ -64,11 +64,17 @@ jobs:
           ruby examples/android-jni-smoke/tests/check_java_language_constants.rb \
             examples/android-jni-smoke/src/main/java/dev/localmt/smoke/LocalmtNative.java \
             /tmp/localmt-startup.txt
+          ruby examples/android-jni-smoke/tests/check_java_llama_api.rb \
+            examples/android-jni-smoke/src/main/java/dev/localmt/smoke/LocalmtNative.java
+          ruby examples/android-jni-smoke/tests/check_cpp_llama_jni.rb \
+            examples/android-jni-smoke/src/main/cpp/localmt_jni_smoke.cpp
+          ruby examples/android-jni-smoke/tests/check_android_scripts_llama.rb \
+            scripts/package-android-ffi.sh scripts/android-device-preflight.sh
 
       - name: Release FFI symbol check
         run: |
           JAVA_HOME_DIR="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
-          cargo build --locked --release -p localmt-ffi --features hf-tokenizers,ort-runtime
+          cargo build --locked --release -p localmt-ffi --features hf-tokenizers,ort-runtime,llama-runtime
           test -f target/release/liblocalmt_ffi.so
           nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_abi_version
           nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_model_pack_trust_schema_version
@@ -77,6 +83,7 @@ jobs:
           nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_llama_runtime_configure
           nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_llama_translator_open
           nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_llama_translate
+          nm -D --defined-only target/release/liblocalmt_ffi.so | grep -q localmt_ffi_llama_translator_close
           c++ -std=c++17 -shared -fPIC \
             -Icrates/localmt-ffi/include \
             -Iexamples/android-jni-smoke/src/main/cpp \

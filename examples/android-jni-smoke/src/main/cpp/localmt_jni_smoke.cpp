@@ -185,6 +185,15 @@ LocalmtFfiOrtTranslator *from_java_handle(jlong handle) {
       static_cast<std::intptr_t>(handle));
 }
 
+jlong to_java_llama_handle(LocalmtFfiLlamaTranslator *translator) {
+  return static_cast<jlong>(reinterpret_cast<std::intptr_t>(translator));
+}
+
+LocalmtFfiLlamaTranslator *from_java_llama_handle(jlong handle) {
+  return reinterpret_cast<LocalmtFfiLlamaTranslator *>(
+      static_cast<std::intptr_t>(handle));
+}
+
 } // namespace
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -229,6 +238,26 @@ Java_dev_localmt_smoke_LocalmtNative_validateLanguagePair(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
+Java_dev_localmt_smoke_LocalmtNative_ggufModelPackSummary(
+    JNIEnv *env, jclass, jstring model_pack_path) {
+  if (!ensure_startup_contract(env)) {
+    return nullptr;
+  }
+
+  JniUtf8String path(env, model_pack_path);
+  if (!path.ok()) {
+    throw_string_error(env, path, "modelPackPath");
+    return nullptr;
+  }
+
+  return call_buffer(env, [&](uint8_t *output, size_t capacity,
+                              size_t *written) {
+    return localmt_ffi_gguf_model_pack_summary(path.bytes(), path.size(),
+                                               output, capacity, written);
+  });
+}
+
+extern "C" JNIEXPORT jstring JNICALL
 Java_dev_localmt_smoke_LocalmtNative_trustedSummary(JNIEnv *env, jclass,
                                                    jstring model_pack_path) {
   if (!ensure_startup_contract(env)) {
@@ -248,6 +277,22 @@ Java_dev_localmt_smoke_LocalmtNative_trustedSummary(JNIEnv *env, jclass,
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_dev_localmt_smoke_LocalmtNative_configureLlamaRuntime(
+    JNIEnv *env, jclass, jstring library_path) {
+  JniUtf8String path(env, library_path);
+  if (!path.ok()) {
+    throw_string_error(env, path, "absoluteLibraryPath");
+    return;
+  }
+
+  int32_t status =
+      localmt_ffi_llama_runtime_configure(path.bytes(), path.size());
+  if (status != LOCALMT_FFI_OK) {
+    throw_localmt(env, status);
+  }
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_dev_localmt_smoke_LocalmtNative_configureOrtRuntime(JNIEnv *env, jclass,
                                                         jstring library_path) {
   JniUtf8String path(env, library_path);
@@ -260,6 +305,30 @@ Java_dev_localmt_smoke_LocalmtNative_configureOrtRuntime(JNIEnv *env, jclass,
   if (status != LOCALMT_FFI_OK) {
     throw_localmt(env, status);
   }
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_dev_localmt_smoke_LocalmtNative_openGgufNative(JNIEnv *env, jclass,
+                                                   jstring model_pack_path) {
+  if (!ensure_startup_contract(env)) {
+    return 0;
+  }
+
+  JniUtf8String path(env, model_pack_path);
+  if (!path.ok()) {
+    throw_string_error(env, path, "modelPackPath");
+    return 0;
+  }
+
+  LocalmtFfiLlamaTranslator *raw_translator = nullptr;
+  int32_t status = localmt_ffi_llama_translator_open(path.bytes(), path.size(),
+                                                     &raw_translator);
+  if (status != LOCALMT_FFI_OK) {
+    throw_localmt(env, status);
+    return 0;
+  }
+
+  return to_java_llama_handle(raw_translator);
 }
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -284,6 +353,37 @@ Java_dev_localmt_smoke_LocalmtNative_openTrusted(JNIEnv *env, jclass,
   }
 
   return to_java_handle(raw_translator);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_dev_localmt_smoke_LocalmtNative_translateGgufNative(
+    JNIEnv *env, jclass, jlong translator_handle, jint source_language_id,
+    jint target_language_id, jstring text) {
+  if (translator_handle == 0) {
+    throw_illegal_argument(env, "nativeTranslatorHandle must be non-zero");
+    return nullptr;
+  }
+
+  JniUtf8String input(env, text);
+  if (!input.ok()) {
+    throw_string_error(env, input, "text");
+    return nullptr;
+  }
+  if (!ensure_language_id(env, source_language_id, "sourceLanguageId") ||
+      !ensure_language_id(env, target_language_id, "targetLanguageId")) {
+    return nullptr;
+  }
+
+  LocalmtFfiLlamaTranslator *translator =
+      from_java_llama_handle(translator_handle);
+
+  return call_buffer(env, [&](uint8_t *output, size_t capacity,
+                              size_t *written) {
+    return localmt_ffi_llama_translate(
+        translator, static_cast<uint8_t>(source_language_id),
+        static_cast<uint8_t>(target_language_id), input.bytes(), input.size(),
+        output, capacity, written);
+  });
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -315,6 +415,15 @@ Java_dev_localmt_smoke_LocalmtNative_translate(JNIEnv *env, jclass,
         static_cast<uint8_t>(target_language_id), input.bytes(), input.size(),
         output, capacity, written);
   });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_localmt_smoke_LocalmtNative_closeGgufNative(JNIEnv *, jclass,
+                                                    jlong translator_handle) {
+  if (translator_handle != 0) {
+    localmt_ffi_llama_translator_close(
+        from_java_llama_handle(translator_handle));
+  }
 }
 
 extern "C" JNIEXPORT void JNICALL

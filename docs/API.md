@@ -307,6 +307,13 @@ After an install/update call to `localmt_ffi_model_pack_trust`, apps can use
 `localmt_ffi_ort_translator_open_trusted` for the same handle contract without
 full model-file hashing on every startup.
 
+`localmt_ffi_llama_runtime_enabled`, `localmt_ffi_llama_runtime_configure`,
+`LocalmtFfiLlamaTranslator`, and `localmt_ffi_llama_translate` provide the
+GGUF/Hy-MT Android translation path. Apps configure an absolute
+`nativeLibraryDir/libllama.so` path, open a verified GGUF model pack, translate
+through the same UTF-8 output-buffer contract, and close the opaque handle with
+`localmt_ffi_llama_translator_close`.
+
 ## ONNX Runtime Boundary
 
 `localmt-engine-ort` selects ONNX graph files from a verified model pack before

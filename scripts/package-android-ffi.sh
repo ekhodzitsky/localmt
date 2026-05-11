@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ABI="arm64-v8a"
 OUT_DIR="${ROOT_DIR}/examples/android-jni-smoke/src/main/jniLibs"
 LIB_PATH="${OUT_DIR}/${ABI}/liblocalmt_ffi.so"
-FEATURES="hf-tokenizers ort-runtime"
+FEATURES="hf-tokenizers ort-runtime llama-runtime"
 
 require_command() {
   local command_name="$1"
@@ -96,6 +96,7 @@ require_symbol "${NM_TOOL}" "localmt_ffi_llama_runtime_enabled"
 require_symbol "${NM_TOOL}" "localmt_ffi_llama_runtime_configure"
 require_symbol "${NM_TOOL}" "localmt_ffi_llama_translator_open"
 require_symbol "${NM_TOOL}" "localmt_ffi_llama_translate"
+require_symbol "${NM_TOOL}" "localmt_ffi_llama_translator_close"
 require_symbol "${NM_TOOL}" "localmt_ffi_ort_translator_open_trusted"
 require_symbol "${NM_TOOL}" "localmt_ffi_ort_translate"
 

@@ -29,7 +29,8 @@ FFI, and Android foundations.
 ## Android
 
 - [ ] Keep `scripts/package-android-ffi.sh` working for `arm64-v8a`.
-- [ ] Extend Android packaging to include llama runtime artifacts.
+- [x] Extend Android packaging and staging scripts for llama runtime artifacts.
+- [x] Add Android JNI smoke bindings for the GGUF/llama translator path.
 - [ ] Use Redmi Note 14 for first real-device smoke.
 - [ ] Capture device metadata with `adb`.
 - [ ] Run smoke tests in airplane mode.

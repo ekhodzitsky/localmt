@@ -30,22 +30,25 @@ For the checked-in JNI smoke adapter, use the repository packaging script:
 scripts/package-android-ffi.sh
 ```
 
-It builds `localmt-ffi` for `arm64-v8a` with `hf-tokenizers` and `ort-runtime`,
-writes `examples/android-jni-smoke/src/main/jniLibs/arm64-v8a/liblocalmt_ffi.so`,
-and checks the exported ABI and ORT translator symbols with `llvm-nm`.
+It builds `localmt-ffi` for `arm64-v8a` with `hf-tokenizers`, `ort-runtime`,
+and `llama-runtime`, writes
+`examples/android-jni-smoke/src/main/jniLibs/arm64-v8a/liblocalmt_ffi.so`, and
+checks the exported ABI plus ORT and llama translator symbols with `llvm-nm`.
 
 To stage the native artifacts on a connected Android device before wiring a
 full app shell, run:
 
 ```bash
 scripts/android-device-preflight.sh \
+  --llama-runtime /path/to/libllama.so \
   --ort-runtime /path/to/libonnxruntime.so \
   --model-pack /path/to/model-pack
 ```
 
 The preflight checks `adb`, waits for a device, verifies `arm64-v8a`, prints
-device metadata, then pushes `liblocalmt_ffi.so`, optional `libonnxruntime.so`,
-and an optional model pack under `/data/local/tmp/localmt-smoke`.
+device metadata, then pushes `liblocalmt_ffi.so`, optional `libllama.so`,
+optional `libonnxruntime.so`, and an optional model pack under
+`/data/local/tmp/localmt-smoke`.
 Use `--device <serial>` when more than one device is attached.
 
 This writes the JNI library under:
@@ -165,6 +168,15 @@ Smoke translation choices:
   `localmt_ffi_ort_translate()` after `localmt_ffi_model_pack_trust()` when the
   Rust library is built with `hf-tokenizers` and `ort-runtime`; this is the
   Android-visible real translation path optimized for hot startup.
+- Use `localmt_ffi_llama_runtime_configure()`,
+  `localmt_ffi_llama_translator_open()`, and `localmt_ffi_llama_translate()`
+  when the Rust library is built with `llama-runtime`; this is the GGUF/Hy-MT
+  Android-visible translation path.
+
+For llama-enabled builds, call `localmt_ffi_llama_runtime_configure()` with the
+absolute `nativeLibraryDir/libllama.so` path before opening the GGUF translator.
+`LLAMA_CPP_DYLIB_PATH` remains a CLI/development fallback. Missing or invalid
+paths return `LOCALMT_FFI_RUNTIME_NOT_CONFIGURED`.
 
 For ORT-enabled builds, call `localmt_ffi_ort_runtime_configure()` with the
 absolute `nativeLibraryDir/libonnxruntime.so` path before opening the generator
@@ -306,7 +318,7 @@ Host-side checks before handing the library to Android:
 ```bash
 cargo fmt --check
 cargo test -p localmt-ffi
-cargo check -p localmt-ffi --target aarch64-linux-android
+cargo check -p localmt-ffi --target aarch64-linux-android --features llama-runtime
 cargo test --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 cargo doc --no-deps

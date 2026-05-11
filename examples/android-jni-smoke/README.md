@@ -35,8 +35,9 @@ The expected artifact path is:
 examples/android-jni-smoke/src/main/jniLibs/arm64-v8a/liblocalmt_ffi.so
 ```
 
-Your Android app must also package the matching ONNX Runtime Mobile
-`libonnxruntime.so` beside `liblocalmt_ffi.so`.
+Your Android app must also package the matching native runtime beside
+`liblocalmt_ffi.so`: `libllama.so` for GGUF/Hy-MT translation, or
+`libonnxruntime.so` for the experimental ORT path.
 
 Before an app shell exists, `scripts/android-device-preflight.sh` can stage the
 native artifacts and an optional model pack on a connected `arm64-v8a` device
@@ -50,21 +51,24 @@ copy the C++ source into the app's native build. At startup:
 
 ```java
 String startup = LocalmtNative.startupSummary();
-LocalmtNative.configureOrtRuntime(
-    context.getApplicationInfo().nativeLibraryDir + "/libonnxruntime.so");
-String ready = LocalmtNative.trustedSummary(modelPackDir.getAbsolutePath());
+LocalmtNative.configureLlamaRuntime(
+    context.getApplicationInfo().nativeLibraryDir + "/libllama.so");
+String ready = LocalmtNative.ggufModelPackSummary(modelPackDir.getAbsolutePath());
 String sourceCode = LocalmtNative.languageCode(LocalmtNative.LANGUAGE_ENGLISH);
 String targetCode = LocalmtNative.languageCode(LocalmtNative.LANGUAGE_RUSSIAN);
 LocalmtNative.validateLanguagePair(
     LocalmtNative.LANGUAGE_ENGLISH, LocalmtNative.LANGUAGE_RUSSIAN);
-try (LocalmtNative.Translator translator =
-         LocalmtNative.openTrustedTranslator(modelPackDir.getAbsolutePath())) {
+try (LocalmtNative.GgufTranslator translator =
+         LocalmtNative.openGgufTranslator(modelPackDir.getAbsolutePath())) {
     String translated = translator.translate(
         LocalmtNative.LANGUAGE_ENGLISH,
         LocalmtNative.LANGUAGE_RUSSIAN,
         "hello world");
 }
 ```
+
+For the ORT path, call `configureOrtRuntime()` and
+`openTrustedTranslator()` instead.
 
 Language ids are exposed as Java constants and remain the stable FFI order from
 `localmt_ffi_language_code()`:

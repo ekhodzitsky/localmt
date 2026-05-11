@@ -6,6 +6,7 @@ LOCALMT_LIB="${ROOT_DIR}/examples/android-jni-smoke/src/main/jniLibs/arm64-v8a/l
 REMOTE_DIR="/data/local/tmp/localmt-smoke"
 DEVICE_SERIAL=""
 ORT_RUNTIME=""
+LLAMA_RUNTIME=""
 MODEL_PACK=""
 
 usage() {
@@ -18,6 +19,7 @@ Options:
   --device SERIAL       adb device serial to use when multiple devices exist
   --remote-dir PATH     remote staging directory (default: /data/local/tmp/localmt-smoke)
   --ort-runtime PATH    local libonnxruntime.so to push beside liblocalmt_ffi.so
+  --llama-runtime PATH  local libllama.so to push beside liblocalmt_ffi.so
   --model-pack PATH     local model-pack directory to push for translation smoke
   -h, --help            show this help
 
@@ -73,6 +75,10 @@ while [[ $# -gt 0 ]]; do
       ORT_RUNTIME="$(take_value "$1" "${2:-}")"
       shift 2
       ;;
+    --llama-runtime)
+      LLAMA_RUNTIME="$(take_value "$1" "${2:-}")"
+      shift 2
+      ;;
     --model-pack)
       MODEL_PACK="$(take_value "$1" "${2:-}")"
       shift 2
@@ -99,6 +105,10 @@ if [[ ! -f "${LOCALMT_LIB}" ]]; then
 fi
 if [[ -n "${ORT_RUNTIME}" && ! -f "${ORT_RUNTIME}" ]]; then
   echo "missing ORT runtime library: ${ORT_RUNTIME}" >&2
+  exit 1
+fi
+if [[ -n "${LLAMA_RUNTIME}" && ! -f "${LLAMA_RUNTIME}" ]]; then
+  echo "missing llama runtime library: ${LLAMA_RUNTIME}" >&2
   exit 1
 fi
 if [[ -n "${MODEL_PACK}" && ! -d "${MODEL_PACK}" ]]; then
@@ -136,6 +146,11 @@ echo "pushed ${REMOTE_DIR}/lib/liblocalmt_ffi.so"
 if [[ -n "${ORT_RUNTIME}" ]]; then
   adb_cmd push "${ORT_RUNTIME}" "${REMOTE_DIR}/lib/libonnxruntime.so" >/dev/null
   echo "pushed ${REMOTE_DIR}/lib/libonnxruntime.so"
+fi
+
+if [[ -n "${LLAMA_RUNTIME}" ]]; then
+  adb_cmd push "${LLAMA_RUNTIME}" "${REMOTE_DIR}/lib/libllama.so" >/dev/null
+  echo "pushed ${REMOTE_DIR}/lib/libllama.so"
 fi
 
 if [[ -n "${MODEL_PACK}" ]]; then
