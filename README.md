@@ -19,13 +19,15 @@ and Tencent Hunyuan Hy-MT1.5 is the model family the SDK is being hardened
 around.
 
 ```bash
-export LLAMA_CPP_DYLIB_PATH=/absolute/path/to/libllama.dylib
+export LLAMA_CPP_DYLIB_PATH=/absolute/path/to/libllama.dylib  # macOS
+# export LLAMA_CPP_DYLIB_PATH=/absolute/path/to/libllama.so    # Linux / Android
 cargo run -p localmt-cli --features llama-runtime -- \
   ffi gguf-translate-smoke ./models/hymt-gguf en ru \
   "Where is the nearest train station?"
 ```
 
-Host proof already returned real Russian output with Hy-MT Q4_K_M GGUF:
+Host proof already returned real Russian output with
+[Hy-MT Q4_K_M GGUF](https://huggingface.co/tencent/HY-MT1.5-1.8B-GGUF):
 
 ```text
 translation: Где находится ближайшая железнодорожная станция?
@@ -77,13 +79,13 @@ stable across the Rust API, C ABI, and JNI sample.
 ### 1. Install the CLI
 
 ```bash
-cargo install --path crates/localmt-cli --features llama-runtime --force
+cargo install --path crates/localmt-cli --features llama-runtime --force --locked
 ```
 
 Use a default build when you only need model-pack checks and ABI inspection:
 
 ```bash
-cargo install --path crates/localmt-cli --force
+cargo install --path crates/localmt-cli --force --locked
 ```
 
 ### 2. Prepare a GGUF Model Pack
@@ -97,6 +99,8 @@ cp examples/model-packs/hymt-1.25bit/manifest.example.json \
   ./models/hymt-gguf/manifest.json
 cp examples/model-packs/hymt-1.25bit/llama-runtime.example.json \
   ./models/hymt-gguf/llama-runtime.json
+cp examples/model-packs/hymt-1.25bit/chat-template.example.jinja \
+  ./models/hymt-gguf/chat-template.jinja
 ```
 
 Then place the model assets beside the manifest:
@@ -117,13 +121,17 @@ localmt model hash ./models/hymt-gguf/chat-template.jinja
 localmt model hash ./models/hymt-gguf/llama-runtime.json
 ```
 
+Replace the matching placeholder `sha256` values in `manifest.json` before
+running verification. Every file declared in the manifest is checked.
+
 ### 3. Verify and Translate
 
 ```bash
 localmt model verify ./models/hymt-gguf
 localmt model doctor ./models/hymt-gguf
 
-export LLAMA_CPP_DYLIB_PATH=/absolute/path/to/libllama.dylib
+export LLAMA_CPP_DYLIB_PATH=/absolute/path/to/libllama.dylib  # macOS
+# export LLAMA_CPP_DYLIB_PATH=/absolute/path/to/libllama.so    # Linux / Android
 localmt ffi gguf-translate-smoke ./models/hymt-gguf en ru "hello world"
 ```
 
@@ -145,8 +153,10 @@ cargo ndk -t arm64-v8a -o target/android-jniLibs build \
   -p localmt-ffi --release --features llama-runtime
 ```
 
-Or use the repository packaging script, which builds the JNI-ready artifact and
-checks the exported C ABI symbols:
+For the checked-in JNI smoke adapter and device preflight, use the repository
+packaging script instead. It writes the artifact where
+`scripts/android-device-preflight.sh` expects it and checks the exported C ABI
+symbols:
 
 ```bash
 scripts/package-android-ffi.sh
@@ -191,7 +201,8 @@ ONNX Runtime support remains available for compatibility experiments and
 regression baselines:
 
 ```bash
-export ORT_DYLIB_PATH=/absolute/path/to/libonnxruntime.dylib
+export ORT_DYLIB_PATH=/absolute/path/to/libonnxruntime.dylib  # macOS
+# export ORT_DYLIB_PATH=/absolute/path/to/libonnxruntime.so    # Linux / Android
 cargo run -p localmt-cli --features "hf-tokenizers ort-runtime" -- \
   ffi ort-translate-smoke ./models/m2m100-418m-int8 en ru "hello"
 ```
