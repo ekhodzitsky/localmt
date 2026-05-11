@@ -66,8 +66,10 @@ the public facade.
 - Bind to llama.cpp model/context creation through a narrow Rust-owned
   interface. Completed for CPU-only model/context open and drop lifecycle.
 - Implement prompt tokenization, llama eval, sampling, and UTF-8 decode.
-  Completed for the host dynamic-library runtime path; still needs real
-  `libllama` + Hy-MT GGUF smoke evidence before release.
+  Completed for the host dynamic-library runtime path, with real
+  `libllama` + Hy-MT Q4_K_M GGUF smoke evidence returning Russian output.
+- Run the same host smoke against Hy-MT1.5-1.8B-1.25bit GGUF after upstream
+  llama.cpp STQ support is available.
 - Support CPU-only `arm64-v8a` execution first.
 
 Exit criteria:

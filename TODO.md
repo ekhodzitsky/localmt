@@ -21,7 +21,10 @@ FFI, and Android foundations.
 - [x] Implement llama.cpp model/context creation behind the existing GGUF FFI
       handle.
 - [x] Implement prompt tokenization, llama eval, sampling, and UTF-8 decode.
-- [ ] Run the llama path against a real local `libllama` and Hy-MT GGUF model.
+- [x] Run the llama path against a real local `libllama` and Hy-MT Q4_K_M GGUF
+      model.
+- [ ] Run the same smoke against Hy-MT1.5-1.8B-1.25bit GGUF after upstream
+      llama.cpp STQ support is available.
 
 ## Android
 
@@ -37,7 +40,7 @@ FFI, and Android foundations.
 
 - [ ] Verify supported language names and prompt labels for `en`, `ru`, `th`,
       `vi`, and `ja`.
-- [ ] Encode the HY-MT prompt template in Rust-owned backend config.
+- [x] Encode the HY-MT prompt template in Rust-owned backend config.
 - [ ] Verify STQ1_0 support status in llama.cpp before claiming stable support.
 - [ ] Pin a patched llama.cpp build revision and record build provenance in
       release artifacts.

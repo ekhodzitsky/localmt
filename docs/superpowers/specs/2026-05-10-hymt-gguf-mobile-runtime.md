@@ -45,7 +45,8 @@ Planned crate:
   slice is present: Rust-owned GGUF model plan, HY-MT prompt formatting, typed
   runtime config parsing, native loader preflight for a configured `libllama`,
   CPU-only model/context open lifecycle, and bounded prompt tokenization,
-  eval, sampling, and UTF-8 decode through the dynamic llama.cpp C ABI.
+  eval, sampling, and UTF-8 decode through the dynamic llama.cpp C ABI. The
+  host smoke path has returned real Russian output with Hy-MT Q4_K_M GGUF.
 
 Existing crates remain responsible for:
 

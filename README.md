@@ -92,14 +92,21 @@ The GGUF/Hy-MT FFI readiness gate is:
 localmt ffi gguf-translate-smoke ./models/hymt-1.25bit en ru "hello world"
 ```
 
-Today it verifies the Hy-MT GGUF pack, validates llama runtime metadata, and
-constructs the Rust-owned prompt. Default builds report `runtime disabled`.
-`llama-runtime` builds can also accept an explicit dynamic-library path through
-`localmt_ffi_llama_runtime_configure` or `LLAMA_CPP_DYLIB_PATH`; the native
-loader opens that library, requires the llama.cpp model/context/tokenizer/
-sampler C API symbols, opens the GGUF model/context, and runs bounded
-tokenization, eval, sampling, and UTF-8 decode. The lower-level GGUF model-pack
-doctor is:
+Default builds report `runtime disabled`. `llama-runtime` builds can accept an
+explicit dynamic-library path through `localmt_ffi_llama_runtime_configure` or
+`LLAMA_CPP_DYLIB_PATH`; the native loader opens that library, requires the
+llama.cpp model/context/tokenizer/sampler C API symbols, opens the GGUF
+model/context, and runs bounded tokenization, eval, sampling, and UTF-8 decode.
+The host path has been smoke-tested with Hy-MT Q4_K_M GGUF and returned a real
+Russian translation:
+
+```text
+translation: Где находится ближайшая железнодорожная станция?
+```
+
+The 1.25-bit/STQ package remains the production size target, but stable support
+depends on upstream llama.cpp STQ kernel availability. The lower-level GGUF
+model-pack doctor is:
 
 ```bash
 localmt model doctor ./models/hymt-1.25bit

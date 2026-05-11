@@ -22,6 +22,9 @@ const DEFAULT_CPU_THREADS: usize = 1;
 const DEFAULT_MAX_OUTPUT_TOKENS: usize = 256;
 const DEFAULT_TEMPERATURE: f32 = 0.0;
 const DISABLED_RUNTIME: &str = "llama.cpp runtime is not enabled";
+const HUNYUAN_ASSISTANT_TAG: &str = "<｜hy_Assistant｜>";
+const HUNYUAN_BEGIN_OF_SENTENCE: &str = "<｜hy_begin▁of▁sentence｜>";
+const HUNYUAN_USER_TAG: &str = "<｜hy_User｜>";
 const LLAMA_CPP_DYLIB_PATH_ENV: &str = "LLAMA_CPP_DYLIB_PATH";
 #[cfg(feature = "llama-runtime")]
 const LLAMA_TOKEN_NULL: i32 = -1;
@@ -200,9 +203,12 @@ impl LlamaTranslationPrompt {
     /// { ret is the stable HY-MT segment prompt for request.target() and request.text() }
     pub fn from_request(request: &TranslateRequest) -> Self {
         let target = language_label(request.pair().target());
-        Self(format!(
+        let instruction = format!(
             "Translate the following segment into {target}, without additional explanation.\n\n{}",
             request.text().as_str()
+        );
+        Self(format!(
+            "{HUNYUAN_BEGIN_OF_SENTENCE}{HUNYUAN_USER_TAG}{instruction}{HUNYUAN_ASSISTANT_TAG}"
         ))
     }
 
@@ -749,6 +755,31 @@ struct LlamaModelParams {
     no_alloc: bool,
 }
 
+#[cfg(all(test, feature = "llama-runtime"))]
+impl LlamaModelParams {
+    const fn zeroed_for_tests() -> Self {
+        Self {
+            devices: core::ptr::null_mut(),
+            tensor_buft_overrides: core::ptr::null(),
+            n_gpu_layers: 0,
+            split_mode: 0,
+            main_gpu: 0,
+            tensor_split: core::ptr::null(),
+            progress_callback: None,
+            progress_callback_user_data: core::ptr::null_mut(),
+            kv_overrides: core::ptr::null(),
+            vocab_only: false,
+            use_mmap: false,
+            use_direct_io: false,
+            use_mlock: false,
+            check_tensors: false,
+            use_extra_bufts: false,
+            no_host: false,
+            no_alloc: false,
+        }
+    }
+}
+
 #[cfg(feature = "llama-runtime")]
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -874,10 +905,35 @@ impl Drop for LlamaBackendLease {
 }
 
 #[cfg(feature = "llama-runtime")]
+struct LlamaCpuDeviceList {
+    devices: Box<[*mut c_void; 1]>,
+}
+
+#[cfg(feature = "llama-runtime")]
+impl LlamaCpuDeviceList {
+    /// { true }
+    /// fn new() -> Self
+    /// { ret is a stable empty llama.cpp device list for CPU-only model loading }
+    fn new() -> Self {
+        Self {
+            devices: Box::new([core::ptr::null_mut()]),
+        }
+    }
+
+    /// { true }
+    /// fn as_mut_ptr(&mut self) -> *mut *mut c_void
+    /// { ret points to a NULL-terminated empty device list }
+    fn as_mut_ptr(&mut self) -> *mut *mut c_void {
+        self.devices.as_mut_ptr()
+    }
+}
+
+#[cfg(feature = "llama-runtime")]
 struct LlamaModelContext {
     context: *mut LlamaContext,
     model: *mut LlamaModel,
     vocab: *const LlamaVocab,
+    _cpu_devices: LlamaCpuDeviceList,
     context_free: LlamaFree,
     model_free: LlamaModelFree,
     get_memory: LlamaGetMemory,
@@ -919,7 +975,8 @@ impl LlamaModelContext {
             // by-value params struct matching the pinned C ABI boundary.
             (native.model_default_params)()
         };
-        model_params.n_gpu_layers = 0;
+        let mut cpu_devices = LlamaCpuDeviceList::new();
+        apply_cpu_only_model_params(&mut model_params, &mut cpu_devices);
 
         let mut context_params = unsafe {
             // SAFETY: this calls the resolved llama.cpp factory and receives a
@@ -978,6 +1035,7 @@ impl LlamaModelContext {
             context,
             model,
             vocab,
+            _cpu_devices: cpu_devices,
             context_free: native.context_free,
             model_free: native.model_free,
             get_memory: native.get_memory,
@@ -1498,6 +1556,15 @@ fn c_model_path(path: &Path) -> Result<CString, LlamaEngineError> {
     })
 }
 
+/// { params came from llama_model_default_params and devices is stable for the model lifetime }
+/// fn apply_cpu_only_model_params(params: &mut LlamaModelParams, devices: &mut LlamaCpuDeviceList)
+/// { params cannot select GPU/device-backed model layers }
+#[cfg(feature = "llama-runtime")]
+fn apply_cpu_only_model_params(params: &mut LlamaModelParams, devices: &mut LlamaCpuDeviceList) {
+    params.devices = devices.as_mut_ptr();
+    params.n_gpu_layers = 0;
+}
+
 /// { params came from llama_context_default_params and config is validated localmt config }
 /// fn apply_runtime_config_to_context_params(params: &mut LlamaContextParams, config: LlamaRuntimeConfig) -> Result<(), LlamaEngineError>
 /// { params carries localmt-owned context/thread overrides when ret is Ok }
@@ -1513,7 +1580,9 @@ fn apply_runtime_config_to_context_params(
     }
     params.n_threads = nonzero_to_i32("cpu_threads", config.cpu_threads())?;
     params.n_threads_batch = params.n_threads;
+    params.offload_kqv = false;
     params.no_perf = true;
+    params.op_offload = false;
     Ok(())
 }
 
@@ -1844,6 +1913,25 @@ mod tests {
 
     #[test]
     #[cfg(feature = "llama-runtime")]
+    fn cpu_model_params_use_explicit_empty_device_list() {
+        let mut params = super::LlamaModelParams::zeroed_for_tests();
+        let mut devices = super::LlamaCpuDeviceList::new();
+        params.n_gpu_layers = 99;
+
+        super::apply_cpu_only_model_params(&mut params, &mut devices);
+
+        assert_eq!(params.n_gpu_layers, 0);
+        assert!(!params.devices.is_null());
+        let first_device = unsafe {
+            // SAFETY: apply_cpu_only_model_params points params.devices at the
+            // stable one-element NULL-terminated list owned by devices.
+            *params.devices
+        };
+        assert!(first_device.is_null());
+    }
+
+    #[test]
+    #[cfg(feature = "llama-runtime")]
     fn runtime_config_applies_llama_context_limits() -> Result<(), Box<dyn std::error::Error>> {
         let config = LlamaRuntimeConfig::from_json_str(
             r#"{"context_tokens": 4096, "cpu_threads": 6, "temperature": 0.0}"#,
@@ -1855,6 +1943,22 @@ mod tests {
         assert_eq!(params.n_ctx, 4096);
         assert_eq!(params.n_threads, 6);
         assert_eq!(params.n_threads_batch, 6);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "llama-runtime")]
+    fn runtime_config_disables_device_offload_for_cpu_runtime()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config = LlamaRuntimeConfig::default();
+        let mut params = super::LlamaContextParams::zeroed_for_tests();
+        params.offload_kqv = true;
+        params.op_offload = true;
+
+        super::apply_runtime_config_to_context_params(&mut params, config)?;
+
+        assert!(!params.offload_kqv);
+        assert!(!params.op_offload);
         Ok(())
     }
 
@@ -1929,7 +2033,7 @@ mod tests {
 
         assert_eq!(
             prompt.as_str(),
-            "Translate the following segment into Russian, without additional explanation.\n\nhello offline"
+            "<｜hy_begin▁of▁sentence｜><｜hy_User｜>Translate the following segment into Russian, without additional explanation.\n\nhello offline<｜hy_Assistant｜>"
         );
         Ok(())
     }
