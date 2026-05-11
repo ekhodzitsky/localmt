@@ -10,84 +10,86 @@
 **Offline Android translation SDK in Rust.**
 
 LocalMT runs verified translation model packs on-device through a small
-privacy-first Rust + FFI/JNI surface: no network, no API keys, no cloud
-round-trips, and no text leaving the phone.
+privacy-first Rust + C ABI/JNI surface. There are no API keys, no cloud
+round-trips, no telemetry, and no text leaving the phone.
 
-The project is Android `arm64-v8a` first. Xiaomi 17-class phones are the
-performance target, Redmi Note 14 is the first real-device smoke target, and
-Tencent Hunyuan Hy-MT1.5 GGUF is the production model direction. ONNX Runtime
-stays available as an experimental compatibility backend.
+The main path is Android `arm64-v8a` + GGUF + llama.cpp. Xiaomi 17-class phones
+are the performance target, Redmi Note 14 is the first real-device smoke target,
+and Tencent Hunyuan Hy-MT1.5 is the model family the SDK is being hardened
+around.
 
 ```bash
-# Offline GGUF/llama.cpp smoke path
 export LLAMA_CPP_DYLIB_PATH=/absolute/path/to/libllama.dylib
 cargo run -p localmt-cli --features llama-runtime -- \
   ffi gguf-translate-smoke ./models/hymt-gguf en ru \
   "Where is the nearest train station?"
 ```
 
-Host proof already returned a real Russian translation with Hy-MT Q4_K_M GGUF:
+Host proof already returned real Russian output with Hy-MT Q4_K_M GGUF:
 
 ```text
 translation: Где находится ближайшая железнодорожная станция?
 ```
 
----
-
-## Status
+## What Works Today
 
 | Capability | Status |
 |------------|--------|
-| Rust SDK, model-pack verification, checksums, trust artifacts | Implemented |
-| C ABI / JNI surface for Android `arm64-v8a` | Implemented and CI checked |
+| Rust SDK, model-pack parsing, SHA-256 verification, trust artifacts | Implemented |
+| Android-facing C ABI and JNI smoke surface | Implemented and CI checked |
 | GGUF/llama.cpp host translation | Proven with Hy-MT Q4_K_M GGUF |
 | Hy-MT1.5-1.8B-1.25bit mobile target | Waiting on stable upstream STQ1_0 / Sherry support |
 | Redmi Note 14 airplane-mode translation smoke | Next device proof |
 | ONNX Runtime translation path | Experimental compatibility backend |
 
+LocalMT is a library/SDK, not a finished translator app. Model weights are not
+committed or redistributed by this repository; applications provide local model
+packs and accept the upstream model terms themselves.
+
 ## Why LocalMT?
 
-- **Privacy-first** - text never leaves the device. No API keys, no telemetry.
-- **Offline by default** - works in airplane mode, in remote areas, behind
-  corporate firewalls.
-- **Hy-MT ready** - the first production path targets Hy-MT1.5-1.8B-1.25bit
-  GGUF, a 440 MB on-device translation model that covers the starting language
-  set.
-- **Verified model packs** - SHA-256 checksums, typed file roles, and trust
-  artifacts so you know exactly what model is running.
-- **Swappable backends** - llama.cpp/GGUF first, ONNX Runtime experimental, and
-  future engines behind the same Rust traits. Your app code stays the same.
+- **Private by construction** - translation runs locally; user text stays on
+  the device.
+- **Offline by default** - useful in airplane mode, field work, travel, or
+  locked-down environments.
+- **Android-first** - the ABI, packaging scripts, and JNI smoke surface target
+  `arm64-v8a` rather than desktop-only demos.
+- **Verified model packs** - manifests use typed file roles and SHA-256 checks
+  before runtime loading.
+- **Backend boundary kept small** - GGUF/llama.cpp is the production direction;
+  ONNX Runtime remains behind the same SDK shape for compatibility experiments.
 
-## Supported languages
+## Supported Languages
 
 | Language | Code |
 |----------|------|
-| English  | `en` |
-| Japanese | `ja` |
-| Russian  | `ru` |
-| Thai     | `th` |
+| English | `en` |
+| Russian | `ru` |
+| Thai | `th` |
 | Vietnamese | `vi` |
+| Japanese | `ja` |
 
-More languages are on the roadmap; the architecture is model-agnostic.
+The architecture is model-agnostic, but these are the first language IDs kept
+stable across the Rust API, C ABI, and JNI sample.
 
-## Quick start
+## Quick Start
 
 ### 1. Install the CLI
 
 ```bash
-# Fast model-pack and ABI checks.
-cargo install --path crates/localmt-cli
-
-# GGUF/llama.cpp translation smoke support.
 cargo install --path crates/localmt-cli --features llama-runtime --force
 ```
 
-### 2. Prepare a GGUF model pack
+Use a default build when you only need model-pack checks and ABI inspection:
 
-A model pack is a directory with a `manifest.json` and the local model/runtime
-files it declares. Model weights are never committed to this repository.
+```bash
+cargo install --path crates/localmt-cli --force
+```
 
-For Hy-MT/GGUF, start from the example pack shape:
+### 2. Prepare a GGUF Model Pack
+
+Create a local pack from the checked-in example. The example manifest contains
+placeholder hashes; replace them with hashes from your local files.
 
 ```bash
 mkdir -p ./models/hymt-gguf
@@ -95,66 +97,74 @@ cp examples/model-packs/hymt-1.25bit/manifest.example.json \
   ./models/hymt-gguf/manifest.json
 cp examples/model-packs/hymt-1.25bit/llama-runtime.example.json \
   ./models/hymt-gguf/llama-runtime.json
-# After placing your local GGUF file:
+```
+
+Then place the model assets beside the manifest:
+
+```text
+models/hymt-gguf/
+  manifest.json
+  hymt.gguf
+  chat-template.jinja
+  llama-runtime.json
+```
+
+Compute hashes and update `manifest.json`:
+
+```bash
 localmt model hash ./models/hymt-gguf/hymt.gguf
+localmt model hash ./models/hymt-gguf/chat-template.jinja
+localmt model hash ./models/hymt-gguf/llama-runtime.json
 ```
 
-Then replace the example SHA-256 values in `manifest.json` with hashes from
-your local files. For ONNX-style compatibility packs, the CLI can generate a
-manifest for an existing directory:
+### 3. Verify and Translate
 
 ```bash
-localmt model write-manifest ./models/m2m100-418m-int8 \
-  m2m100-418m-int8 0.1.0 m2m100 onnx-runtime MIT
-```
-
-### 3. Verify and smoke-test
-
-```bash
-# Verify integrity
 localmt model verify ./models/hymt-gguf
-
-# Full health check (works without heavy runtime dependencies)
 localmt model doctor ./models/hymt-gguf
 
-# Offline GGUF translation with llama.cpp (requires `llama-runtime`)
 export LLAMA_CPP_DYLIB_PATH=/absolute/path/to/libllama.dylib
-localmt ffi gguf-translate-smoke ./models/hymt-gguf en ru "hello"
+localmt ffi gguf-translate-smoke ./models/hymt-gguf en ru "hello world"
 ```
 
-The GGUF/Hy-MT FFI readiness gate is:
+Default builds report `runtime disabled` for translation. Builds with
+`llama-runtime` load the configured llama.cpp dynamic library, open the verified
+GGUF model/context, and run bounded tokenization, eval, sampling, UTF-8 decode,
+and C ABI buffer handling.
+
+The 1.25-bit Hy-MT package is the production size target, but LocalMT does not
+claim it stable until llama.cpp has stable STQ1_0 / Sherry support and a real
+Android smoke passes.
+
+## Android Integration
+
+Build the Rust FFI artifact for Android:
 
 ```bash
-localmt ffi gguf-translate-smoke ./models/hymt-1.25bit en ru "hello world"
+cargo ndk -t arm64-v8a -o target/android-jniLibs build \
+  -p localmt-ffi --release --features llama-runtime
 ```
 
-Default builds report `runtime disabled`. `llama-runtime` builds can accept an
-explicit dynamic-library path through `localmt_ffi_llama_runtime_configure` or
-`LLAMA_CPP_DYLIB_PATH`; the native loader opens that library, requires the
-llama.cpp model/context/tokenizer/sampler C API symbols, opens the GGUF
-model/context, and runs bounded tokenization, eval, sampling, and UTF-8 decode.
-
-The 1.25-bit/STQ package remains the production size target, but stable support
-depends on upstream llama.cpp STQ kernel availability. The lower-level GGUF
-model-pack doctor is:
+Or use the repository packaging script, which builds the JNI-ready artifact and
+checks the exported C ABI symbols:
 
 ```bash
-localmt model doctor ./models/hymt-1.25bit
+scripts/package-android-ffi.sh
 ```
 
-See [`examples/model-packs/hymt-1.25bit`](examples/model-packs/hymt-1.25bit)
-for the expected manifest shape.
-
-### 4. Embed in Android
-
-Build the FFI crate for `arm64-v8a` and link it in your NDK project:
+Before a full app shell exists, stage the native libraries and model pack on a
+connected `arm64-v8a` device:
 
 ```bash
-cargo ndk -t arm64-v8a -o target/android-jniLibs build -p localmt-ffi --release
+scripts/android-device-preflight.sh \
+  --llama-runtime /path/to/libllama.so \
+  --model-pack ./models/hymt-gguf
 ```
 
-The C header is at `crates/localmt-ffi/include/localmt_ffi.h`. See
-[`docs/android-build.md`](docs/android-build.md) for the full JNI flow.
+The C header is at
+[`crates/localmt-ffi/include/localmt_ffi.h`](crates/localmt-ffi/include/localmt_ffi.h).
+The JNI smoke adapter is under
+[`examples/android-jni-smoke`](examples/android-jni-smoke).
 
 ## Architecture
 
@@ -168,54 +178,43 @@ localmt-ffi  ->  localmt-pipeline  ->  localmt-engine-llama
 Android app  ->  localmt-models   ->  llama.cpp / GGUF
 ```
 
-- **Library-first** - every crate is a reusable building block. Apps and mobile
-  shells are thin adapters around the Rust API.
-- **Feature-gated backends** - default builds compile in milliseconds with mock
-  engines; enable backend features for real inference.
-- **Rust-owned llama boundary** - `localmt-engine-llama` owns Hy-MT prompt
-  formatting, GGUF asset planning, runtime config, and the narrow dynamic
-  loading boundary to llama.cpp.
-- **Pointer-free C ABI** - null-safe FFI handles, explicit buffer contracts, and
-  no undefined behaviour across the JNI boundary.
+- `localmt` is the public Rust facade.
+- `localmt-models` verifies local model packs and trust artifacts.
+- `localmt-engine-llama` owns GGUF planning, Hy-MT prompt formatting, runtime
+  config, and the narrow dynamic loading boundary to llama.cpp.
+- `localmt-ffi` exposes pointer-safe C ABI handles for Android/JNI callers.
+- `localmt-cli` dogfoods the same ABI paths used by Android adapters.
 
-## Production Model Target
+## Compatibility Backend
 
-The first production target is Hy-MT1.5-1.8B-1.25bit GGUF:
+ONNX Runtime support remains available for compatibility experiments and
+regression baselines:
 
-- 440 MB compressed translation model package.
-- 33 languages and 1,056 translation directions reported by Tencent Hunyuan.
-- Covers the initial `localmt` languages: English, Russian, Thai, Vietnamese,
-  and Japanese.
-- Intended for on-device offline mobile translation.
-- Requires llama.cpp support for STQ1_0 / Sherry quantization before it can be
-  treated as stable in this project.
+```bash
+export ORT_DYLIB_PATH=/absolute/path/to/libonnxruntime.dylib
+cargo run -p localmt-cli --features "hf-tokenizers ort-runtime" -- \
+  ffi ort-translate-smoke ./models/m2m100-418m-int8 en ru "hello"
+```
 
-Model assets stay outside the repository. `localmt` should verify and load
-user-supplied model packs; it must not commit or redistribute model weights.
-
-References:
-
-- https://huggingface.co/tencent/Hy-MT1.5-1.8B-1.25bit-GGUF
-- https://huggingface.co/tencent/HY-MT1.5-1.8B
-- https://github.com/ggml-org/llama.cpp/pull/22836
-
-## Platform support
-
-| Platform | Target | Status |
-|----------|--------|--------|
-| Android arm64 | `aarch64-linux-android` | Primary |
-| macOS host | `aarch64-apple-darwin` | Dev / CI |
-| Linux host | `x86_64-unknown-linux-gnu` | Dev / CI |
+The GGUF/llama.cpp path is the default product direction. Treat ORT as
+experimental unless a model pack has comparable quality and mobile performance
+evidence.
 
 ## Documentation
 
 | Doc | What it covers |
 |-----|---------------|
-| [`docs/API.md`](docs/API.md) | Internal architecture, crate boundaries, FFI contract, model-pack format, generation config |
-| [`docs/android-build.md`](docs/android-build.md) | Android/JNI build notes, feature flags, and FFI call flow |
+| [`docs/API.md`](docs/API.md) | Crate boundaries, FFI contract, model-pack format, generation config |
+| [`docs/android-build.md`](docs/android-build.md) | Android/JNI build notes, feature flags, FFI call flow |
 | [`docs/performance.md`](docs/performance.md) | Real-model latency baselines and bottleneck notes |
 | [`ROADMAP.md`](ROADMAP.md) | Hy-MT/GGUF product and engineering roadmap |
 | [`TODO.md`](TODO.md) | Current implementation checklist |
+
+## References
+
+- https://huggingface.co/tencent/Hy-MT1.5-1.8B-1.25bit-GGUF
+- https://huggingface.co/tencent/HY-MT1.5-1.8B
+- https://github.com/ggml-org/llama.cpp/pull/22836
 
 ## License
 
