@@ -61,7 +61,7 @@ Copy that directory into the app module's `src/main/jniLibs/` or wire it into
 the app build pipeline.
 The C ABI header is checked in at
 `crates/localmt-ffi/include/localmt_ffi.h`; the development CLI can also print
-the same header with `cargo run -p localmt -- ffi header`.
+the same header with `cargo run -p localmt-cli -- ffi header`.
 `examples/android-jni-smoke` contains a minimal Java/C++ JNI adapter that calls
 the same C ABI from an Android app module.
 
@@ -129,7 +129,7 @@ At app startup:
 
 1. Call `localmt_ffi_startup_summary()` for a loggable startup contract, or
    call the individual probes below.
-1. Call `localmt_ffi_abi_version()` and require `LOCALMT_FFI_ABI_VERSION == 13`.
+1. Call `localmt_ffi_abi_version()` and require `LOCALMT_FFI_ABI_VERSION == 14`.
 1. Call `localmt_ffi_model_pack_trust_schema_version()` and require
    `LOCALMT_FFI_MODEL_PACK_TRUST_SCHEMA_VERSION == 1`.
 1. Call `localmt_ffi_xiaomi17_android_abi_code()` and require
@@ -264,23 +264,23 @@ no `ort_io` object; malformed JSON or empty tensor names still fail preflight.
 Use the development CLI to prepare and inspect packs locally:
 
 ```bash
-cargo run -p localmt -- model hash <file>
-cargo run -p localmt -- model write-manifest <pack-dir> m2m100-418m-int8 0.1.0 m2m100 onnx-runtime MIT
-cargo run -p localmt -- model verify <pack-dir>
-cargo run -p localmt -- model plan <pack-dir>
-cargo run -p localmt -- model doctor <pack-dir>
-cargo run -p localmt -- model runtime-config <pack-dir>
-cargo run -p localmt -- model trust <pack-dir>
-cargo run -p localmt -- ffi startup
-cargo run -p localmt -- ffi header
-cargo run -p localmt -- ffi runtime-config <pack-dir>
-cargo run -p localmt -- ffi trusted-summary <pack-dir>
-cargo run -p localmt -- ffi smoke <pack-dir> en ru "hello offline"
-cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke <pack-dir> en ru "hello offline"
-cargo run -p localmt --features ort-runtime -- ffi ort-smoke <pack-dir>
-cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-smoke <pack-dir> en ru "hello offline"
-cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-bench <pack-dir> en ru "hello offline" 3
-cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-bench-trusted <pack-dir> en ru "hello offline" 3
+cargo run -p localmt-cli -- model hash <file>
+cargo run -p localmt-cli -- model write-manifest <pack-dir> m2m100-418m-int8 0.1.0 m2m100 onnx-runtime MIT
+cargo run -p localmt-cli -- model verify <pack-dir>
+cargo run -p localmt-cli -- model plan <pack-dir>
+cargo run -p localmt-cli -- model doctor <pack-dir>
+cargo run -p localmt-cli -- model runtime-config <pack-dir>
+cargo run -p localmt-cli -- model trust <pack-dir>
+cargo run -p localmt-cli -- ffi startup
+cargo run -p localmt-cli -- ffi header
+cargo run -p localmt-cli -- ffi runtime-config <pack-dir>
+cargo run -p localmt-cli -- ffi trusted-summary <pack-dir>
+cargo run -p localmt-cli -- ffi smoke <pack-dir> en ru "hello offline"
+cargo run -p localmt-cli --features hf-tokenizers -- ffi hf-smoke <pack-dir> en ru "hello offline"
+cargo run -p localmt-cli --features ort-runtime -- ffi ort-smoke <pack-dir>
+cargo run -p localmt-cli --features "hf-tokenizers ort-runtime" -- ffi ort-translate-smoke <pack-dir> en ru "hello offline"
+cargo run -p localmt-cli --features "hf-tokenizers ort-runtime" -- ffi ort-translate-bench <pack-dir> en ru "hello offline" 3
+cargo run -p localmt-cli --features "hf-tokenizers ort-runtime" -- ffi ort-translate-bench-trusted <pack-dir> en ru "hello offline" 3
 ```
 
 `localmt ffi smoke` exercises the same default C ABI flow described above on the

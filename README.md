@@ -1,29 +1,51 @@
-# localmt
+# LocalMT
 
 [![CI](https://github.com/ekhodzitsky/localmt/actions/workflows/ci.yml/badge.svg)](https://github.com/ekhodzitsky/localmt/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+[![Rust 1.95+](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](Cargo.toml)
+[![Android arm64-v8a](https://img.shields.io/badge/android-arm64--v8a-brightgreen.svg)](docs/android-build.md)
+[![FFI ABI 14](https://img.shields.io/badge/FFI_ABI-14-blue.svg)](crates/localmt-ffi/include/localmt_ffi.h)
+[![Runtime: GGUF/llama.cpp](https://img.shields.io/badge/runtime-GGUF%2Fllama.cpp-blueviolet.svg)](ROADMAP.md)
 
-**Offline translation that fits in your pocket.**
+**Offline Android translation SDK in Rust.**
 
-`localmt` is a Rust library for running neural machine translation entirely on
-device: no network, no cloud round-trips, no data leaving the phone. Built for
-Android `arm64-v8a` devices first, with Xiaomi 17-class phones as the
-performance target and Redmi Note 14 as the first real-device smoke target.
+LocalMT runs verified translation model packs on-device through a small
+privacy-first Rust + FFI/JNI surface: no network, no API keys, no cloud
+round-trips, and no text leaving the phone.
 
-The production model strategy is now Hy-MT1.5-first: use Tencent Hunyuan's
-Hy-MT1.5-1.8B-1.25bit GGUF model as the first real mobile translation target,
-run it through a llama.cpp/STQ1_0 backend, and keep ONNX Runtime as an
-experimental compatibility backend.
+The project is Android `arm64-v8a` first. Xiaomi 17-class phones are the
+performance target, Redmi Note 14 is the first real-device smoke target, and
+Tencent Hunyuan Hy-MT1.5 GGUF is the production model direction. ONNX Runtime
+stays available as an experimental compatibility backend.
 
 ```bash
-# Translate offline in one command
-cargo run -p localmt-cli --features "hf-tokenizers ort-runtime" -- \
-  ffi ort-translate-smoke ./models/my-pack en ru "hello world"
+# Offline GGUF/llama.cpp smoke path
+export LLAMA_CPP_DYLIB_PATH=/absolute/path/to/libllama.dylib
+cargo run -p localmt-cli --features llama-runtime -- \
+  ffi gguf-translate-smoke ./models/hymt-gguf en ru \
+  "Where is the nearest train station?"
+```
+
+Host proof already returned a real Russian translation with Hy-MT Q4_K_M GGUF:
+
+```text
+translation: Где находится ближайшая железнодорожная станция?
 ```
 
 ---
 
-## Why localmt?
+## Status
+
+| Capability | Status |
+|------------|--------|
+| Rust SDK, model-pack verification, checksums, trust artifacts | Implemented |
+| C ABI / JNI surface for Android `arm64-v8a` | Implemented and CI checked |
+| GGUF/llama.cpp host translation | Proven with Hy-MT Q4_K_M GGUF |
+| Hy-MT1.5-1.8B-1.25bit mobile target | Waiting on stable upstream STQ1_0 / Sherry support |
+| Redmi Note 14 airplane-mode translation smoke | Next device proof |
+| ONNX Runtime translation path | Experimental compatibility backend |
+
+## Why LocalMT?
 
 - **Privacy-first** - text never leaves the device. No API keys, no telemetry.
 - **Offline by default** - works in airplane mode, in remote areas, behind
@@ -53,19 +75,33 @@ More languages are on the roadmap; the architecture is model-agnostic.
 ### 1. Install the CLI
 
 ```bash
+# Fast model-pack and ABI checks.
 cargo install --path crates/localmt-cli
 
-# Build the CLI with real ONNX Runtime translation support.
-cargo install --path crates/localmt-cli --features "hf-tokenizers ort-runtime" --force
+# GGUF/llama.cpp translation smoke support.
+cargo install --path crates/localmt-cli --features llama-runtime --force
 ```
 
-### 2. Grab or build a model pack
+### 2. Prepare a GGUF model pack
 
 A model pack is a directory with a `manifest.json` and the local model/runtime
-files it declares. The next production pack format will support Hy-MT GGUF
-assets; the current implemented pack flow supports ONNX/graph roles.
+files it declares. Model weights are never committed to this repository.
 
-You can generate a manifest for an existing ONNX-style directory:
+For Hy-MT/GGUF, start from the example pack shape:
+
+```bash
+mkdir -p ./models/hymt-gguf
+cp examples/model-packs/hymt-1.25bit/manifest.example.json \
+  ./models/hymt-gguf/manifest.json
+cp examples/model-packs/hymt-1.25bit/llama-runtime.example.json \
+  ./models/hymt-gguf/llama-runtime.json
+# After placing your local GGUF file:
+localmt model hash ./models/hymt-gguf/hymt.gguf
+```
+
+Then replace the example SHA-256 values in `manifest.json` with hashes from
+your local files. For ONNX-style compatibility packs, the CLI can generate a
+manifest for an existing directory:
 
 ```bash
 localmt model write-manifest ./models/m2m100-418m-int8 \
@@ -76,14 +112,14 @@ localmt model write-manifest ./models/m2m100-418m-int8 \
 
 ```bash
 # Verify integrity
-localmt model verify ./models/m2m100-418m-int8
+localmt model verify ./models/hymt-gguf
 
 # Full health check (works without heavy runtime dependencies)
-localmt model doctor ./models/m2m100-418m-int8
+localmt model doctor ./models/hymt-gguf
 
-# Offline translation with ONNX Runtime (requires `ort-runtime` + `hf-tokenizers`)
-export ORT_DYLIB_PATH=/opt/homebrew/lib/libonnxruntime.dylib
-localmt ffi ort-translate-smoke ./models/m2m100-418m-int8 en ja "hello"
+# Offline GGUF translation with llama.cpp (requires `llama-runtime`)
+export LLAMA_CPP_DYLIB_PATH=/absolute/path/to/libllama.dylib
+localmt ffi gguf-translate-smoke ./models/hymt-gguf en ru "hello"
 ```
 
 The GGUF/Hy-MT FFI readiness gate is:
@@ -97,12 +133,6 @@ explicit dynamic-library path through `localmt_ffi_llama_runtime_configure` or
 `LLAMA_CPP_DYLIB_PATH`; the native loader opens that library, requires the
 llama.cpp model/context/tokenizer/sampler C API symbols, opens the GGUF
 model/context, and runs bounded tokenization, eval, sampling, and UTF-8 decode.
-The host path has been smoke-tested with Hy-MT Q4_K_M GGUF and returned a real
-Russian translation:
-
-```text
-translation: Где находится ближайшая железнодорожная станция?
-```
 
 The 1.25-bit/STQ package remains the production size target, but stable support
 depends on upstream llama.cpp STQ kernel availability. The lower-level GGUF
@@ -143,8 +173,8 @@ Android app  ->  localmt-models   ->  llama.cpp / GGUF
 - **Feature-gated backends** - default builds compile in milliseconds with mock
   engines; enable backend features for real inference.
 - **Rust-owned llama boundary** - `localmt-engine-llama` owns Hy-MT prompt
-  formatting, GGUF asset planning, and runtime config before native llama.cpp
-  loading is wired in.
+  formatting, GGUF asset planning, runtime config, and the narrow dynamic
+  loading boundary to llama.cpp.
 - **Pointer-free C ABI** - null-safe FFI handles, explicit buffer contracts, and
   no undefined behaviour across the JNI boundary.
 

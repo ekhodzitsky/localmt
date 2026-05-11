@@ -181,19 +181,19 @@ cargo run -p localmt --example model_pack_preflight -- ./models/m2m100-418m-int8
 CLI smoke checks:
 
 ```bash
-cargo run -p localmt -- model plan ./models/m2m100-418m-int8
-cargo run -p localmt -- model trust ./models/m2m100-418m-int8
-cargo run -p localmt -- model doctor ./models/m2m100-418m-int8
-cargo run -p localmt -- ffi startup
-cargo run -p localmt -- ffi header
-cargo run -p localmt -- ffi runtime-config ./models/m2m100-418m-int8
-cargo run -p localmt -- ffi trusted-summary ./models/m2m100-418m-int8
-cargo run -p localmt -- ffi smoke ./models/m2m100-418m-int8 en ru "hello offline"
-cargo run -p localmt --features hf-tokenizers -- ffi hf-smoke ./models/m2m100-418m-int8 en ru "hello offline"
-cargo run -p localmt --features ort-runtime -- ffi ort-smoke ./models/m2m100-418m-int8
-cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-smoke ./models/m2m100-418m-int8 en ru "hello offline"
-cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-bench ./models/m2m100-418m-int8 en ru "hello offline" 3
-cargo run -p localmt --features "hf-tokenizers ort-runtime" -- ffi ort-translate-bench-trusted ./models/m2m100-418m-int8 en ru "hello offline" 3
+cargo run -p localmt-cli -- model plan ./models/m2m100-418m-int8
+cargo run -p localmt-cli -- model trust ./models/m2m100-418m-int8
+cargo run -p localmt-cli -- model doctor ./models/m2m100-418m-int8
+cargo run -p localmt-cli -- ffi startup
+cargo run -p localmt-cli -- ffi header
+cargo run -p localmt-cli -- ffi runtime-config ./models/m2m100-418m-int8
+cargo run -p localmt-cli -- ffi trusted-summary ./models/m2m100-418m-int8
+cargo run -p localmt-cli -- ffi smoke ./models/m2m100-418m-int8 en ru "hello offline"
+cargo run -p localmt-cli --features hf-tokenizers -- ffi hf-smoke ./models/m2m100-418m-int8 en ru "hello offline"
+cargo run -p localmt-cli --features ort-runtime -- ffi ort-smoke ./models/m2m100-418m-int8
+cargo run -p localmt-cli --features "hf-tokenizers ort-runtime" -- ffi ort-translate-smoke ./models/m2m100-418m-int8 en ru "hello offline"
+cargo run -p localmt-cli --features "hf-tokenizers ort-runtime" -- ffi ort-translate-bench ./models/m2m100-418m-int8 en ru "hello offline" 3
+cargo run -p localmt-cli --features "hf-tokenizers ort-runtime" -- ffi ort-translate-bench-trusted ./models/m2m100-418m-int8 en ru "hello offline" 3
 ```
 
 `localmt ffi startup` prints the Android-visible startup contract through the
